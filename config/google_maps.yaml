@@ -1,0 +1,28 @@
+name: "Google Maps"
+content_type: "dynamic"
+browser_automation: "nodriver"
+headless: true
+pagination_strategy: "infinite_scroll"
+extraction_strategy: "generic_selector"
+output_strategy: "jsonl_file"
+
+search_url_template: "https://www.google.com/maps/search/{query}/"
+
+selectors:
+  items: "a.hfpxzc"
+  fields:
+    name: "aria-label"
+    url: "href"
+
+pagination:
+  container: "div[role='feed']"
+  scroll_script: "document.querySelector('div[role=\"feed\"]').scrollTo(0, document.querySelector('div[role=\"feed\"]').scrollHeight)"
+  max_scroll_attempts: 500
+  items_selector: "a.hfpxzc"
+
+output:
+  file_path: "output/google_maps_{query}.jsonl"
+  max_results: 500
+
+rate_limit: 2
+proxy_rotation: false
