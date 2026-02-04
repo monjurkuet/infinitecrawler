@@ -1,18 +1,38 @@
-name: "Google Maps"
+name: "Google Maps Search"
 content_type: "dynamic"
 browser_automation: "nodriver"
 headless: true
+
+# Input: Load queries from file
+input:
+  strategy: "file_url_loader"
+  config:
+    file_path: "input/search_queries.txt"
+    deduplicate: true
+
+# Queue: Track query processing
+queue:
+  strategy: "redis_queue"
+  config:
+    host: "localhost"
+    port: 6379
+    db: 0
+    keys:
+      pending: "gmaps_search:pending"
+      processing: "gmaps_search:processing"
+      completed: "gmaps_search:completed"
+      failed: "gmaps_search:failed"
+    visibility_timeout: 300
+
 pagination_strategy: "infinite_scroll"
 extraction_strategy: "generic_selector"
-output_strategy: "jsonl_file"
 
-search_url_template: "https://www.google.com/maps/search/{query}/"
-
+# Selectors for extraction
 selectors:
   items: "a.hfpxzc"
   fields:
     name: "aria-label"
-    url: "href"
+    source_url: "href"
 
 pagination:
   container: "div[role='feed']"
@@ -20,9 +40,27 @@ pagination:
   max_scroll_attempts: 500
   items_selector: "a.hfpxzc"
 
+# Output: MongoDB + JSONL fallback
+output_strategy: "composite"
 output:
-  file_path: "output/google_maps_{query}.jsonl"
-  max_results: 500
+  strategies:
+    - strategy: "mongodb_upsert"
+      config:
+        uri: "mongodb://localhost:27017"
+        database: "scraping"
+        collection: "gmaps_search_results"
+        key_field: "source_url"
+        max_results: 10000
+    - strategy: "jsonl_file"
+      config:
+        file_path: "output/google_maps_{query}.jsonl"
+        max_results: 10000
 
+search_url_template: "https://www.google.com/maps/search/{query}/"
 rate_limit: 2
-proxy_rotation: false
+
+# Workers: Parallel processing
+workers:
+  count: 3
+  max_consecutive_errors: 5
+  max_pages_per_session: 100

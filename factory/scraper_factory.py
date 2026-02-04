@@ -31,6 +31,7 @@ class ScraperFactory:
                 MongoDBOutputStrategy,
                 MongoDBUpsertStrategy,
             )
+            from strategies.output.composite import CompositeOutputStrategy
             from strategies.input.file_url_loader import FileInputStrategy
             from strategies.queue.redis_queue import RedisQueueStrategy
             from strategies.navigation.tab_navigator import (
@@ -51,6 +52,7 @@ class ScraperFactory:
                 "secondary_jsonl": SecondaryJsonlOutputStrategy,
                 "mongodb": MongoDBOutputStrategy,
                 "mongodb_upsert": MongoDBUpsertStrategy,
+                "composite": CompositeOutputStrategy,
                 # Input strategies
                 "file_url_loader": FileInputStrategy,
                 # Queue strategies
