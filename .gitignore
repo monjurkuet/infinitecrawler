@@ -19,3 +19,4 @@ backup/
 *.log
 *.csv
 .session/
+output/gmaps_urls.txt
