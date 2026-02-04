@@ -2,7 +2,6 @@ import yaml
 import logging
 from typing import Dict, Any
 from base.scraper import BaseScraper
-from base.browser_manager import BrowserManager
 
 
 class ScraperFactory:
@@ -23,7 +22,22 @@ class ScraperFactory:
             from strategies.extraction.generic_selector import (
                 GenericSelectorExtractionStrategy,
             )
-            from strategies.output.jsonl_file import JsonlFileOutputStrategy
+            from strategies.extraction.multi_step import MultiStepExtractionStrategy
+            from strategies.output.jsonl_file import (
+                JsonlFileOutputStrategy,
+                SecondaryJsonlOutputStrategy,
+            )
+            from strategies.output.mongodb import (
+                MongoDBOutputStrategy,
+                MongoDBUpsertStrategy,
+            )
+            from strategies.input.file_url_loader import FileInputStrategy
+            from strategies.queue.redis_queue import RedisQueueStrategy
+            from strategies.navigation.tab_navigator import (
+                TabNavigationStrategy,
+                AccordionNavigationStrategy,
+                ModalNavigationStrategy,
+            )
 
             cls._STRATEGY_MAP = {
                 # Pagination strategies
@@ -31,8 +45,20 @@ class ScraperFactory:
                 "next_button": NextButtonPaginationStrategy,
                 # Extraction strategies
                 "generic_selector": GenericSelectorExtractionStrategy,
+                "multi_step": MultiStepExtractionStrategy,
                 # Output strategies
                 "jsonl_file": JsonlFileOutputStrategy,
+                "secondary_jsonl": SecondaryJsonlOutputStrategy,
+                "mongodb": MongoDBOutputStrategy,
+                "mongodb_upsert": MongoDBUpsertStrategy,
+                # Input strategies
+                "file_url_loader": FileInputStrategy,
+                # Queue strategies
+                "redis_queue": RedisQueueStrategy,
+                # Navigation strategies
+                "tab_navigator": TabNavigationStrategy,
+                "accordion_navigator": AccordionNavigationStrategy,
+                "modal_navigator": ModalNavigationStrategy,
             }
         return cls._STRATEGY_MAP
 
@@ -57,6 +83,10 @@ class ScraperFactory:
             from scrapers.dynamic_scraper import DynamicScraper
 
             return DynamicScraper(config, **kwargs)
+        elif content_type == "listing_crawler":
+            from scrapers.listing_crawler import ListingCrawler
+
+            return ListingCrawler(config, **kwargs)
         else:
             raise ValueError(f"Unsupported content type: {content_type}")
 

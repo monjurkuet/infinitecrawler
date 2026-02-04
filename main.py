@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """
 Flexible Web Scraping Framework
-Usage: python main.py --config config/google_maps.yaml --query "restaurants NYC"
+Usage:
+  - Search-based: python main.py --config config/google_maps.yaml --query "restaurants NYC"
+  - Listing-based: python main.py --config config/gmaps_listings.yaml
 """
 
 import argparse
@@ -12,10 +14,11 @@ from factory.scraper_factory import ScraperFactory
 
 
 def setup_logging():
-    """Setup logging configuration"""
+    """Setup logging configuration with beautiful formatting"""
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        handlers=[logging.StreamHandler()],
     )
 
 
@@ -23,7 +26,12 @@ async def main():
     """Main entry point"""
     parser = argparse.ArgumentParser(description="Flexible Web Scraping Framework")
     parser.add_argument("--config", required=True, help="Path to configuration file")
-    parser.add_argument("--query", required=True, help="Search query")
+    parser.add_argument(
+        "--query",
+        required=False,
+        default=None,
+        help="Search query (required for search-based scrapers)",
+    )
     parser.add_argument(
         "--headless", action="store_true", default=True, help="Run in headless mode"
     )
@@ -32,8 +40,19 @@ async def main():
 
     # Setup logging
     setup_logging()
+    logger = logging.getLogger(__name__)
 
     try:
+        # Load config to check content type
+        config = ScraperFactory.load_config(args.config)
+        content_type = config.get("content_type", "dynamic")
+
+        # Require query for search-based scrapers
+        if content_type == "dynamic" and not args.query:
+            parser.error(
+                "--query is required for search-based scrapers (content_type: dynamic)"
+            )
+
         # Create scraper from configuration
         scraper = ScraperFactory.create_scraper(
             args.config, headless=args.headless, query=args.query
@@ -43,7 +62,7 @@ async def main():
         await scraper.scrape(args.query)
 
     except Exception as e:
-        logging.error(f"Scraping failed: {e}")
+        logger.error(f"Scraping failed: {e}", exc_info=True)
         raise
 
 
