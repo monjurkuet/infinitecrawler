@@ -4,7 +4,7 @@ browser_automation: "nodriver"
 headless: true
 pagination_strategy: "next_button"
 extraction_strategy: "generic_selector"
-output_strategy: "jsonl_file"
+output_strategy: "postgresql_upsert"
 
 search_url_template: "https://www.yelp.com/search?find_desc={query}&find_loc=New+York,+NY"
 
@@ -19,8 +19,14 @@ pagination:
   max_pages: 10
 
 output:
-  file_path: "output/yelp_{query}.jsonl"
-  max_results: 100
+  strategy: "postgresql_upsert"
+  config:
+    database: "infinitecrawler"
+    schema: "scraper"
+    table: "yelp_search_results"
+    key_field: "source_url"
+    source_type: "yelp_search"
+    max_results: 100
 
 rate_limit: 3
 proxy_rotation: false

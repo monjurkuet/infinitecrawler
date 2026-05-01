@@ -227,10 +227,10 @@ class DynamicScraper(BaseScraper):
                         "{query}", sanitized_query
                     )
 
-        output_strategy_name = output_config.get("output_strategy", "jsonl_file")
+        output_strategy_name = output_section.get("strategy", "jsonl_file") if output_section else "jsonl_file"
         if output_section:
             self.output_strategy = ScraperFactory.create_strategy(
-                "output", output_strategy_name, output_config
+                "output", output_strategy_name, output_section
             )
             self.logger.info(f"Initialized output strategy: {output_strategy_name}")
         else:

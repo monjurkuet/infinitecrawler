@@ -64,6 +64,10 @@ extraction:
             selectors:
               - "div.F7nice span.ceNzKf[aria-label*='stars']"
               - "div.F7nice [aria-label*='stars']"
+              - "div.F7nice [aria-label*='star']"
+              - "div.F7nice [role='img']"
+              - "div.F7nice span[aria-hidden='true']"
+              - "div.F7nice"
               - "div.F7nice"
             type: "attribute"
             attribute: "aria-label"
@@ -76,6 +80,9 @@ extraction:
             selectors:
               - 'div.F7nice span[role="img"][aria-label*="reviews"]'
               - 'div.F7nice [aria-label*="reviews"]'
+              - 'div.F7nice [aria-label*="review"]'
+              - 'div.F7nice [role="img"]'
+              - 'div.F7nice'
             type: "attribute"
             attribute: "aria-label"
             regex: "([\\d,]+)"
@@ -164,12 +171,6 @@ extraction:
     element: 1
 
 output:
-  strategy: "jsonl_file"
-  config:
-    file_path: "output/gmaps_listings_extracted.jsonl"
-    max_results: 100000
-
-secondary_output:
   strategy: "postgresql_listing_upsert"
   config:
     database: "infinitecrawler"

@@ -232,11 +232,45 @@ class MultiStepExtractionStrategy(ExtractionStrategy):
 
             value = element.attrs.get(attr_name, "")
 
+            # Fallback to element text when attribute is missing.
+            # This is common on Google Maps variants/locales where aria-label may be absent
+            # but equivalent content is still rendered as visible text.
+            if not value:
+                value = (element.text or "").strip()
+
             # Apply regex if specified
             regex_pattern = field_config.get("regex")
             if regex_pattern and value:
                 match = re.search(regex_pattern, value)
-                return match.group(1) if match else None
+                if match:
+                    candidate = match.group(1)
+                    # Guard against regex capturing punctuation-only fragments like '.'
+                    if re.search(r"\d", self._normalize_digits(candidate)):
+                        return candidate
+
+                # Locale-safe fallback when explicit regex fails.
+                # Supports values like "4.6", "4,6", "4٫6" and review counts with
+                # punctuation/grouping characters.
+                extracted_numeric = self._extract_numeric_fallback(
+                    value, field_name, field_config
+                )
+                if extracted_numeric is not None:
+                    self.logger.debug(
+                        "Fallback numeric parse succeeded for '%s': raw='%s' parsed='%s'",
+                        field_name,
+                        value,
+                        extracted_numeric,
+                    )
+                    return extracted_numeric
+
+                self.logger.debug(
+                    "Regex and fallback parse failed for '%s': selector='%s' raw='%s' regex='%s'",
+                    field_name,
+                    selector,
+                    value,
+                    regex_pattern,
+                )
+                return None
 
             return value
 
@@ -537,3 +571,101 @@ class MultiStepExtractionStrategy(ExtractionStrategy):
             digits = "1" + digits
 
         return digits if digits else None
+
+    def _extract_numeric_fallback(
+        self, value: str, field_name: str, field_config: dict
+    ) -> Optional[str]:
+        """Best-effort locale-tolerant numeric extraction for rating/review fields."""
+        if not value:
+            return None
+
+        raw = self._normalize_digits(str(value))
+        # Normalize decimal separators seen in localized UIs
+        normalized = raw.replace("٫", ".").replace("،", ",")
+
+        # Field-specific behavior where possible
+        lowered = field_name.lower()
+        if "rating" in lowered:
+            # Keep first decimal-like number (e.g. 4.6, 4,6 -> 4.6)
+            m = re.search(r"(\d+[\.,]?\d*)", normalized)
+            if not m:
+                return None
+            parsed = m.group(1).replace(",", ".")
+            if not re.search(r"\d", parsed):
+                return None
+            return parsed
+
+        if "review" in lowered or "count" in lowered:
+            # Prefer largest integer-like token as review count
+            tokens = re.findall(r"\d[\d,\.]*", normalized)
+            if not tokens:
+                return None
+
+            cleaned = []
+            for token in tokens:
+                digits_only = re.sub(r"\D", "", self._normalize_digits(token))
+                if digits_only:
+                    cleaned.append(digits_only)
+
+            if not cleaned:
+                return None
+
+            # Largest value tends to be review count when multiple numbers exist
+            return max(cleaned, key=lambda x: int(x))
+
+        # Generic fallback: first numeric token
+        generic = re.search(r"(\d+[\.,]?\d*)", normalized)
+        if not generic:
+            return None
+
+        candidate = generic.group(1)
+        # If caller likely expects integer (regex was digit-group style), strip punctuation
+        regex_pattern = field_config.get("regex", "")
+        if "\\d" in regex_pattern and "," in regex_pattern:
+            return re.sub(r"\D", "", candidate)
+        return candidate.replace(",", ".")
+
+    @staticmethod
+    def _normalize_digits(text: str) -> str:
+        """Normalize non-ASCII decimal digits (e.g., Bengali/Arabic-Indic) to ASCII."""
+        if not text:
+            return text
+
+        trans = str.maketrans(
+            {
+                # Bengali digits
+                "০": "0",
+                "১": "1",
+                "২": "2",
+                "৩": "3",
+                "৪": "4",
+                "৫": "5",
+                "৬": "6",
+                "৭": "7",
+                "৮": "8",
+                "৯": "9",
+                # Arabic-Indic digits
+                "٠": "0",
+                "١": "1",
+                "٢": "2",
+                "٣": "3",
+                "٤": "4",
+                "٥": "5",
+                "٦": "6",
+                "٧": "7",
+                "٨": "8",
+                "٩": "9",
+                # Extended Arabic-Indic digits
+                "۰": "0",
+                "۱": "1",
+                "۲": "2",
+                "۳": "3",
+                "۴": "4",
+                "۵": "5",
+                "۶": "6",
+                "۷": "7",
+                "۸": "8",
+                "۹": "9",
+            }
+        )
+        return text.translate(trans)
