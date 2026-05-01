@@ -12,7 +12,7 @@ selectors:
   items: ".businessName__09f24__EYSZE"
   fields:
     name: "text"
-    url: "href"
+    source_url: "href"
 
 pagination:
   next_button_selector: ".next-link"

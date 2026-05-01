@@ -11,10 +11,12 @@ wheels/
 .env
 
 # Project specific
-output/
 backup/
 *.jsonl
 .uv/
 .mypy_cache/
 .pytest_cache/
 *.log
+*.csv
+.session/
+output/gmaps_urls.txt
