@@ -13,7 +13,6 @@ class DynamicScraper(BaseScraper):
     def __init__(self, config: Dict, **kwargs):
         super().__init__(config, **kwargs)
         self.query = kwargs.get("query", "default")
-        self.headless = kwargs.get("headless", True)
 
     async def scrape(self, query: str):
         """Main scraping method"""
@@ -52,7 +51,7 @@ class DynamicScraper(BaseScraper):
     async def start_browser(self):
         """Start browser instance"""
         engine = self.config.get("browser_automation", "nodriver")
-        self.browser_manager = BrowserManager(engine=engine, headless=self.headless)
+        self.browser_manager = BrowserManager(engine=engine, headless=True)
         await self.browser_manager.start()
 
     async def navigate_to_search(self, url: str):

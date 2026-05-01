@@ -21,7 +21,7 @@ pagination:
   items_selector: "a.hfpxzc"
 
 output:
-  file_path: "output/google_maps_{query}.jsonl"
+  file_path: "/home/administrator/githubrepo/googlemaps-scraper/output/google_maps_{query}.jsonl"
   max_results: 500
 
 rate_limit: 2

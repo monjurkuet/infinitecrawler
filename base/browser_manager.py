@@ -9,7 +9,6 @@ class BrowserManager:
 
     def __init__(self, engine: str = "nodriver", headless: bool = True):
         self.engine = engine
-        self.headless = headless
         self.browser = None
         self.tab = None
         self.logger = logging.getLogger(self.__class__.__name__)
@@ -18,7 +17,7 @@ class BrowserManager:
         """Start browser instance"""
         if self.engine == "nodriver":
             self.logger.info("Starting nodriver browser...")
-            self.browser = await uc.start(headless=self.headless)
+            self.browser = await uc.start(headless=True)
             self.logger.info("Browser started successfully")
         else:
             raise ValueError(f"Unsupported browser engine: {self.engine}")
