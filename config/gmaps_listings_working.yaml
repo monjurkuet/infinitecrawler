@@ -68,7 +68,6 @@ extraction:
               - "div.F7nice [role='img']"
               - "div.F7nice span[aria-hidden='true']"
               - "div.F7nice"
-              - "div.F7nice"
             type: "attribute"
             attribute: "aria-label"
             regex: "([0-9.]+)"

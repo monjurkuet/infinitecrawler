@@ -17,6 +17,19 @@ A modular, configuration-driven web scraping framework designed for modern, dyna
         uv run python main.py --config config/google_maps.yaml --query "restaurants in NYC" --no-headless
         ```
 
+## Storage
+
+- Search results are written to PostgreSQL table `scraper.gmaps_search_results`.
+- Listing details are written to PostgreSQL table `scraper.gmaps_listings`.
+- Helpful read-only views are available in PostgreSQL:
+  - `scraper.v_gmaps_search_results`
+  - `scraper.v_gmaps_listings`
+  - `scraper.v_gmaps_listings_enriched`
+  - `scraper.v_search_stats`
+  - `scraper.v_listings_quality`
+
+Use the YAML config files in `config/` to switch strategies, but the default Google Maps configs now persist to PostgreSQL only.
+
 ## Key Features
 
 *   **Strategy Pattern Architecture**: Decoupled logic for Pagination, Extraction, and Output allows for easy extension.

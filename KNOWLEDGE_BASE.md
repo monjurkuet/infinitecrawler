@@ -116,10 +116,10 @@ classDiagram
 | `strategies/navigation/` | Page Navigation | `tab_navigator.py`, `accordion_navigator.py`, `modal_navigator.py` |
 | `strategies/pagination/` | Result Pagination | `infinite_scroll.py`, `next_button.py` |
 | `strategies/extraction/` | Data Extraction | `generic_selector.py`, `multi_step.py` |
-| `strategies/output/` | Data Persistence | `jsonl_file.py` |
+| `strategies/output/` | Data Persistence | `jsonl_file.py`, `null_output.py`, `postgresql.py`, `composite.py` |
 | `utils/` | Utility Modules | `helpers.py` (DelayManager, URLProcessor) |
 | `config/` | YAML Configuration Files | `google_maps.yaml`, `gmaps_listings.yaml`, `yelp_example.yaml` |
-| `output/` | Data Persistence Directory | `*.jsonl` files |
+| `output/` | Data Persistence Directory | legacy `*.jsonl` files (default Google Maps configs now write to PostgreSQL) |
 | `main.py` | CLI Entry Point | Argument parsing, logging setup |
 | `.agents/` | Agent Personas & Protocols | `knowledge-base.md`, `refinement-agent.md` |
 | `AGENTS.md` | Project-Wide AI Protocol | Core directives, constraints, style guide |
@@ -200,7 +200,18 @@ classDiagram
 
 #### `JsonlFileOutputStrategy` (`strategies/output/jsonl_file.py`)
 -   Append items to JSONL file with atomic writes.
--   Supports file rotation and max results limit.
+-   Supports max results limit.
+
+#### `NullOutputStrategy` (`strategies/output/null_output.py`)
+-   No-op output strategy used when persistence is optional.
+
+#### `PostgreSQLOutputStrategy` / `PostgreSQLUpsertStrategy` / `PostgreSQLListingDetailsUpsertStrategy` (`strategies/output/postgresql.py`)
+-   Persist scraped data to PostgreSQL with insert/upsert behavior.
+-   Listing details strategy writes typed columns plus JSONB payload.
+
+#### `CompositeOutputStrategy` (`strategies/output/composite.py`)
+-   Fan out writes to multiple output strategies.
+-   Used when dual persistence is desired.
 
 ### Utility Classes (`utils/helpers.py`)
 
@@ -226,7 +237,7 @@ classDiagram
 | `search_url_template` | string | URL pattern with `{query}` | `https://site.com/search?q={query}` |
 | `pagination_strategy` | string | "infinite_scroll", "next_button" | "infinite_scroll" |
 | `extraction_strategy` | string | "generic_selector" | "generic_selector" |
-| `output_strategy` | string | "jsonl_file" | "jsonl_file" |
+| `output_strategy` | string | "jsonl_file", "postgresql_upsert", "postgresql_listing_upsert", "composite" | "postgresql_upsert" for Google Maps search configs |
 | `selectors` | dict | CSS selectors for extraction | `{items: "div.card", fields: {...}}` |
 | `rate_limit` | int | Seconds between actions | `2` |
 
@@ -239,8 +250,8 @@ classDiagram
 | `queue` | dict | Queue strategy config | `{strategy: "redis_queue", config: {...}}` |
 | `navigation` | dict | Navigation strategy config | `{strategy: "tab_navigator", config: {...}}` |
 | `extraction` | dict | Extraction pipeline steps | `{strategy: "multi_step", config: {steps: [...]}}` |
-| `output` | dict | Primary output config | `{strategy: "jsonl_file", config: {...}}` |
-| `secondary_output` | dict | Backup output config | `{strategy: "secondary_jsonl", config: {...}}` |
+| `output` | dict | Primary output config | `{strategy: "postgresql_upsert", config: {...}}` |
+| `secondary_output` | dict | Backup output config | Optional; usually omitted for PostgreSQL-only runs |
 | `rate_limiting` | dict | Delay configuration | `{between_requests: [8, 15]}` |
 | `workers` | dict | Worker settings | `{count: 3, max_pages_per_session: 100}` |
 
