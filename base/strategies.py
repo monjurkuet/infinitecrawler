@@ -57,6 +57,10 @@ class InputStrategy(ABC):
         """Return total URL count if known, None otherwise"""
         pass
 
+    def cleanup(self):
+        """Release strategy resources."""
+        return None
+
 
 class QueueStrategy(ABC):
     """Abstract base class for queue strategies - manage URL queue"""

@@ -20,9 +20,21 @@ pagination:
   max_scroll_attempts: 500
   items_selector: "a.hfpxzc"
 
+output_strategy: "composite"
 output:
-  file_path: "/home/administrator/githubrepo/googlemaps-scraper/output/google_maps_{query}.jsonl"
-  max_results: 500
+  strategies:
+    - strategy: "postgresql_upsert"
+      config:
+        database: "infinitecrawler"
+        schema: "scraper"
+        table: "gmaps_search_results"
+        key_field: "url"
+        source_type: "gmaps_search"
+        max_results: 10000
+    - strategy: "jsonl_file"
+      config:
+        file_path: "output/google_maps_{query}.jsonl"
+        max_results: 10000
 
 rate_limit: 2
 proxy_rotation: false

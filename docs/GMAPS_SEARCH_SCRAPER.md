@@ -63,12 +63,12 @@ python main.py --config config/google_maps.yaml --query "restaurants in NYC"
 - **Python 3.12+**
 - **Google Chrome** (or Chromium)
 - **Redis** (for queue management)
-- **MongoDB** (for output storage, optional)
+- **PostgreSQL** (for output storage, optional)
 
 ### Python Dependencies
 ```bash
 uv pip install -e .
-uv pip install pymongo redis
+uv pip install psycopg[binary] python-dotenv redis
 ```
 
 ---
@@ -109,16 +109,17 @@ queue:
 pagination_strategy: "infinite_scroll"
 extraction_strategy: "generic_selector"
 
-# Output: MongoDB + JSONL fallback
+# Output: PostgreSQL + JSONL fallback
 output_strategy: "composite"
 output:
   strategies:
-    - strategy: "mongodb_upsert"
+    - strategy: "postgresql_upsert"
       config:
-        uri: "mongodb://localhost:27017"
-        database: "scraping"
-        collection: "gmaps_search_results"
+        database: "infinitecrawler"
+        schema: "scraper"
+        table: "gmaps_search_results"
         key_field: "source_url"
+        source_type: "gmaps_search"
         max_results: 10000
     - strategy: "jsonl_file"
       config:
@@ -159,15 +160,16 @@ pubs in Portland
 
 ## Output Configuration Options
 
-### MongoDB Only
+### PostgreSQL Only
 
 ```yaml
-output_strategy: "mongodb_upsert"
+output_strategy: "postgresql_upsert"
 output:
-  uri: "mongodb://localhost:27017"
-  database: "scraping"
-  collection: "gmaps_search_results"
+  database: "infinitecrawler"
+  schema: "scraper"
+  table: "gmaps_search_results"
   key_field: "source_url"
+  source_type: "gmaps_search"
 ```
 
 ### JSONL File Only
@@ -179,18 +181,19 @@ output:
   max_results: 10000
 ```
 
-### MongoDB + JSONL Fallback (Recommended)
+### PostgreSQL + JSONL Fallback (Recommended)
 
 ```yaml
 output_strategy: "composite"
 output:
   strategies:
-    - strategy: "mongodb_upsert"
+    - strategy: "postgresql_upsert"
       config:
-        uri: "mongodb://localhost:27017"
-        database: "scraping"
-        collection: "gmaps_search_results"
+        database: "infinitecrawler"
+        schema: "scraper"
+        table: "gmaps_search_results"
         key_field: "source_url"
+        source_type: "gmaps_search"
         max_results: 10000
     - strategy: "jsonl_file"
       config:
@@ -262,8 +265,8 @@ output:
 │                            ↓                                    │
 │  4. OUTPUT                                                     │
 │  ┌──────────────────────────────────────────────────────────┐   │
-│  │  MongoDB (primary) + JSONL (fallback)                    │   │
-│  │  Collection: scraping.gmaps_search_results                │   │
+│  │  PostgreSQL (primary) + JSONL (fallback)                 │   │
+│  │  Table: scraper.gmaps_search_results                      │   │
 │  │  File: output/google_maps_{query}.jsonl                  │   │
 │  └──────────────────────────────────────────────────────────┘   │
 │                                                                  │
@@ -299,9 +302,9 @@ output:
 - Extracts URL from `href` attribute
 
 #### 6. Output Strategies
-- **MongoDB**: Primary storage with upsert by `source_url`
-- **JSONL**: Fallback on MongoDB failure
-- **Composite**: Tries MongoDB first, falls back to JSONL
+- **PostgreSQL**: Primary storage with upsert by `source_url`
+- **JSONL**: Fallback on PostgreSQL failure
+- **Composite**: Tries PostgreSQL first, falls back to JSONL
 
 ---
 
@@ -339,7 +342,7 @@ output:
    ```
    For each extracted item:
      - Add metadata (query, source, timestamp)
-     - Write to MongoDB (primary)
+      - Write to PostgreSQL (primary)
      - Write to JSONL (fallback on failure)
    ```
 
@@ -391,7 +394,7 @@ redis-cli LRANGE gmaps_search:pending 0 -1
 {"name": "Giordano's", "source_url": "https://www.google.com/maps/place/Giordanos/...", "query": "pizza in chicago", "source": "google_maps_search", "_updated_at": "2026-02-04T10:00:02Z"}
 ```
 
-### MongoDB Collection
+### PostgreSQL Table
 
 ```javascript
 // scraping.gmaps_search_results
@@ -432,34 +435,22 @@ redis-cli LLEN gmaps_search:completed # Done
 redis-cli LLEN gmaps_search:failed    # Failed
 ```
 
-### MongoDB Query Examples
+### PostgreSQL Query Examples
 
-```javascript
-// Count total results
-db.gmaps_search_results.countDocuments({})
+```sql
+SELECT COUNT(*) FROM scraper.gmaps_search_results;
 
-// Find results for specific query
-db.gmaps_search_results.find({ query: "pizza in chicago" })
+SELECT payload->>'name', payload->>'source_url'
+FROM scraper.gmaps_search_results
+WHERE payload->>'query' = 'pizza in chicago';
 
-// Get unique businesses
-db.gmaps_search_results.distinct("source_url")
+SELECT COUNT(*) FROM scraper.gmaps_search_results
+GROUP BY payload->>'query';
 
-// Count by query
-db.gmaps_search_results.aggregate([
-  { $group: { _id: "$query", count: { $sum: 1 } } }
-])
-
-// Sample businesses by query
-db.gmaps_search_results.aggregate([
-  { $match: { query: "pizza in chicago" } },
-  { $sample: { size: 10 } }
-])
-
-// Find duplicate URLs (shouldn't happen with upsert)
-db.gmaps_search_results.aggregate([
-  { $group: { _id: "$source_url", count: { $sum: 1 } } },
-  { $match: { count: { $gt: 1 } } }
-])
+SELECT key_value, COUNT(*)
+FROM scraper.gmaps_search_results
+GROUP BY key_value
+HAVING COUNT(*) > 1;
 ```
 
 ### Check Output Files
@@ -502,12 +493,12 @@ sudo systemctl start redis
 docker run -p 6379:6379 redis:alpine
 ```
 
-#### 3. "MongoDB connection failed"
-**Cause**: MongoDB not running or wrong URI
+#### 3. "PostgreSQL connection failed"
+**Cause**: PostgreSQL not running or wrong credentials
 **Solution**:
 ```bash
-# Start MongoDB
-sudo systemctl start mongod
+# Start PostgreSQL
+sudo systemctl start postgresql
 # Or use JSONL only
 # Change output_strategy to "jsonl_file"
 ```
@@ -609,9 +600,9 @@ search_url_template: "https://www.google.com/maps/search/{query}/@40.7128,-74.00
 ```yaml
 output:
   strategies:
-    - strategy: "mongodb_upsert"
+    - strategy: "postgresql_upsert"
       config:
-        collection: "my_custom_collection"
+        table: "my_custom_collection"
         key_field: "source_url"
 ```
 
@@ -644,7 +635,7 @@ infinitecrawler/
 │   ├── output/
 │   │   ├── composite.py              # Composite output
 │   │   ├── jsonl_file.py            # JSONL output
-│   │   └── mongodb.py               # MongoDB output
+│   │   └── postgresql.py            # PostgreSQL output
 │   ├── pagination/
 │   │   └── infinite_scroll.py        # Pagination logic
 │   └── queue/

@@ -10,8 +10,8 @@ The framework uses YAML files to define scraper behavior. This allows for rapid 
 | :--- | :--- | :--- | :--- |
 | `name` | string | Yes | Human-readable name of the scraper |
 | `content_type` | enum | Yes | `dynamic` (nodriver) or `listing_crawler` |
-| `browser_automation` | string | No | Browser engine (default: `nodriver`) |
-| `headless` | boolean | No | Run browser headless (default: true) |
+| `browser_automation` | string | No | Legacy browser engine key; normalized to `browser.automation` |
+| `headless` | boolean | No | Legacy top-level headless flag; normalized to `browser.headless` |
 
 ### Input Section
 
@@ -23,6 +23,20 @@ input:
   config:
     file_path: "input/urls.txt"  # Path to input file
     deduplicate: true  # Skip duplicate URLs/queries
+```
+
+Database-backed input for listing crawling:
+
+```yaml
+input:
+  strategy: "postgresql_uncrawled_gmaps"
+  config:
+    database: "infinitecrawler"
+    schema: "scraper"
+    search_results_table: "gmaps_search_results"
+    listings_table: "gmaps_listings"
+    source_url_field: "source_url"
+    batch_size: 1000
 ```
 
 ### Queue Section
@@ -84,43 +98,59 @@ Controls where data is saved.
 
 **Single Output:**
 ```yaml
-output_strategy: "jsonl_file"
 output:
-  file_path: "output/data_{query}.jsonl"
-  max_results: 1000
+  strategy: "jsonl_file"
+  config:
+    file_path: "output/data_{query}.jsonl"
+    max_results: 1000
 ```
 
-**MongoDB:**
+**PostgreSQL:**
 ```yaml
-output_strategy: "mongodb"
 output:
-  uri: "mongodb://localhost:27017"
-  database: "scraping"
-  collection: "results"
-  max_results: 10000
+  strategy: "postgresql"
+  config:
+    database: "infinitecrawler"
+    schema: "scraper"
+    table: "results"
+    max_results: 10000
 ```
 
-**MongoDB Upsert:**
+**PostgreSQL Upsert:**
 ```yaml
-output_strategy: "mongodb_upsert"
 output:
-  uri: "mongodb://localhost:27017"
-  database: "scraping"
-  collection: "results"
-  key_field: "source_url"  # Deduplicate by this field
-  max_results: 10000
+  strategy: "postgresql_upsert"
+  config:
+    database: "infinitecrawler"
+    schema: "scraper"
+    table: "results"
+    key_field: "source_url"  # Deduplicate by this field
+    max_results: 10000
+```
+
+**PostgreSQL Listing Details Upsert:**
+```yaml
+secondary_output:
+  strategy: "postgresql_listing_upsert"
+  config:
+    database: "infinitecrawler"
+    schema: "scraper"
+    table: "gmaps_listings"
+    key_field: "place_id"
+    source_type: "gmaps_listing"
+    recreate_table: false
 ```
 
 **Composite (Multiple Outputs):**
 ```yaml
-output_strategy: "composite"
 output:
+  strategy: "composite"
   strategies:
-    - strategy: "mongodb_upsert"
+    - strategy: "postgresql_upsert"
       config:
-        uri: "mongodb://localhost:27017"
-        database: "scraping"
-        collection: "results"
+        database: "infinitecrawler"
+        schema: "scraper"
+        table: "results"
         key_field: "source_url"
     - strategy: "jsonl_file"
       config:
@@ -130,6 +160,8 @@ output:
 ### Workers
 
 Parallel processing settings.
+
+Note: for listing crawling, `workers.count` is documented for future in-process concurrency, but the current 4-instance scaling model uses separate processes launched with `scripts/run_listing_crawlers.py`.
 
 ```yaml
 workers:
@@ -157,8 +189,9 @@ rate_limit: 2  # Simple delay between requests
 
 name: "Google Maps Search"
 content_type: "dynamic"
-browser_automation: "nodriver"
-headless: true
+browser:
+  automation: "nodriver"
+  headless: true
 
 # Input: Load queries from file
 input:
@@ -196,16 +229,17 @@ selectors:
     name: "aria-label"
     source_url: "href"
 
-# Output: MongoDB + JSONL fallback
-output_strategy: "composite"
+# Output: PostgreSQL + JSONL fallback
 output:
+  strategy: "composite"
   strategies:
-    - strategy: "mongodb_upsert"
+    - strategy: "postgresql_upsert"
       config:
-        uri: "mongodb://localhost:27017"
-        database: "scraping"
-        collection: "gmaps_search_results"
+        database: "infinitecrawler"
+        schema: "scraper"
+        table: "gmaps_search_results"
         key_field: "source_url"
+        source_type: "gmaps_search"
         max_results: 10000
     - strategy: "jsonl_file"
       config:
@@ -234,16 +268,20 @@ browser:
   headless: true
 
 input:
-  strategy: "file_url_loader"
+  strategy: "postgresql_uncrawled_gmaps"
   config:
-    file_path: "output/gmaps_urls.txt"
-    deduplicate: true
+    database: "infinitecrawler"
+    schema: "scraper"
+    search_results_table: "gmaps_search_results"
+    listings_table: "gmaps_listings"
+    source_url_field: "source_url"
 
 queue:
   strategy: "redis_queue"
   config:
     host: "localhost"
     port: 6379
+    ignore_completed_on_enqueue: true
     keys:
       pending: "gmaps:pending"
       completed: "gmaps:completed"
@@ -269,13 +307,24 @@ extraction:
 
 output:
   strategy: "jsonl_file"
-  secondary_output:
-    strategy: "mongodb"
-    config:
-      database: "scraping"
-      collection: "gmaps_listings"
+  config:
+    file_path: "output/listings.jsonl"
+
+secondary_output:
+  strategy: "postgresql_listing_upsert"
+  config:
+    database: "infinitecrawler"
+    schema: "scraper"
+    table: "gmaps_listings"
+    key_field: "place_id"
+    source_type: "gmaps_listing"
+    recreate_table: false
 
 workers:
   count: 3
   max_pages_per_session: 100
 ```
+
+## Listing Crawler Workflow
+
+The standard listing crawler workflow reads from PostgreSQL search results and treats a URL as uncrawled when no `scraper.gmaps_listings` row exists for that `source_url`.

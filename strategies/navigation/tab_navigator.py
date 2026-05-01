@@ -85,8 +85,10 @@ class TabNavigationStrategy(NavigationStrategy):
 
     def _get_tab_config(self, section_name: str) -> dict:
         """Get configuration for a specific tab"""
+        normalized_section = section_name.strip().lower()
         for tab in self.tabs_config:
-            if tab.get("name") == section_name:
+            tab_name = (tab.get("name") or "").strip().lower()
+            if tab_name == normalized_section:
                 return tab
         return {}
 

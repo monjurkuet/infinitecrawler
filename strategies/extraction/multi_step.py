@@ -116,15 +116,36 @@ class MultiStepExtractionStrategy(ExtractionStrategy):
         """
         Extract a single field with retry logic and fallback selectors.
         """
-        # Get primary and fallback selectors
         selectors = field_config.get("selectors", [field_config.get("selector")])
         if not selectors[0]:
             raise ValueError(f"No selector specified for field '{field_name}'")
 
+        retry_config = field_config.get("retry")
+        if retry_config is False:
+            return await self._extract_field_once(
+                tab, selectors, field_config, field_name
+            )
+
+        if isinstance(retry_config, dict):
+            field_retry_enabled = retry_config.get("enabled", True)
+            field_attempts = retry_config.get("attempts", self.max_retries)
+            field_delay = retry_config.get("delay", self.base_delay)
+            field_backoff = retry_config.get("backoff", self.backoff)
+        else:
+            field_retry_enabled = self.retry_config.get("enabled", True)
+            field_attempts = self.max_retries
+            field_delay = self.base_delay
+            field_backoff = self.backoff
+
+        if not field_retry_enabled:
+            return await self._extract_field_once(
+                tab, selectors, field_config, field_name
+            )
+
         extract_type = field_config.get("type", "text")
         last_error = None
 
-        for attempt in range(self.max_retries):
+        for attempt in range(field_attempts):
             for selector in selectors:
                 if not selector:
                     continue
@@ -147,11 +168,11 @@ class MultiStepExtractionStrategy(ExtractionStrategy):
                     )
 
             # Wait before retry with exponential backoff
-            if attempt < self.max_retries - 1:
+            if attempt < field_attempts - 1:
                 delay = (
-                    self.base_delay * (2**attempt)
-                    if self.backoff == "exponential"
-                    else self.base_delay * (attempt + 1)
+                    field_delay * (2**attempt)
+                    if field_backoff == "exponential"
+                    else field_delay * (attempt + 1)
                 )
                 self.logger.debug(
                     f"Waiting {delay}s before retry for '{field_name}'..."
@@ -160,8 +181,34 @@ class MultiStepExtractionStrategy(ExtractionStrategy):
 
         # All retries failed
         self.logger.warning(
-            f"⚠ All {self.max_retries} retries failed for '{field_name}': {last_error}"
+            f"⚠ All {field_attempts} retries failed for '{field_name}': {last_error}"
         )
+        return None
+
+    async def _extract_field_once(
+        self, tab, selectors: List[str], field_config: dict, field_name: str
+    ) -> Any:
+        """Try each selector once without retry backoff."""
+        extract_type = field_config.get("type", "text")
+        last_error = None
+
+        for selector in selectors:
+            if not selector:
+                continue
+
+            try:
+                value = await self._extract_single_field(
+                    tab, selector, extract_type, field_config, field_name
+                )
+                if value is not None:
+                    return value
+            except Exception as e:
+                last_error = e
+                self.logger.debug(
+                    f"Failed single-pass extraction for '{field_name}' with selector '{selector}': {e}"
+                )
+
+        self.logger.debug(f"No selector matched for '{field_name}': {last_error}")
         return None
 
     async def _extract_single_field(

@@ -65,7 +65,7 @@ classDiagram
     ListingCrawler --> ExtractionStrategy
     ListingCrawler --> OutputStrategy
     ScraperFactory ..> DynamicScraper : Creates
-    ScraperFactory ..> ListingCraper : Creates
+    ScraperFactory ..> ListingCrawler : Creates
 ```
 
 ## Data Flow
@@ -116,7 +116,7 @@ classDiagram
 │                            ▼                                    │
 │  6. OUTPUT                                                    │
 │  ┌──────────────────────────────────────────────────────────┐   │
-│  │  - MongoDB (primary)                                   │   │
+│  │  - PostgreSQL (primary)                                │   │
 │  │  - JSONL file (fallback)                              │   │
 │  │  - Composite (multiple outputs)                       │   │
 │  └──────────────────────────────────────────────────────────┘   │
@@ -137,6 +137,7 @@ Loads URLs or queries from various sources.
 | Strategy | Description |
 |----------|-------------|
 | `file_url_loader` | Loads URLs/queries from text file (one per line) |
+| `postgresql_uncrawled_gmaps` | Loads uncrawled Google Maps listing URLs from PostgreSQL search results |
 
 ### 3. Queue Strategies (`strategies/queue/`)
 
@@ -171,8 +172,9 @@ Handles data persistence.
 | Strategy | Description |
 |----------|-------------|
 | `jsonl_file` | Line-delimited JSON file |
-| `mongodb` | MongoDB insert |
-| `mongodb_upsert` | MongoDB upsert by key field |
+| `postgresql` | PostgreSQL insert |
+| `postgresql_upsert` | PostgreSQL upsert by key field |
+| `postgresql_listing_upsert` | PostgreSQL upsert for listing details with typed columns |
 | `composite` | Multiple outputs with fallback |
 
 ## Scraper Types
@@ -190,6 +192,18 @@ For extracting detailed information from known URLs.
 
 - Uses: `input` + `queue` + `navigation` + `extraction` + `output`
 - Example: Google Maps business listing extraction
+
+## Configuration Normalization
+
+The factory normalizes legacy config variants before validation and scraper construction.
+
+- `browser_automation` and top-level `headless` are mapped into `browser.automation` and `browser.headless`.
+- Legacy output keys are converted into the canonical `output.strategy` and `output.config` shape.
+- Missing output now falls back to a null output strategy so scrapers can run without persistence.
+
+### Listing Detail Storage
+
+`scraper.gmaps_listings` uses a hybrid model: typed columns for common query fields and a `payload JSONB` column that retains the full extracted record. The listing-detail output strategy upserts by `place_id` when available, otherwise by `source_url`.
 
 ## Extension Guide
 

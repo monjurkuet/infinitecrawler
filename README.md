@@ -13,9 +13,9 @@ A modular, configuration-driven web scraping framework designed for modern, dyna
 
 2.  **Run the Scraper**:
     Run the Google Maps example immediately. `uv` handles dependency management automatically.
-    ```bash
-    uv run python main.py --config config/google_maps.yaml --query "restaurants in NYC"
-    ```
+        ```bash
+        uv run python main.py --config config/google_maps.yaml --query "restaurants in NYC" --no-headless
+        ```
 
 ## Key Features
 

@@ -19,6 +19,9 @@ class RedisQueueStrategy(QueueStrategy):
         # e.g., {strategy: "redis_queue", config: {host: "..."}}
         self.config = config.get("config", {})
         self.logger = logging.getLogger(self.__class__.__name__)
+        self.ignore_completed_on_enqueue = self.config.get(
+            "ignore_completed_on_enqueue", False
+        )
 
         # Import redis here to make it optional
         try:
@@ -48,6 +51,8 @@ class RedisQueueStrategy(QueueStrategy):
         }
 
         self.visibility_timeout = self.config.get("visibility_timeout", 300)
+        self._last_requeue_check = 0.0
+        self.requeue_check_interval = self.config.get("requeue_check_interval", 30)
 
         # Test connection
         try:
@@ -60,7 +65,7 @@ class RedisQueueStrategy(QueueStrategy):
     def enqueue(self, urls: List[str]) -> int:
         """
         Add URLs to pending queue.
-        Skips URLs already in completed set.
+        Skips URLs already in completed set unless ignore_completed_on_enqueue is enabled.
         Returns count of URLs actually added.
         """
         if not urls:
@@ -70,8 +75,10 @@ class RedisQueueStrategy(QueueStrategy):
         pipe = self.client.pipeline()
 
         for url in urls:
-            # Skip if already completed
-            if self.client.sismember(self.keys["completed"], url):
+            # Skip if already completed unless the caller wants PostgreSQL truth to win.
+            if not self.ignore_completed_on_enqueue and self.client.sismember(
+                self.keys["completed"], url
+            ):
                 continue
 
             # Check if already in queue
@@ -142,6 +149,22 @@ class RedisQueueStrategy(QueueStrategy):
             "completed": self.client.scard(self.keys["completed"]),
             "failed": self.client.hlen(self.keys["failed"]),
         }
+
+    def cleanup(self):
+        """Close the Redis client connection."""
+        try:
+            if hasattr(self.client, "close"):
+                self.client.close()
+        except Exception as e:
+            self.logger.debug(f"Error closing Redis client: {e}")
+
+    def maybe_requeue_stalled(self) -> int:
+        current_time = time.time()
+        if current_time - self._last_requeue_check < self.requeue_check_interval:
+            return 0
+
+        self._last_requeue_check = current_time
+        return self.requeue_stalled()
 
     def requeue_stalled(self) -> int:
         """

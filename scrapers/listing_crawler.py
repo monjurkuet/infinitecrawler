@@ -8,6 +8,7 @@ from base.scraper import BaseScraper
 from base.browser_manager import BrowserManager
 from factory.scraper_factory import ScraperFactory
 from utils.helpers import DelayManager
+from strategies.output.null_output import NullOutputStrategy
 
 
 class ListingCrawler(BaseScraper):
@@ -19,6 +20,7 @@ class ListingCrawler(BaseScraper):
     def __init__(self, config: Dict, **kwargs):
         super().__init__(config, **kwargs)
         self.logger = logging.getLogger(self.__class__.__name__)
+        self.instance_label = kwargs.get("instance_label", "main")
 
         # Initialize components
         self.input_strategy = None
@@ -45,6 +47,9 @@ class ListingCrawler(BaseScraper):
         self.consecutive_errors = 0
         self.session_start_pages = 0
         self.retry_counts = {}  # Track retries per URL
+        self.browser_page_wait_seconds = config.get("browser", {}).get(
+            "page_wait_seconds", 1.0
+        )
 
     async def scrape(self, query: str = None):
         """
@@ -54,6 +59,10 @@ class ListingCrawler(BaseScraper):
         try:
             self.logger.info("=" * 60)
             self.logger.info("Starting Listing Crawler")
+            self.logger.info(
+                "Instance label: %s | one browser process per crawler instance",
+                self.instance_label,
+            )
             self.logger.info("=" * 60)
 
             # Initialize all components
@@ -121,11 +130,15 @@ class ListingCrawler(BaseScraper):
 
         # Primary output strategy
         output_config = self.config.get("output", {})
-        output_strategy_name = output_config.get("strategy", "jsonl_file")
-        self.output_strategy = ScraperFactory.create_strategy(
-            "output", output_strategy_name, output_config
-        )
-        self.logger.info(f"Initialized output strategy: {output_strategy_name}")
+        if output_config:
+            output_strategy_name = output_config.get("strategy", "jsonl_file")
+            self.output_strategy = ScraperFactory.create_strategy(
+                "output", output_strategy_name, output_config
+            )
+            self.logger.info(f"Initialized output strategy: {output_strategy_name}")
+        else:
+            self.output_strategy = NullOutputStrategy({})
+            self.logger.info("Initialized output strategy: null_output")
 
         # Secondary output strategy (optional)
         secondary_output_config = self.config.get("secondary_output")
@@ -140,12 +153,40 @@ class ListingCrawler(BaseScraper):
                 f"Initialized secondary output strategy: {secondary_strategy_name}"
             )
 
+    def _cleanup_browser_bound_strategies(self):
+        """Clear strategies that hold browser references before reinitializing."""
+        self.extraction_strategy = None
+        self.navigation_strategy = None
+
+    async def _refresh_browser_bound_strategies(self):
+        """Rebuild strategies that depend on the browser manager."""
+        self._cleanup_browser_bound_strategies()
+        if self.browser_manager:
+            extraction_config = self.config.get("extraction", {})
+            extraction_strategy_name = extraction_config.get("strategy", "multi_step")
+            self.extraction_strategy = ScraperFactory.create_strategy(
+                "extraction",
+                extraction_strategy_name,
+                self.browser_manager,
+                self.config,
+            )
+            self.logger.info(
+                f"Reinitialized extraction strategy: {extraction_strategy_name}"
+            )
+
     async def start_browser(self):
         """Start browser instance"""
-        engine = self.config.get("browser", {}).get("automation", "nodriver")
-        headless = self.config.get("browser", {}).get("headless", True)
+        browser_config = self.config.get("browser", {})
+        engine = browser_config.get(
+            "automation", self.config.get("browser_automation", "nodriver")
+        )
+        headless = browser_config.get("headless", self.config.get("headless", True))
 
-        self.browser_manager = BrowserManager(engine=engine, headless=headless)
+        self.browser_manager = BrowserManager(
+            engine=engine,
+            headless=headless,
+            page_wait_seconds=self.browser_page_wait_seconds,
+        )
         await self.browser_manager.start()
         self.logger.info(f"Browser started (headless={headless})")
 
@@ -159,6 +200,13 @@ class ListingCrawler(BaseScraper):
         self.logger.info("Starting queue processing...")
 
         while True:
+            if self.queue_strategy and hasattr(
+                self.queue_strategy, "maybe_requeue_stalled"
+            ):
+                requeued = self.queue_strategy.maybe_requeue_stalled()
+                if requeued:
+                    self.logger.info(f"Requeued {requeued} stalled URLs")
+
             # Check if we need to restart browser
             if (
                 self.pages_processed - self.session_start_pages
@@ -202,7 +250,14 @@ class ListingCrawler(BaseScraper):
                     break
 
             # Apply rate limiting between requests
+            request_delay_started = asyncio.get_running_loop().time()
             await self.delay_manager.apply_delay("between_requests")
+            request_delay_elapsed = (
+                asyncio.get_running_loop().time() - request_delay_started
+            )
+            self.logger.info(
+                f"Applied between_requests delay: {request_delay_elapsed:.2f}s"
+            )
 
     async def _process_url(self, url: str) -> bool:
         """
@@ -217,12 +272,21 @@ class ListingCrawler(BaseScraper):
 
         for attempt in range(self.url_max_retries):
             try:
+                loop = asyncio.get_running_loop()
+
                 # Navigate to URL
+                navigation_started = loop.time()
                 await self.browser_manager.navigate(url)
+                navigation_elapsed = loop.time() - navigation_started
+
+                page_delay_started = loop.time()
                 await self.delay_manager.apply_delay("page_load")
+                page_delay_elapsed = loop.time() - page_delay_started
 
                 # Extract data
+                extraction_started = loop.time()
                 items = await self.extraction_strategy.extract_items()
+                extraction_elapsed = loop.time() - extraction_started
 
                 if not items:
                     self.logger.warning(f"No data extracted from {url[:80]}...")
@@ -233,6 +297,7 @@ class ListingCrawler(BaseScraper):
                     continue
 
                 # Write to outputs
+                write_started = loop.time()
                 for item in items:
                     # Add metadata
                     item["_crawl_meta"] = {
@@ -247,9 +312,13 @@ class ListingCrawler(BaseScraper):
                     # Secondary output (if configured)
                     if self.secondary_output_strategy:
                         await self.secondary_output_strategy.write_item(item)
+                write_elapsed = loop.time() - write_started
 
                 self.logger.info(
                     f"✓ Extracted {len(items)} items from {url[:60]}... (attempt {attempt + 1})"
+                )
+                self.logger.info(
+                    f"Timing for {url[:60]}... navigate={navigation_elapsed:.2f}s page_delay={page_delay_elapsed:.2f}s extraction={extraction_elapsed:.2f}s write={write_elapsed:.2f}s total={(navigation_elapsed + page_delay_elapsed + extraction_elapsed + write_elapsed):.2f}s"
                 )
                 return True
 
@@ -279,9 +348,12 @@ class ListingCrawler(BaseScraper):
     async def _restart_browser(self):
         """Restart browser to free memory and prevent leaks"""
         self.logger.info("Restarting browser...")
-        await self.cleanup()
+        if self.browser_manager:
+            await self.browser_manager.cleanup()
+            self.browser_manager = None
         await asyncio.sleep(2)
         await self.start_browser()
+        await self._refresh_browser_bound_strategies()
 
     async def cleanup(self):
         """Clean up resources"""
@@ -289,3 +361,20 @@ class ListingCrawler(BaseScraper):
             await self.browser_manager.cleanup()
             self.browser_manager = None
             self.logger.info("Browser cleaned up")
+        if self.output_strategy and hasattr(self.output_strategy, "cleanup"):
+            await self.output_strategy.cleanup()
+            self.output_strategy = None
+        if self.secondary_output_strategy and hasattr(
+            self.secondary_output_strategy, "cleanup"
+        ):
+            await self.secondary_output_strategy.cleanup()
+            self.secondary_output_strategy = None
+        if self.input_strategy and hasattr(self.input_strategy, "cleanup"):
+            cleanup = self.input_strategy.cleanup()
+            if asyncio.iscoroutine(cleanup):
+                await cleanup
+        if self.queue_strategy and hasattr(self.queue_strategy, "cleanup"):
+            cleanup = self.queue_strategy.cleanup()
+            if asyncio.iscoroutine(cleanup):
+                await cleanup
+        self.logger.info("Cleanup complete")

@@ -72,20 +72,27 @@ class CompositeOutputStrategy(OutputStrategy):
 
     def has_reached_limit(self) -> bool:
         """
-        Check if ANY strategy has reached its limit.
-        Returns True if at least one strategy reached limit.
+        Check whether all configured strategies have reached their limits.
+        A single capped destination should not stop uncapped destinations.
         """
+        if not self.strategies:
+            return False
+
+        any_checked = False
         for strategy in self.strategies:
             try:
+                any_checked = True
                 if strategy.has_reached_limit():
                     self.logger.info(
                         f"Strategy {strategy.__class__.__name__} reached limit"
                     )
-                    return True
+                    continue
+                return False
             except Exception as e:
                 self.logger.error(f"Error checking limit for strategy: {e}")
+                return False
 
-        return False
+        return any_checked
 
     async def cleanup(self):
         """Cleanup all strategies"""

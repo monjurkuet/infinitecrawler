@@ -2,6 +2,7 @@ import yaml
 import logging
 from typing import Dict, Any
 from base.scraper import BaseScraper
+from utils.config import normalize_config, validate_config, ConfigError
 
 
 class ScraperFactory:
@@ -27,12 +28,17 @@ class ScraperFactory:
                 JsonlFileOutputStrategy,
                 SecondaryJsonlOutputStrategy,
             )
-            from strategies.output.mongodb import (
-                MongoDBOutputStrategy,
-                MongoDBUpsertStrategy,
+            from strategies.output.null_output import NullOutputStrategy
+            from strategies.output.postgresql import (
+                PostgreSQLListingDetailsUpsertStrategy,
+                PostgreSQLOutputStrategy,
+                PostgreSQLUpsertStrategy,
             )
             from strategies.output.composite import CompositeOutputStrategy
             from strategies.input.file_url_loader import FileInputStrategy
+            from strategies.input.postgresql_uncrawled import (
+                PostgreSQLUncrawledInputStrategy,
+            )
             from strategies.queue.redis_queue import RedisQueueStrategy
             from strategies.navigation.tab_navigator import (
                 TabNavigationStrategy,
@@ -50,11 +56,14 @@ class ScraperFactory:
                 # Output strategies
                 "jsonl_file": JsonlFileOutputStrategy,
                 "secondary_jsonl": SecondaryJsonlOutputStrategy,
-                "mongodb": MongoDBOutputStrategy,
-                "mongodb_upsert": MongoDBUpsertStrategy,
+                "null_output": NullOutputStrategy,
+                "postgresql": PostgreSQLOutputStrategy,
+                "postgresql_upsert": PostgreSQLUpsertStrategy,
+                "postgresql_listing_upsert": PostgreSQLListingDetailsUpsertStrategy,
                 "composite": CompositeOutputStrategy,
                 # Input strategies
                 "file_url_loader": FileInputStrategy,
+                "postgresql_uncrawled_gmaps": PostgreSQLUncrawledInputStrategy,
                 # Queue strategies
                 "redis_queue": RedisQueueStrategy,
                 # Navigation strategies
@@ -70,7 +79,9 @@ class ScraperFactory:
         try:
             with open(config_path, "r") as f:
                 config = yaml.safe_load(f)
-            return config
+            normalized = normalize_config(config or {})
+            validate_config(normalized, cls.get_strategy_map().keys())
+            return normalized
         except Exception as e:
             logging.error(f"Error loading config file {config_path}: {e}")
             raise

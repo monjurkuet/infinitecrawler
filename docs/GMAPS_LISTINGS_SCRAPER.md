@@ -13,6 +13,9 @@ python main.py --config config/gmaps_listings_working.yaml
 
 # Run headless (no browser window)
 python main.py --config config/gmaps_listings_working.yaml --headless
+
+# Run 4 parallel crawler instances
+uv run python scripts/run_listing_crawlers.py --instances 4 --config config/gmaps_listings_working.yaml
 ```
 
 ## What It Extracts
@@ -38,12 +41,12 @@ python main.py --config config/gmaps_listings_working.yaml --headless
 - **Python 3.12+**
 - **Google Chrome** (or Chromium)
 - **Redis** (for queue management)
-- **MongoDB** (for output storage)
+- **PostgreSQL** (for output storage)
 
 ### Python Dependencies
 ```bash
 uv pip install -e .
-uv pip install pymongo redis
+uv pip install redis psycopg[binary]
 ```
 
 ## Configuration
@@ -61,10 +64,13 @@ browser:
   headless: true  # Set to false for debugging
 
 input:
-  strategy: "file_url_loader"
+  strategy: "postgresql_uncrawled_gmaps"
   config:
-    file_path: "output/gmaps_urls.txt"  # Your input URLs
-    deduplicate: true
+    database: "infinitecrawler"
+    schema: "scraper"
+    search_results_table: "gmaps_search_results"
+    listings_table: "gmaps_listings"
+    source_url_field: "source_url"
     batch_size: 1000
 
 queue:
@@ -72,6 +78,7 @@ queue:
   config:
     host: "localhost"
     port: 6379
+    ignore_completed_on_enqueue: true
     keys:
       pending: "gmaps:pending"
       completed: "gmaps:completed"
@@ -107,11 +114,14 @@ output:
     file_path: "output/gmaps_listings.jsonl"
 
 secondary_output:
-  strategy: "mongodb"
+  strategy: "postgresql_listing_upsert"
   config:
-    uri: "mongodb://localhost:27017"
-    database: "scraping"
-    collection: "gmaps_listings"
+    database: "infinitecrawler"
+    schema: "scraper"
+    table: "gmaps_listings"
+    key_field: "place_id"
+    source_type: "gmaps_listing"
+    recreate_table: false
 
 rate_limiting:
   between_requests:
@@ -125,20 +135,47 @@ workers:
   max_pages_per_session: 100
 ```
 
-### Input File Format
+### Parallel Execution
 
-Create a text file with one Google Maps URL per line:
+For higher throughput, run 4 separate crawler processes against the same Redis queue using the launcher script:
 
-```text
-output/gmaps_urls.txt
+```bash
+uv run python scripts/run_listing_crawlers.py --instances 4 --config config/gmaps_listings_working.yaml
 ```
 
-Example:
+This uses process-level parallelism. It does not rely on `workers.count` for concurrency, because the current implementation runs one browser/extraction pipeline per process.
+
+Each process gets its own `--instance-label` so logs are easy to distinguish.
+
+Operational notes:
+
+- each instance launches its own Chrome process
+- all instances share the same Redis queue keys
+- all instances upsert into `scraper.gmaps_listings`
+- throughput improves, but CPU, memory, and Google Maps rate limits may become the limiting factor
+
+### Database-Backed Listing Input
+
+The listing crawler now reads directly from PostgreSQL search results and processes only uncrawled listing URLs.
+
+An URL is considered uncrawled when:
+
+- the search result has a `source_url`
+- no row exists in `scraper.gmaps_listings` with the same `source_url`
+
+Representative query shape:
+
+```sql
+SELECT DISTINCT sr.payload->>'source_url' AS source_url
+FROM scraper.gmaps_search_results sr
+LEFT JOIN scraper.gmaps_listings gl
+  ON gl.source_url = sr.payload->>'source_url'
+WHERE sr.payload->>'source_url' IS NOT NULL
+  AND gl.source_url IS NULL
+ORDER BY source_url;
 ```
-https://www.google.com/maps/place/ABM+Parking+Services/data=!4m7!3m6!1s0x88089525299ea079:0x4654c1299cd61e25!8m2!3d42.2703391!4d-89.0944358!16s%2Fg%2F11t2q75g6t
-https://www.google.com/maps/place/That!+Company/data=!4m7!3m6!1s0x88e7ead80dcd345d:0x1e15a3c2ecb21448!8m2!3d28.5471243!4d-81.379912
-https://www.google.com/maps/place/Darwin+AI/data=!4m7!3m6!1s0x880e2d535715b269:0x72da2df56c5577a0!8m2!3d41.8774387!4d-87.6356423
-```
+
+If you still want to seed URLs manually for debugging, `file_url_loader` remains available, but it is no longer the normal workflow.
 
 ## Architecture
 
@@ -180,7 +217,7 @@ https://www.google.com/maps/place/Darwin+AI/data=!4m7!3m6!1s0x880e2d535715b269:0
 │  ┌──────────────────────────────────────────────────────────┐   │
 │  │                   Output Handlers                        │   │
 │  │  ┌─────────────────┐    ┌─────────────────────────┐    │   │
-│  │  │  JSONL File      │    │  MongoDB Collection     │    │   │
+│  │  │  JSONL File      │    │  PostgreSQL Table      │    │   │
 │  │  │  (backup)        │    │  (primary storage)     │    │   │
 │  │  └─────────────────┘    └─────────────────────────┘    │   │
 │  └──────────────────────────────────────────────────────────┘   │
@@ -190,15 +227,16 @@ https://www.google.com/maps/place/Darwin+AI/data=!4m7!3m6!1s0x880e2d535715b269:0
 
 ### Components
 
-#### 1. Input Strategy (`file_url_loader`)
-- Loads URLs from text file
-- Deduplicates URLs
-- Batches for queue
+#### 1. Input Strategy (`postgresql_uncrawled_gmaps`)
+- Loads listing URLs from `scraper.gmaps_search_results`
+- Filters out any URL that already exists in `scraper.gmaps_listings`
+- Deduplicates by SQL `DISTINCT`
 
 #### 2. Queue Strategy (`redis_queue`)
 - Manages URL processing order
 - Prevents duplicate processing
 - Tracks completion/failure status
+- Can be configured to ignore stale Redis `completed` state when PostgreSQL should be authoritative
 
 #### 3. Browser Manager (`nodriver`)
 - Controls Chrome browser
@@ -213,7 +251,7 @@ https://www.google.com/maps/place/Darwin+AI/data=!4m7!3m6!1s0x880e2d535715b269:0
 
 #### 5. Output Strategies
 - **JSONL File**: Line-delimited JSON backup
-- **MongoDB**: Primary storage with upsert
+- **PostgreSQL**: Canonical storage with typed columns plus raw JSONB payload
 
 ## How It Works
 
@@ -280,33 +318,16 @@ for attempt in range(3):
 {"name": "ABM Parking Services", "rating": "1.0", "review_count": "5", "address": "211B Elm St, Rockford, IL", "phone": "+1 815-968-5294", "website": "https://park-rockford.com", "category": "Parking lot", "is_claimed": true, "latitude": "42.2703391", "longitude": "-89.0944358", "source_url": "https://google.com/maps/place/..."}
 ```
 
-### MongoDB Collection
+### PostgreSQL Table
 
-```javascript
-// scraping.gmaps_listings
+The table is relational and typed. A representative row looks like this:
 
-{
-  "_id": ObjectId("..."),
-  "source_url": "https://google.com/maps/place/...",
-  "name": "Akademy of Entrepreneurs",
-  "category": "Marketing agency",
-  "rating": "5.0",
-  "review_count": "14",
-  "address": "7301 N 16th St, Phoenix, AZ 85020",
-  "phone": "+1 480-331-5207",
-  "website": "https://example.com",
-  "booking_url": "https://calendly.com/...",
-  "is_claimed": true,
-  "plus_code": "GXV3+G6 Phoenix, Arizona, USA",
-  "latitude": "33.5438227",
-  "longitude": "-112.046985",
-  "_extracted_at": ISODate("2026-02-04T10:00:00Z"),
-  "_crawl_meta": {
-    "pages_processed": 5,
-    "retry_count": 0
-  }
-}
+```sql
+SELECT place_id, source_url, name, category, rating, review_count, address
+FROM scraper.gmaps_listings;
 ```
+
+The full raw record remains in `payload` as JSONB.
 
 ## Monitoring
 
@@ -318,21 +339,24 @@ redis-cli LLEN gmaps:completed
 redis-cli LLEN gmaps:failed
 ```
 
-### MongoDB Query Examples
-```javascript
-// Count total
-db.gmaps_listings.countDocuments({})
+To force a rerun, clear the listing-detail queue keys:
 
-// Find unclaimed businesses
-db.gmaps_listings.find({ is_claimed: false })
+```bash
+redis-cli DEL gmaps:pending gmaps:processing gmaps:completed gmaps:failed
+```
 
-// Find businesses with rating >= 4
-db.gmaps_listings.find({ $expr: { $gte: [{ $toDouble: "$rating" }, 4] } })
+### PostgreSQL Query Examples
+```sql
+SELECT COUNT(*) FROM scraper.gmaps_listings;
 
-// Aggregate by category
-db.gmaps_listings.aggregate([
-  { $group: { _id: "$category", count: { $sum: 1 }, avgRating: { $avg: { $toDouble: "$rating" } } } }
-])
+SELECT name, source_url
+FROM scraper.gmaps_listings
+WHERE is_claimed IS FALSE;
+
+SELECT category, COUNT(*) AS count, AVG(rating) AS avg_rating
+FROM scraper.gmaps_listings
+GROUP BY category
+ORDER BY count DESC;
 ```
 
 ## Troubleshooting
@@ -357,12 +381,12 @@ sudo systemctl start redis
 docker run -p 6379:6379 redis:alpine
 ```
 
-#### 3. "MongoDB connection failed"
-**Cause**: MongoDB not running or wrong URI
+#### 3. "PostgreSQL connection failed"
+**Cause**: PostgreSQL not running or wrong credentials
 **Solution**:
 ```bash
-# Start MongoDB
-sudo systemctl start mongod
+# Start PostgreSQL
+sudo systemctl start postgresql
 # Or check URI in config
 ```
 
@@ -428,7 +452,7 @@ infinitecrawler/
 │   │   └── multi_step.py              # Extraction logic
 │   ├── output/
 │   │   ├── jsonl_file.py
-│   │   └── mongodb.py                 # MongoDB output
+│   │   └── postgresql.py              # PostgreSQL output
 │   └── navigation/
 │       └── tab_navigator.py
 ├── scrapers/
