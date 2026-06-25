@@ -20,3 +20,4 @@ backup/
 *.csv
 .session/
 output/gmaps_urls.txt
+.kilo/

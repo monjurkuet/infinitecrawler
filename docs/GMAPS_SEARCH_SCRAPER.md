@@ -62,8 +62,8 @@ python main.py --config config/google_maps.yaml --query "restaurants in NYC"
 ### System Dependencies
 - **Python 3.12+**
 - **Google Chrome** (or Chromium)
-- **Redis** (for queue management)
-- **PostgreSQL** (for output storage, optional)
+- **Redis** (for queue management, runs locally)
+- **PostgreSQL** (for output storage, remote / VPS)
 
 ### Python Dependencies
 ```bash
@@ -494,13 +494,14 @@ docker run -p 6379:6379 redis:alpine
 ```
 
 #### 3. "PostgreSQL connection failed"
-**Cause**: PostgreSQL not running or wrong credentials
+**Cause**: Remote PostgreSQL (VPS) not reachable or wrong credentials
 **Solution**:
 ```bash
-# Start PostgreSQL
-sudo systemctl start postgresql
-# Or use JSONL only
-# Change output_strategy to "jsonl_file"
+# Check .env has correct VPS host/port/credentials
+cat .env
+# Verify VPS PostgreSQL is reachable
+pg_isready -h $(grep POSTGRESQL_HOST .env | cut -d= -f2) -p $(grep POSTGRES_PORT .env | cut -d= -f2)
+# Or use JSONL-only - change output_strategy to jsonl_file
 ```
 
 #### 4. "Scrolling stops before extracting all results"

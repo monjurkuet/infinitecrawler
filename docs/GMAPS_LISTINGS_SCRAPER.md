@@ -40,8 +40,8 @@ uv run python scripts/run_listing_crawlers.py --instances 4 --config config/gmap
 ### System Dependencies
 - **Python 3.12+**
 - **Google Chrome** (or Chromium)
-- **Redis** (for queue management)
-- **PostgreSQL** (for output storage)
+- **Redis** (for queue management, runs locally)
+- **PostgreSQL** (for output storage, remote / VPS)
 
 ### Python Dependencies
 ```bash
@@ -382,12 +382,14 @@ docker run -p 6379:6379 redis:alpine
 ```
 
 #### 3. "PostgreSQL connection failed"
-**Cause**: PostgreSQL not running or wrong credentials
+**Cause**: Remote PostgreSQL (VPS) not reachable or wrong credentials
 **Solution**:
 ```bash
-# Start PostgreSQL
-sudo systemctl start postgresql
-# Or check URI in config
+# Check .env has correct VPS host/port/credentials
+cat .env
+# Verify VPS PostgreSQL is reachable
+pg_isready -h $(grep POSTGRESQL_HOST .env | cut -d= -f2) -p $(grep POSTGRES_PORT .env | cut -d= -f2)
+# Or use JSONL-only output - change output strategy to jsonl_file
 ```
 
 #### 4. Chrome crashes / "DevToolsActivePort"

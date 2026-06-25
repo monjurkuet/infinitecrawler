@@ -54,8 +54,12 @@ class PostgreSQLUncrawledInputStrategy(InputStrategy):
     def _connect(self):
         try:
             host = self._resolve_setting(
-                "host", ("POSTGRESQL_HOST", "POSTGRES_HOST"), "localhost"
+                "host", ("POSTGRESQL_HOST", "POSTGRES_HOST"), None
             )
+            if not host:
+                raise RuntimeError(
+                    "PostgreSQL host not configured. Set POSTGRESQL_HOST env var or add 'host' to the config YAML."
+                )
             port = int(self._resolve_setting("port", ("POSTGRES_PORT",), "5432"))
             user = self._resolve_setting(
                 "user", ("POSTGRES_USERNAME", "POSTGRES_USER"), "postgres"

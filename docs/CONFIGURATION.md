@@ -39,6 +39,19 @@ input:
     batch_size: 1000
 ```
 
+### Database Connection
+
+PostgreSQL connection is configured via `.env` file or environment variables.
+**There is no localhost fallback** — the host must be explicitly set for a remote/VPS instance.
+
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `POSTGRESQL_HOST` | *(required)* | VPS or remote PostgreSQL host |
+| `POSTGRES_PORT` | `5432` | PostgreSQL port |
+| `POSTGRES_USERNAME` | `postgres` | Database user |
+| `POSTGRES_PASSWORD` | *(empty)* | Database password |
+| `POSTGRES_DB` | `infinitecrawler` | Database name |
+
 ### Queue Section
 
 Manages processing state with Redis.
