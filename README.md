@@ -1,44 +1,60 @@
-# Flexible Web Scraping Framework
+# InfiniteCrawler — Continuous Google Maps Lead Generation
 
 ![Built with uv](https://img.shields.io/badge/Built%20with-uv-purple)
 
-A modular, configuration-driven web scraping framework designed for modern, dynamic websites. Built on top of `nodriver` for superior anti-bot detection avoidance, it utilizes Strategy and Factory patterns to decouple scraping logic from site-specific configurations.
+A modular, configuration-driven Google Maps scraping framework running 24/7 via systemd daemons. Generates qualified business leads from 15 BD sectors defined in [business-plan-template](https://github.com/monjurkuet/business-plan-template).
+
+## Architecture: Two Eternal Daemons
+
+```
+search-daemon                           listing-daemon
+  │ Generates infinite query cycle        │ Reads uncrawled URLs from PG
+  │ from BPT's 15 sectors (21,356         │ → Redis queue
+  │ unique queries, 3-tier mix)           │ Deep extraction (phone, website,
+  │ GMaps scroll → PG upsert              │ rating, category, place_id)
+  │                                      │ PG upsert
+```
+
+**Query mix:** 70% BD-Local (city×keyword), 10% BD-National, 20% Global (6 international markets)
 
 ## Quick Start
 
-1.  **Install uv**:
-    ```bash
-    curl -LsSf https://astral.sh/uv/install.sh | sh
-    ```
+```bash
+# Start daemons
+systemctl --user enable --now infinitecrawler-search infinitecrawler-listing
 
-2.  **Run the Scraper**:
-    Run the Google Maps example immediately. `uv` handles dependency management automatically.
-        ```bash
-        uv run python main.py --config config/google_maps.yaml --query "restaurants in NYC" --no-headless
-        ```
+# Health check
+uv run python scripts/monitor_pipeline.py
+
+# REST API (port 8015, Bearer auth)
+uv run python -m api.main
+```
 
 ## Storage
 
-- Search results are written to PostgreSQL table `scraper.gmaps_search_results`.
-- Listing details are written to PostgreSQL table `scraper.gmaps_listings`.
-- Helpful read-only views are available in PostgreSQL:
-  - `scraper.v_gmaps_search_results`
-  - `scraper.v_gmaps_listings`
-  - `scraper.v_gmaps_listings_enriched`
-  - `scraper.v_search_stats`
-  - `scraper.v_listings_quality`
+| Table | Source | Content |
+|-------|--------|---------|
+| `scraper.gmaps_search_results` | search-daemon | Business name + URL per query |
+| `scraper.gmaps_listings` | listing-daemon | Full profile: phone, website, address, rating, coordinates |
 
-Use the YAML config files in `config/` to switch strategies, but the default Google Maps configs now persist to PostgreSQL only.
+PostgreSQL on remote VPS. Redis on localhost for queue management (`gmaps_bd_business:*` for search, `gmaps:*` for listing).
+
+## Sector Coverage (15 Sectors)
+
+9 researched sectors + 6 pipeline-only sectors defined in BPT `sectors.yaml`. See [AGENTS.md](AGENTS.md) for full query pool breakdown.
 
 ## Key Features
 
-*   **Strategy Pattern Architecture**: Decoupled logic for Pagination, Extraction, and Output allows for easy extension.
-*   **Headless Automation**: Uses `nodriver` (Chrome-based) to handle complex JavaScript and anti-bot measures.
-*   **Configuration-Driven**: Define new scrapers via YAML without writing code for standard use cases.
-*   **Robust Pagination**: Native support for Infinite Scroll, "Next" buttons, and AJAX loading.
-*   **Duplicate Detection**: Built-in mechanisms to prevent saving duplicate entries.
+- **24/7 Continuous** — systemd-supervised eternal loops, never exhausts queries
+- **Anti-bot resistant** — nodriver (Chrome-based) with browser restarts every hour
+- **Three-tier queries** — BD city-level, Bangladesh-national, and international (USA, UK, AU, CA, UAE, KSA)
+- **REST API** — Full programmatic access on port 8015 (31 routes, Bearer auth)
+- **Health monitoring** — Hermes cron watchdog every 60m + 1m API keepalive
 
 ## Prerequisites
 
-*   **Python**: 3.12+
-*   **Package Manager**: [uv](https://docs.astral.sh/uv/)
+- Python 3.12+
+- [uv](https://docs.astral.sh/uv/)
+- Google Chrome
+- Redis (localhost)
+- PostgreSQL (remote VPS)

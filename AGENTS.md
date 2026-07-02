@@ -66,12 +66,12 @@ uv run python scripts/monitor_pipeline.py --json    # machine-readable JSON
 
 | Pool | Size | Description |
 |------|------|-------------|
-| BD-Local | 7,830 | "{keyword} in {city}" × 15 cities × 7 sectors × en+bn |
-| BD-National | 514 | "{keyword} Bangladesh" / "{keyword} outside Dhaka" |
-| Global | 1,248 | "{keyword} {country}" × 6 countries × export-eligible keywords |
-| **Total** | **9,592** | Shuffled cycle, reshuffles on exhaustion (~40h at 40q/h) |
+| BD-Local | 17,130 | "{keyword} in {city}" × 15 cities × 15 sectors × en+bn |
+| BD-National | 1,094 | "{keyword} Bangladesh" / "{keyword} outside Dhaka" |
+| Global | 3,132 | "{keyword} {country}" × 6 countries × 11 export-eligible sectors |
+| **Total** | **21,356** | Shuffled cycle, reshuffles on exhaustion (~50h at 40q/h) |
 
-Global-eligible sectors: BIM, Media-Marketing-Digital, Electronics-Gadgets, Clothing-Fashion, Travel-Tourism.
+Global-eligible sectors (11): BIM, Media-Marketing-Digital, Electronics-Gadgets, Clothing-Fashion, Travel-Tourism, Healthcare-Pharma, Food-Beverage, Education-Training, Logistics-Transport, Agriculture-Agro, Construction-Real-Estate.
 
 Ultra-technical BIM keywords (MEP design, scan-to-BIM, BIM outsourcing) are global-only — they have no Google Maps results in Bangladeshi cities.
 

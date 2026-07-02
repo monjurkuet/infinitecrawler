@@ -68,6 +68,13 @@ GLOBAL_ELIGIBLE_SECTORS = {
     "electronics-gadgets",
     "clothing-fashion",
     "travel-tourism",
+    # New sectors (2026-07-03) — export/outsourcing potential
+    "healthcare-pharma",      # pharma manufacturing, medical transcription
+    "food-beverage",          # food processing, spice export, tea
+    "education-training",     # online education, corporate training
+    "logistics-transport",    # freight forwarding, shipping
+    "agriculture-agro",       # agro-processing, shrimp, jute, tea
+    "construction-real-estate",  # developer, contractor — exportable services
 }
 
 # Keywords that are TOO technical/niche for BD-local city queries.
@@ -75,12 +82,17 @@ GLOBAL_ELIGIBLE_SECTORS = {
 # Google Maps won't have "MEP coordination in Khulna" — it's a B2B service,
 # not a Maps-indexed local business.
 GLOBAL_ONLY_KEYWORDS = {
+    # BIM ultra-technical terms
     "mep coordination", "mep design", "mep consultant",
     "scan to bim", "scan-to-bim", "bim production partner",
     "bim outsourcing", "bim consulting", "bim consultant",
     "revit modeling service", "architectural bim service",
     "construction documentation", "bim modeling",
     "bim coordination",
+    # New sectors (2026-07-03) — B2B services, not Maps-indexed locally
+    "3pl logistics bd", "supply chain company bangladesh",
+    "medical transcription", "pharmaceutical manufacturing",
+    "food processing company bd", "agro processing company bd",
 }
 
 
