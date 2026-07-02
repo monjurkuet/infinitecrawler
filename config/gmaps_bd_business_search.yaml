@@ -1,0 +1,58 @@
+name: "Google Maps BD Business Crawl"
+content_type: "dynamic"
+browser_automation: "nodriver"
+headless: true
+pagination_strategy: "infinite_scroll"
+extraction_strategy: "generic_selector"
+output_strategy: "postgresql_upsert"
+
+search_url_template: "https://www.google.com/maps/search/{query}/"
+
+selectors:
+  items: "a.hfpxzc"
+  fields:
+    name: "aria-label"
+    url: "href"
+
+pagination:
+  container: "div[role='feed']"
+  scroll_script: "document.querySelector('div[role=\"feed\"]').scrollTo(0, document.querySelector('div[role=\"feed\"]').scrollHeight)"
+  max_scroll_attempts: 500
+  items_selector: "a.hfpxzc"
+
+input:
+  strategy: "file_url_loader"
+  config:
+    file_path: "input/search_queries_bd_businesses.txt"
+    deduplicate: true
+
+queue:
+  strategy: "redis_queue"
+  config:
+    host: "localhost"
+    port: 6379
+    db: 0
+    keys:
+      pending: "gmaps_bd_business:pending"
+      processing: "gmaps_bd_business:processing"
+      completed: "gmaps_bd_business:completed"
+      failed: "gmaps_bd_business:failed"
+    visibility_timeout: 300
+
+output:
+  strategy: "postgresql_upsert"
+  config:
+    database: "infinitecrawler"
+    schema: "scraper"
+    table: "gmaps_search_results"
+    key_field: "url"
+    source_type: "gmaps_search"
+    max_results: 10000
+
+rate_limit: 2
+proxy_rotation: false
+
+workers:
+  count: 3
+  max_consecutive_errors: 5
+  max_pages_per_session: 100

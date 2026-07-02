@@ -42,7 +42,19 @@ class BrowserManager:
             raise ValueError(f"Unsupported browser engine: {self.engine}")
 
     async def cleanup(self):
-        """Clean up browser resources"""
+        """Clean up browser resources and temp profile directories."""
         if self.browser:
             self.browser.stop()
             self.logger.info("Browser stopped successfully")
+        # Delete nodriver Chrome profile dirs to prevent disk bloat.
+        # nodriver creates ~/.local/share/nodriver/uc_* and /tmp/uc_* per instance.
+        import shutil
+        from pathlib import Path
+        for base in [Path.home() / ".local" / "share" / "nodriver", Path("/tmp")]:
+            if base.exists():
+                for d in base.glob("uc_*"):
+                    try:
+                        shutil.rmtree(d, ignore_errors=True)
+                        self.logger.debug(f"Cleaned temp dir: {d}")
+                    except Exception:
+                        pass

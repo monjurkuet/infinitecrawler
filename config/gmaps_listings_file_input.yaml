@@ -1,4 +1,4 @@
-name: "Google Maps Listing Crawler (Working Config)"
+name: "Google Maps Listing Crawler (File Input)"
 content_type: "listing_crawler"
 
 browser:
@@ -7,14 +7,10 @@ browser:
   page_wait_seconds: 1.0
 
 input:
-  strategy: "postgresql_uncrawled_gmaps"
+  strategy: "file_url_loader"
   config:
-    database: "infinitecrawler"
-    schema: "scraper"
-    search_results_table: "gmaps_search_results"
-    listings_table: "gmaps_listings"
-    source_url_field: "url"
-    batch_size: 1000
+    file_path: "input/uncrawled_urls.txt"
+    deduplicate: true
 
 queue:
   strategy: "redis_queue"
@@ -157,14 +153,12 @@ extraction:
           place_id:
             pattern: "1s([A-Za-z0-9_-]+)"
 
-  # Element-level retry configuration
   retry:
     enabled: true
     attempts: 3
     delay: 2
     backoff: "exponential"
 
-  # Timeout configuration
   timeouts:
     page_load: 2
     element: 1
@@ -196,7 +190,6 @@ rate_limiting:
     - 30
     - 60
 
-# URL-level retry configuration
 retry:
   url_attempts: 3
   delay: 5
@@ -204,5 +197,5 @@ retry:
 
 workers:
   count: 3
-  max_consecutive_errors: 15
+  max_consecutive_errors: 30
   max_pages_per_session: 100
