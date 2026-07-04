@@ -389,6 +389,10 @@ class PostgreSQLListingDetailsUpsertStrategy(_PostgreSQLOutputBase):
                 longitude DOUBLE PRECISION,
                 crawl_retry_count INTEGER,
                 crawl_pages_processed INTEGER,
+                sector_id TEXT,
+                classification_confidence NUMERIC(3,2),
+                classification_method TEXT,
+                classified_at TIMESTAMPTZ,
                 payload JSONB NOT NULL,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -429,6 +433,11 @@ class PostgreSQLListingDetailsUpsertStrategy(_PostgreSQLOutputBase):
                 sql.Identifier(self.schema),
                 sql.Identifier(self.table),
             ),
+            sql.SQL("CREATE INDEX IF NOT EXISTS {} ON {}.{} (sector_id)").format(
+                sql.Identifier(f"{self.table}_sector_id_idx"),
+                sql.Identifier(self.schema),
+                sql.Identifier(self.table),
+            ),
         ]
 
         with self._connection.cursor() as cursor:
@@ -436,6 +445,24 @@ class PostgreSQLListingDetailsUpsertStrategy(_PostgreSQLOutputBase):
             if self._drop_and_recreate:
                 cursor.execute(drop_table)
             cursor.execute(create_table)
+            # Migration: add classification columns if table predates them.
+            # CREATE TABLE IF NOT EXISTS does NOT reconcile missing columns on
+            # pre-existing tables, so ALTER COLUMN IF NOT EXISTS is required for
+            # any env created by older code (idempotent — no-op on live DB).
+            for col, coltype in (
+                ("sector_id", "TEXT"),
+                ("classification_confidence", "NUMERIC(3,2)"),
+                ("classification_method", "TEXT"),
+                ("classified_at", "TIMESTAMPTZ"),
+            ):
+                cursor.execute(
+                    sql.SQL("ALTER TABLE {}.{} ADD COLUMN IF NOT EXISTS {} {}").format(
+                        sql.Identifier(self.schema),
+                        sql.Identifier(self.table),
+                        sql.Identifier(col),
+                        sql.SQL(coltype),
+                    )
+                )
             cursor.execute(unique_index)
             for index_sql in indexes:
                 cursor.execute(index_sql)
@@ -480,6 +507,10 @@ class PostgreSQLListingDetailsUpsertStrategy(_PostgreSQLOutputBase):
             "longitude": self._parse_float(item.get("longitude")),
             "crawl_retry_count": self._parse_int(crawl_meta.get("retry_count")),
             "crawl_pages_processed": self._parse_int(crawl_meta.get("pages_processed")),
+            "sector_id": self._clean_text(item.get("sector_id")),
+            "classification_confidence": self._parse_numeric(item.get("classification_confidence")),
+            "classification_method": self._clean_text(item.get("classification_method")),
+            "classified_at": item.get("classified_at"),
             "payload": self._serialize_payload(item),
         }
 
@@ -507,13 +538,14 @@ class PostgreSQLListingDetailsUpsertStrategy(_PostgreSQLOutputBase):
                     place_id, source_url, key_value, source_type, name, category,
                     rating, review_count, address, phone, website, booking_url,
                     plus_code, is_claimed, latitude, longitude, crawl_retry_count,
-                    crawl_pages_processed, payload, created_at, updated_at
+                    crawl_pages_processed, sector_id, classification_confidence,
+                    classification_method, classified_at, payload, created_at, updated_at
                 )
                 VALUES (
                     %s, %s, %s, %s, %s, %s,
                     %s, %s, %s, %s, %s, %s,
                     %s, %s, %s, %s, %s,
-                    %s, %s, NOW(), NOW()
+                    %s, %s, %s, %s, %s, %s, NOW(), NOW()
                 )
                 ON CONFLICT (key_value) DO UPDATE SET
                     place_id = EXCLUDED.place_id,
@@ -533,6 +565,10 @@ class PostgreSQLListingDetailsUpsertStrategy(_PostgreSQLOutputBase):
                     longitude = EXCLUDED.longitude,
                     crawl_retry_count = EXCLUDED.crawl_retry_count,
                     crawl_pages_processed = EXCLUDED.crawl_pages_processed,
+                    sector_id = COALESCE(EXCLUDED.sector_id, gmaps_listings.sector_id),
+                    classification_confidence = COALESCE(EXCLUDED.classification_confidence, gmaps_listings.classification_confidence),
+                    classification_method = COALESCE(EXCLUDED.classification_method, gmaps_listings.classification_method),
+                    classified_at = COALESCE(EXCLUDED.classified_at, gmaps_listings.classified_at),
                     payload = EXCLUDED.payload,
                     updated_at = NOW()
                 """
@@ -557,6 +593,10 @@ class PostgreSQLListingDetailsUpsertStrategy(_PostgreSQLOutputBase):
                 row["longitude"],
                 row["crawl_retry_count"],
                 row["crawl_pages_processed"],
+                row["sector_id"],
+                row["classification_confidence"],
+                row["classification_method"],
+                row["classified_at"],
                 Jsonb(row["payload"]),
             )
 

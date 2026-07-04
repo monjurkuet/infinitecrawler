@@ -254,7 +254,18 @@ def generate_sector_leads(dry_run: bool = False) -> dict:
     
     Reads the gmaps_listings table, classifies each business via LLM,
     and writes per-sector lead CSVs.
+
+    Deprecated: this is a one-shot prototype that classifies only max_leads=50
+    per run and is not wired into the 24/7 daemon pipeline. Prefer db_classify.py
+    (offline cron) or in-stream fallback in listing_daemon.py.
     """
+    import warnings
+    warnings.warn(
+        "generate_sector_leads() is a deprecated prototype not used by the "
+        "24/7 pipeline. Use scripts/db_classify.py instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     try:
         import psycopg
     except ImportError:

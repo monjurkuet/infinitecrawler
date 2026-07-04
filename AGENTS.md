@@ -15,9 +15,14 @@ search-daemon (infinitecrawler-search.service)   listing-daemon (infinitecrawler
     │ Searches Google Maps, scrolls results,               │ Navigates each URL, extracts via
     │ extracts listing URLs, upserts to PG                 │ multi-step extraction (phone, website,
     │                                                     │ rating, category), upserts to PG
-    │ 1h browser restart (or 100 pages)                    │
-    │ Per-query timeout: 30s navigation                    │ 1h browser restart (or 100 pages)
+    │                                                     │
+    │ 1h browser restart (or 100 pages)                    │ In-stream fallback classification
+    │ Per-query timeout: 30s navigation                    │ (rule-based, runs inline before write)
+    │                                                     │ 1h browser restart (or 100 pages)
     │                                                     │ Per-URL timeout: 30s nav + 45s extraction
+    │                                                     │
+    │                                                     │ Offline LLM classification (cron)
+    │                                                     │ db_classify.py upgrades fallback → llm_*
 ```
 
 Redis queues:
@@ -52,6 +57,33 @@ PGPASSWORD=changeme psql -h 100.92.181.21 -U postgres -d infinitecrawler
   -c "SELECT COUNT(*) FROM scraper.gmaps_search_results WHERE updated_at > NOW() - INTERVAL '1 hour'"
   -c "SELECT COUNT(*) FROM scraper.gmaps_listings WHERE updated_at > NOW() - INTERVAL '1 hour'"
   -c "SELECT COUNT(*) FILTER (WHERE phone IS NOT NULL) AS with_phone FROM scraper.gmaps_listings WHERE updated_at > NOW() - INTERVAL '1 hour'"
+
+# Classification stats
+  -c "SELECT classification_method, COUNT(*) FROM scraper.gmaps_listings WHERE classification_method IS NOT NULL GROUP BY classification_method ORDER BY 2 DESC"
+  -c "SELECT COUNT(*) FILTER (WHERE sector_id IS NULL AND phone IS NOT NULL AND website IS NOT NULL) AS unclassified FROM scraper.gmaps_listings"
+```
+
+### Classification
+
+Two-stage pipeline: **in-stream fallback** (zero-cost, running inside listing daemon) → **offline LLM** (cron, higher confidence).
+
+| Stage | Trigger | Method | `classification_method` constant |
+|-------|---------|--------|----------------------------------|
+| In-stream | Every listing extraction in `listing_daemon.py` | `_single_fallback()` rule-based keyword matching | `METHOD_FALLBACK_RULE` = `"fallback_rule"` |
+| Offline LLM | Cron `scripts/db_classify.py` | DeepSeek V4 Flash batch classification (50 leads/batch, 10 few-shot, 1M context) | `METHOD_LLM_PREFIX` = `"llm_"` + reasoning slug |
+| Offline cached | LLM run loads training_examples.jsonl | Reuses past LLM results without API call | `METHOD_LLM_CACHED` = `"llm_cached"` |
+| Offline fallback | LLM batch timeout/failure | Falls back to `_single_fallback()` for that batch | `METHOD_FALLBACK_LLM_ERROR` = `"fallback_llm_error"` |
+
+Constants live in `scripts/llm_classifier.py` — single source of truth for the PG `classification_method` column. Both `listing_daemon.py` and `db_classify.py` import them.
+
+LLM config: `BATCH_SIZE=50`, `MAX_FEW_SHOT=10`, `max_tokens=8192`, model `deepseek-ai/deepseek-v4-flash`, endpoint `LLM_BASE_URL` (default `https://llm.datasolved.org/v1`).
+
+```bash
+# Offline classification (cron or manual)
+uv run python scripts/db_classify.py                     # classify up to 5000
+uv run python scripts/db_classify.py --max 2000           # custom limit
+uv run python scripts/db_classify.py --dry-run            # preview without DB writes
+uv run python scripts/db_classify.py --stats              # classification stats only
 ```
 
 ### Health Monitor
@@ -83,6 +115,8 @@ Ultra-technical BIM keywords (MEP design, scan-to-BIM, BIM outsourcing) are glob
 | `daemons/listing_daemon.py` | Eternal listing loop: PG URL feed → deep extraction → PG upsert |
 | `daemons/query_generator.py` | Infinite three-tier query rotation engine |
 | `scripts/monitor_pipeline.py` | Health monitor (Redis + PG + systemd checks) |
+| `scripts/llm_classifier.py` | LLM classifier module: prompt building, fallback, few-shot, training examples |
+| `scripts/db_classify.py` | Offline cron: reads unclassified leads from PG, calls LLM, writes back |
 | `api/` | FastAPI REST server (port 8015, bearer auth) |
 | `~/.config/systemd/user/infinitecrawler-*.service` | systemd unit files |
 | `~/.hermes/scripts/bd-watchdog.sh` | Hermes cron watchdog (every 60m, no_agent) |

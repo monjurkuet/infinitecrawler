@@ -50,9 +50,25 @@ LLM_MODEL = os.environ.get(
     "LLM_CLASSIFIER_MODEL", "deepseek-ai/deepseek-v4-flash"
 )
 
-BATCH_SIZE = 10  # leads per LLM call
-MAX_FEW_SHOT = 15  # max few-shot examples per batch
+BATCH_SIZE = 50  # leads per LLM call (DeepSeek V4 Flash has 1M context)
+MAX_FEW_SHOT = 10  # max few-shot examples per batch
 MIN_FEW_SHOT_PER_SECTOR = 2  # min examples to keep per sector
+
+# classification_method — single source of truth for the PG column enum.
+# Both listing_daemon.py (in-stream fallback) and db_classify.py (offline cron)
+# write these values; reporting queries depend on them staying stable.
+METHOD_FALLBACK_RULE = "fallback_rule"        # rule-based, in-stream (listing_daemon)
+METHOD_FALLBACK_LLM_ERROR = "fallback_llm_error"  # LLM call failed, fell back to rules
+METHOD_LLM_CACHED = "llm_cached"              # loaded from training_examples.jsonl
+METHOD_LLM_PREFIX = "llm_"                    # prefix for live LLM classifications
+
+# Bengali stop words — common across both rule-based passes; module-level to dedupe.
+BN_STOP = {
+    "দোকান", "এজেন্সি", "বাংলাদেশ", "ঢাকা", "সেবা", "কেন্দ্র",
+    "কোম্পানি", "অফিস", "কনসাল্টেন্ট", "প্রশিক্ষণ", "পরিষেবা",
+    "কারখানা", "প্রতিষ্ঠান", "ভবন", "যত্ন", "সারাইয়ের",
+    "রপ্তানিকারক", "প্রস্তুতকর্তা",
+}
 
 
 def ensure_dirs() -> None:
@@ -175,11 +191,10 @@ def select_few_shot(examples: list[dict], sectors: dict, max_count: int = MAX_FE
 
 
 def format_sector_definitions(definitions: dict) -> str:
-    """Format sector definitions for the prompt."""
+    """Format sector definitions for the prompt — full descriptions (1M context)."""
     lines = []
     for sid, sd in sorted(definitions.items()):
-        lines.append(f"  - **{sd['name']}** (id: `{sid}`)")
-        lines.append(f"    {sd['description']}")
+        lines.append(f"  - `{sid}`: {sd['name']} — {sd['description']}")
     return "\n".join(lines)
 
 
@@ -208,9 +223,18 @@ def format_leads_batch(leads: list[dict], start_index: int) -> str:
         cat = lead.get("category", "")
         web = lead.get("website", "")
         addr = lead.get("address", "")
+        rating = lead.get("rating")
+        reviews = lead.get("review_count")
+        # Rating/reviews add social-proof context: a 4.8★ computer store
+        # vs a 3.2★ repair shop disambiguate sectors better than name alone.
+        rating_str = (
+            f" | Rating: {float(rating):.1f}/5 ({reviews} reviews)"
+            if rating is not None and reviews is not None
+            else " | Rating: N/A"
+        )
         lines.append(
-            f"  {idx}. Name: \"{name}\" | Category: \"{cat}\" | "
-            f"Website: {web} | Address: \"{addr}\""
+            f"  {idx}. Name: \"{name}\" | Category: \"{cat}\"{rating_str} "
+            f"| Website: {web} | Address: \"{addr}\""
         )
     return "\n".join(lines)
 
@@ -253,7 +277,7 @@ Return JSON: {{"classifications": [
     ]
 
 
-def call_llm(messages: list[dict], retries: int = 3, model: str | None = None) -> dict | None:
+def call_llm(messages: list[dict], retries: int = 2, model: str | None = None) -> dict | None:
     """Call the LLM API and return parsed JSON."""
     model = model or LLM_MODEL
     headers = {
@@ -264,30 +288,49 @@ def call_llm(messages: list[dict], retries: int = 3, model: str | None = None) -
         "model": model,
         "messages": messages,
         "temperature": 0.1,
-        "max_tokens": 4096,
+        "max_tokens": 8192,
         "response_format": {"type": "json_object"},
     }
 
     for attempt in range(retries):
         try:
-            with httpx.Client(timeout=180) as client:
+            with httpx.Client(timeout=30) as client:
                 resp = client.post(
                     f"{LLM_BASE_URL}/chat/completions",
                     headers=headers,
                     json=payload,
                 )
                 resp.raise_for_status()
-                body = resp.json()
+                # Handle multi-line JSON responses (some proxies return one object per line)
+                resp_text = resp.text.strip()
+                body = None
+                for line in resp_text.split("\n"):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        candidate = json.loads(line)
+                        if "choices" in candidate:
+                            body = candidate
+                            break
+                    except json.JSONDecodeError:
+                        continue
+                if body is None:
+                    body = json.loads(resp_text.split("\n")[0])
                 content = body["choices"][0]["message"]["content"]
                 return json.loads(content)
         except httpx.TimeoutException:
             log.warning(f"LLM timeout (attempt {attempt + 1}/{retries})")
             if attempt < retries - 1:
-                time.sleep(2 ** attempt)
+                time.sleep(3)
         except httpx.HTTPStatusError as e:
             log.warning(f"LLM HTTP {e.response.status_code} (attempt {attempt + 1}/{retries})")
+            if e.response.status_code == 413:
+                log.error("Payload too large — reducing batch size may help")
+                return None  # Don't retry 413 — it won't help
             if attempt < retries - 1:
-                time.sleep(5)
+                sleep_time = 5 * (attempt + 1)  # 5s, 10s backoff
+                time.sleep(sleep_time)
         except (json.JSONDecodeError, KeyError) as e:
             log.error(f"LLM response parse error: {e}")
             return None
@@ -467,12 +510,6 @@ def _single_fallback(lead: dict, index: int, sectors: dict) -> dict:
     """Classify a single lead using rule-based fallback."""
     category = (lead.get("category") or "").lower()
     name = (lead.get("name") or "").lower()
-    BN_STOP = {
-        "দোকান", "এজেন্সি", "বাংলাদেশ", "ঢাকা", "সেবা", "কেন্দ্র",
-        "কোম্পানি", "অফিস", "কনসাল্টেন্ট", "প্রশিক্ষণ", "পরিষেবা",
-        "কারখানা", "প্রতিষ্ঠান", "ভবন", "যত্ন", "সারাইয়ের",
-        "রপ্তানিকারক", "প্রস্তুতকর্তা",
-    }
 
     for sid, sc in sorted(sectors.items()):
         if sc.get("status") != "active":
@@ -509,86 +546,6 @@ def _single_fallback(lead: dict, index: int, sectors: dict) -> dict:
                 return {"index": index, "sector": sid, "confidence": 0.60, "reasoning": "rule-based pass 4"}
 
     return {"index": index, "sector": "high-roi-niches", "confidence": 0.3, "reasoning": "rule-based no match"}
-
-
-def fallback_classify(
-    leads: list[dict], start_index: int, sectors: dict
-) -> list[dict]:
-    """Simple keyword-based fallback when LLM fails."""
-    results = []
-    BN_STOP = {
-        "দোকান", "এজেন্সি", "বাংলাদেশ", "ঢাকা", "সেবা", "কেন্দ্র",
-        "কোম্পানি", "অফিস", "কনসাল্টেন্ট", "প্রশিক্ষণ", "পরিষেবা",
-        "কারখানা", "প্রতিষ্ঠান", "ভবন", "যত্ন", "সারাইয়ের",
-        "রপ্তানিকারক", "প্রস্তুতকর্তা",
-    }
-
-    for i, lead in enumerate(leads):
-        idx = start_index + i
-        category = (lead.get("category") or "").lower()
-        name = (lead.get("name") or "").lower()
-        matched_sector = "high-roi-niches"
-        max_conf = 0.3
-
-        for sid, sc in sorted(sectors.items()):
-            if sc.get("status") != "active":
-                continue
-            kw_dict = sc.get("keywords", {})
-            all_keywords = kw_dict.get("en", []) + kw_dict.get("bn", [])
-            subsegments = sc.get("subsegments", [])
-
-            # Pass 1: phrase match (>=8 chars)
-            for kw in all_keywords:
-                kw_lower = kw.lower().strip()
-                if len(kw_lower) >= 8 and (
-                    kw_lower in category or kw_lower in name
-                ):
-                    matched_sector = sid
-                    max_conf = 0.85
-                    break
-            if max_conf >= 0.85:
-                break
-
-            # Pass 2: subsegment in category
-            for sub in subsegments:
-                if sub.lower().strip() in category:
-                    matched_sector = sid
-                    max_conf = 0.75
-                    break
-            if max_conf >= 0.75:
-                break
-
-            # Pass 3: word-level on name (>4 chars)
-            for kw in all_keywords:
-                parts = [p for p in kw.lower().split() if len(p) > 4]
-                if parts and any(part in name for part in parts):
-                    if max_conf < 0.65:
-                        matched_sector = sid
-                        max_conf = 0.65
-                    break
-
-            # Pass 4: Bengali word-level on category (all words)
-            if max_conf < 0.65:
-                for kw in all_keywords:
-                    bn_words = [
-                        w for w in kw.lower().split()
-                        if any("\u0980" <= c <= "\u09FF" for c in w)
-                        and w not in BN_STOP
-                    ]
-                    if bn_words and all(w in category for w in bn_words):
-                        if max_conf < 0.6:
-                            matched_sector = sid
-                            max_conf = 0.6
-                        break
-
-        results.append({
-            "index": idx,
-            "sector": matched_sector,
-            "confidence": max_conf,
-            "reasoning": "rule-based fallback",
-        })
-
-    return results
 
 
 def main():

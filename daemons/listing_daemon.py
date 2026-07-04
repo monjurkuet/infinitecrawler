@@ -34,6 +34,7 @@ sys.path.insert(0, str(REPO_ROOT))
 from base.browser_manager import BrowserManager
 from factory.scraper_factory import ScraperFactory
 from utils.helpers import DelayManager
+from scripts.llm_classifier import _single_fallback, load_sectors, METHOD_FALLBACK_RULE
 
 # ── Config ──────────────────────────────────────────────────────────────────
 
@@ -90,6 +91,7 @@ class DaemonState:
         self.delay_manager: Optional[DelayManager] = None
         self.pg_conn: Optional[psycopg.Connection] = None
         self.config: dict = {}
+        self.sectors: dict = {}  # BPT sectors for in-stream fallback classification
 
         # Restart tracking
         self.pages_since_restart: int = 0
@@ -308,6 +310,14 @@ async def process_url(state: DaemonState, url: str) -> bool:
                     "pages_processed": state.total_pages_processed,
                     "retry_count": attempt,
                 }
+                # In-stream rule-based fallback classification — zero-cost, pure CPU.
+                # LLM cron (db_classify.py) can upgrade these later with higher confidence.
+                if state.sectors:
+                    fb = _single_fallback(item, 0, state.sectors)
+                    item["sector_id"] = fb["sector"]
+                    item["classification_confidence"] = fb["confidence"]
+                    item["classification_method"] = METHOD_FALLBACK_RULE
+                    item["classified_at"] = datetime.now(timezone.utc)
                 await state.output_strategy.write_item(item)
 
             log.info("Extracted %d fields from %s (attempt %d/%d)",
@@ -461,6 +471,15 @@ async def main():
     log.info("URL retries: %d attempts, %ds delay",
              URL_MAX_RETRIES, URL_RETRY_DELAY)
     log.info("=" * 60)
+
+    # Preload BPT sectors once for in-stream fallback classification
+    try:
+        state.sectors = load_sectors()
+        active = sum(1 for s in state.sectors.values() if s.get("status") == "active")
+        log.info("Loaded %d sectors (%d active) for in-stream fallback", len(state.sectors), active)
+    except Exception as e:
+        log.warning("Failed to load sectors, in-stream fallback disabled: %s", e)
+        state.sectors = {}
 
     await init_infrastructure(state)
     await eternal_loop(state)

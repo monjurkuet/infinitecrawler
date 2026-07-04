@@ -35,7 +35,7 @@ uv run python -m api.main
 | Table | Source | Content |
 |-------|--------|---------|
 | `scraper.gmaps_search_results` | search-daemon | Business name + URL per query |
-| `scraper.gmaps_listings` | listing-daemon | Full profile: phone, website, address, rating, coordinates |
+| `scraper.gmaps_listings` | listing-daemon | Full profile: phone, website, address, rating, coordinates, **sector_id** (classified) |
 
 PostgreSQL on remote VPS. Redis on localhost for queue management (`gmaps_bd_business:*` for search, `gmaps:*` for listing).
 
@@ -46,6 +46,7 @@ PostgreSQL on remote VPS. Redis on localhost for queue management (`gmaps_bd_bus
 ## Key Features
 
 - **24/7 Continuous** — systemd-supervised eternal loops, never exhausts queries
+- **Auto-classification** — In-stream fallback (rule-based) + offline LLM (DeepSeek V4 Flash) assigns every listing to a BPT sector
 - **Anti-bot resistant** — nodriver (Chrome-based) with browser restarts every hour
 - **Three-tier queries** — BD city-level, Bangladesh-national, and international (USA, UK, AU, CA, UAE, KSA)
 - **REST API** — Full programmatic access on port 8015 (31 routes, Bearer auth)
