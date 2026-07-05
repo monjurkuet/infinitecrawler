@@ -1,11 +1,9 @@
 # Google Maps Scraper Knowledge Base & Architecture Reference
 
-> **CRITICAL INSTRUCTION FOR AGENTS:**
-> Before acting on ANY information in this file or the codebase, you MUST verify that this document reflects the **current state** of the code.
-> 1.  **Read this file** to understand the intended architecture.
-> 2.  **Verify** against actual code files (e.g., `base/scraper.py`, `factory/scraper_factory.py`) using `read` or `grep`.
-> 3.  **If discrepancies exist:** You MUST update this file to match the code BEFORE proceeding with any other task.
-> 4.  **If you modify code:** You MUST update this file to reflect those changes immediately after implementation.
+> **ARCHIVED** — This document describes the legacy `main.py` framework.
+> For the current 24/7 daemon architecture, see [AGENTS.md](AGENTS.md).
+> The strategy/factory reference sections below remain accurate for code under `strategies/`.
+> Usage examples referencing `main.py`, `run_listing_crawlers.py`, or `launch_listing_crawlers.sh` are legacy and no longer functional.
 
 ---
 

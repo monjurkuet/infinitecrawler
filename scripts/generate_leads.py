@@ -23,7 +23,6 @@ import argparse
 import csv
 import json
 import logging
-import os
 import re
 import sys
 from datetime import datetime, timezone
@@ -41,13 +40,9 @@ OUTPUT_DIR = REPO_ROOT / "output" / "leads"
 
 # ---- DB connection -----------------------------------------------------------
 
-DB_CONFIG = {
-    "host": os.environ.get("POSTGRESQL_HOST", "100.92.181.21"),
-    "port": int(os.environ.get("POSTGRES_PORT", "5432")),
-    "user": os.environ.get("POSTGRES_USERNAME", "postgres"),
-    "password": os.environ.get("POSTGRES_PASSWORD", "changeme"),
-    "dbname": os.environ.get("POSTGRES_DB", "infinitecrawler"),
-}
+from utils.pg import get_pg_config
+
+DB_CONFIG = get_pg_config()
 
 # ---- Keyword-based category scoring ------------------------------------------
 

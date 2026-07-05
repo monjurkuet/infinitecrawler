@@ -13,6 +13,7 @@ wheels/
 # Project specific
 backup/
 *.jsonl
+!_system/classification/training_examples.jsonl
 .uv/
 .mypy_cache/
 .pytest_cache/

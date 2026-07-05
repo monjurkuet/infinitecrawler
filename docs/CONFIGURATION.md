@@ -174,7 +174,7 @@ output:
 
 Parallel processing settings.
 
-Note: for listing crawling, `workers.count` is documented for future in-process concurrency, but the current 4-instance scaling model uses separate processes launched with `scripts/run_listing_crawlers.py`.
+Note: for listing crawling, `workers.count` is documented for future in-process concurrency, but the current scaling model uses the systemd daemon `infinitecrawler-listing.service`.
 
 ```yaml
 workers:

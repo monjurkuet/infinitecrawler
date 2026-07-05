@@ -225,7 +225,7 @@ class ModalNavigationStrategy(NavigationStrategy):
                     if element:
                         await element.click()
                         return True
-                except:
+                except Exception:
                     continue
 
             return False

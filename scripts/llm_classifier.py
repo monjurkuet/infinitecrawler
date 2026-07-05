@@ -24,7 +24,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+
 
 import httpx
 
@@ -69,6 +69,14 @@ BN_STOP = {
     "কারখানা", "প্রতিষ্ঠান", "ভবন", "যত্ন", "সারাইয়ের",
     "রপ্তানিকারক", "প্রস্তুতকর্তা",
 }
+
+DEFAULT_SECTOR = "high-roi-niches"  # catch-all sector when no BPT sector matches
+
+# LLM API call constants
+LLM_TEMPERATURE = 0.1
+LLM_MAX_TOKENS = 8192
+LLM_HTTP_TIMEOUT = 60
+MIN_TRAIN_CONFIDENCE = 0.7  # minimum confidence to auto-save as training example
 
 
 def ensure_dirs() -> None:
@@ -159,7 +167,7 @@ def select_few_shot(examples: list[dict], sectors: dict, max_count: int = MAX_FE
     by_sector: dict[str, list[dict]] = {}
     for ex in examples:
         sec = ex.get("sector", "")
-        if sec in active_sectors and ex.get("confidence", 0) >= 0.7:
+        if sec in active_sectors and ex.get("confidence", 0) >= MIN_TRAIN_CONFIDENCE:
             by_sector.setdefault(sec, []).append(ex)
 
     # Sort each group by confidence descending
@@ -287,14 +295,14 @@ def call_llm(messages: list[dict], retries: int = 2, model: str | None = None) -
     payload = {
         "model": model,
         "messages": messages,
-        "temperature": 0.1,
-        "max_tokens": 8192,
+        "temperature": LLM_TEMPERATURE,
+        "max_tokens": LLM_MAX_TOKENS,
         "response_format": {"type": "json_object"},
     }
 
     for attempt in range(retries):
         try:
-            with httpx.Client(timeout=30) as client:
+            with httpx.Client(timeout=LLM_HTTP_TIMEOUT) as client:
                 resp = client.post(
                     f"{LLM_BASE_URL}/chat/completions",
                     headers=headers,
@@ -320,16 +328,25 @@ def call_llm(messages: list[dict], retries: int = 2, model: str | None = None) -
                 content = body["choices"][0]["message"]["content"]
                 return json.loads(content)
         except httpx.TimeoutException:
-            log.warning(f"LLM timeout (attempt {attempt + 1}/{retries})")
+            log.warning(
+                f"LLM timeout (attempt {attempt + 1}/{retries}) "
+                f"status={resp.status_code if 'resp' in dir() else 'N/A'} len={len(resp.text) if 'resp' in dir() else 0}"
+            )
             if attempt < retries - 1:
-                time.sleep(3)
+                sleep_time = 2 ** (attempt + 1)  # 2s, 4s, 8s exponential backoff
+                log.info(f"Retrying after {sleep_time}s backoff...")
+                time.sleep(sleep_time)
         except httpx.HTTPStatusError as e:
-            log.warning(f"LLM HTTP {e.response.status_code} (attempt {attempt + 1}/{retries})")
+            log.warning(
+                f"LLM HTTP {e.response.status_code} (attempt {attempt + 1}/{retries}) "
+                f"len={len(e.response.text)}"
+            )
             if e.response.status_code == 413:
                 log.error("Payload too large — reducing batch size may help")
                 return None  # Don't retry 413 — it won't help
             if attempt < retries - 1:
                 sleep_time = 5 * (attempt + 1)  # 5s, 10s backoff
+                log.info(f"Retrying after {sleep_time}s backoff...")
                 time.sleep(sleep_time)
         except (json.JSONDecodeError, KeyError) as e:
             log.error(f"LLM response parse error: {e}")
@@ -466,7 +483,7 @@ def classify_all(
             for idx, lead in batch:
                 results.append({
                     "index": idx,
-                    "sector": "high-roi-niches",
+"sector": DEFAULT_SECTOR,
                     "confidence": 0.3,
                     "reasoning": "LLM failed, fallback",
                 })
@@ -481,7 +498,7 @@ def classify_all(
             rel_idx = r.get("index", 0) - min(batch_indices)
             if 0 <= rel_idx < len(batch_leads):
                 conf = r.get("confidence", 0)
-                if conf >= 0.7 and r.get("sector"):
+                if conf >= MIN_TRAIN_CONFIDENCE and r.get("sector"):
                     batch_new.append(
                         build_lead_snapshot(
                             batch_leads[rel_idx],
@@ -545,7 +562,7 @@ def _single_fallback(lead: dict, index: int, sectors: dict) -> dict:
             if bn_words and all(w in category for w in bn_words):
                 return {"index": index, "sector": sid, "confidence": 0.60, "reasoning": "rule-based pass 4"}
 
-    return {"index": index, "sector": "high-roi-niches", "confidence": 0.3, "reasoning": "rule-based no match"}
+    return {"index": index, "sector": DEFAULT_SECTOR, "confidence": 0.3, "reasoning": "rule-based no match"}
 
 
 def main():

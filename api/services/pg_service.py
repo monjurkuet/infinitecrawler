@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from typing import Any, Optional
 
 from psycopg_pool import AsyncConnectionPool
@@ -13,16 +12,19 @@ log = logging.getLogger("api.pg_service")
 
 # ─── Connection ─────────────────────────────────────────────────────────────
 
+from utils.pg import get_pg_config, get_uncrawled_count_sql
+
 _pool: Optional[AsyncConnectionPool] = None
 
 
 async def create_pool() -> AsyncConnectionPool:
     global _pool
-    host = os.environ.get("POSTGRESQL_HOST", "100.92.181.21")
-    port = int(os.environ.get("POSTGRES_PORT", "5432"))
-    user = os.environ.get("POSTGRES_USERNAME", "postgres")
-    password = os.environ.get("POSTGRES_PASSWORD", "changeme")
-    dbname = os.environ.get("POSTGRES_DB", "infinitecrawler")
+    _pg = get_pg_config()
+    host = _pg["host"]
+    port = _pg["port"]
+    user = _pg["user"]
+    password = _pg["password"]
+    dbname = _pg["dbname"]
 
     pool = AsyncConnectionPool(
         f"host={host} port={port} user={user} password={password} dbname={dbname}",
@@ -241,6 +243,7 @@ async def query_leads(
                 f"SELECT id, place_id, source_url, name, category, rating, "
                 f"review_count, address, phone, website, "
                 f"latitude, longitude, "
+                f"sector_id, classification_confidence, classification_method, classified_at, "
                 f"created_at, updated_at "
                 f"FROM scraper.gmaps_listings WHERE {where_sql} "
                 f"ORDER BY {sort_col} {sort_dir} NULLS LAST "
@@ -363,23 +366,13 @@ async def get_leads_by_city() -> list[dict]:
 
 
 async def get_leads_by_sector() -> list[dict]:
-    """Group leads by BPT sector using keyword matching (mirrors generate_leads.py logic)."""
-    pool = await get_pool()
-    async with pool.connection() as conn:
-        async with conn.cursor() as cur:
-            # Get all leads with phone
-            await cur.execute("""
-                SELECT id, name, category, phone, website, address,
-                       rating, review_count, latitude, longitude, place_id, source_url
-                FROM scraper.gmaps_listings
-                WHERE phone IS NOT NULL
-                ORDER BY review_count DESC NULLS LAST
-            """)
-            rows = await cur.fetchall()
-            cols = [d.name for d in cur.description]
-            leads = [dict(zip(cols, r)) for r in rows]
+    """Return sector breakdown with unified query + in-stream keyword fallback for unclassified.
 
-    # Simple sector mapping based on category keywords
+    Fetches all qualified leads (phone IS NOT NULL) in a single query,
+    applies keyword heuristic in-memory for sector_id IS NULL rows,
+    and groups results by sector. Total cost: 2 queries (counts + leads)
+    instead of N+1.
+    """
     sector_map = {
         "healthcare": ["hospital", "clinic", "doctor", "diagnostic", "dental", "pharmacy", "physiotherapy", "medical"],
         "automotive": ["car", "auto", "garage", "workshop", "tire", "spare part", "service center", "motor"],
@@ -395,22 +388,52 @@ async def get_leads_by_sector() -> list[dict]:
         "beauty": ["salon", "spa", "beauty", "parlor", "barber", "grooming"],
     }
 
-    sector_leads: dict[str, list] = {}
-    for sid in sector_map:
-        sector_leads[sid] = []
+    pool = await get_pool()
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            # Single query: get all qualified leads with their sector_id (if any)
+            await cur.execute("""
+                SELECT id, place_id, source_url, name, category, rating,
+                       review_count, address, phone, website,
+                       latitude, longitude, sector_id,
+                       classification_confidence, classification_method, classified_at,
+                       created_at, updated_at
+                FROM scraper.gmaps_listings
+                WHERE phone IS NOT NULL
+                ORDER BY review_count DESC NULLS LAST
+            """)
+            rows = await cur.fetchall()
+            cols = [d.name for d in cur.description]
+            leads = []
+            for r in rows:
+                d = dict(zip(cols, r))
+                for k, v in d.items():
+                    if hasattr(v, "isoformat"):
+                        d[k] = v.isoformat()
+                leads.append(d)
+
+    # Group in-memory: classified leads keep their sector, unclassified get keyword fallback
+    sector_leads: dict[str, list] = {sid: [] for sid in sector_map}
+    sector_leads["other"] = []
+    sector_leads["high-roi-niches"] = []
 
     for lead in leads:
-        cat = (lead.get("category") or "").lower()
-        name = (lead.get("name") or "").lower()
-        matched = False
-        for sid, keywords in sector_map.items():
-            if any(kw in cat or kw in name for kw in keywords):
-                sector_leads[sid].append(lead)
-                matched = True
-                break
-        if not matched:
-            sector_leads.setdefault("other", []).append(lead)
+        if lead.get("sector_id"):
+            sid = lead["sector_id"]
+            sector_leads.setdefault(sid, []).append(lead)
+        else:
+            cat = (lead.get("category") or "").lower()
+            name = (lead.get("name") or "").lower()
+            matched = False
+            for sid, keywords in sector_map.items():
+                if any(kw in cat or kw in name for kw in keywords):
+                    sector_leads[sid].append(lead)
+                    matched = True
+                    break
+            if not matched:
+                sector_leads["other"].append(lead)
 
+    # Build result with counts and lead samples (up to 50 per sector)
     result = []
     for sid, sl in sector_leads.items():
         if sl:
@@ -420,14 +443,22 @@ async def get_leads_by_sector() -> list[dict]:
                 "count": len(sl),
                 "leads": [{
                     "id": l.get("id"),
+                    "place_id": l.get("place_id"),
+                    "source_url": l.get("source_url"),
                     "name": l.get("name"),
                     "category": l.get("category"),
-                    "phone": l.get("phone"),
-                    "website": l.get("website"),
-                    "address": l.get("address"),
                     "rating": l.get("rating"),
                     "review_count": l.get("review_count"),
-                } for l in sl[:50]],  # cap per sector
+                    "address": l.get("address"),
+                    "phone": l.get("phone"),
+                    "website": l.get("website"),
+                    "latitude": l.get("latitude"),
+                    "longitude": l.get("longitude"),
+                    "sector_id": l.get("sector_id"),
+                    "classification_confidence": l.get("classification_confidence"),
+                    "classification_method": l.get("classification_method"),
+                    "classified_at": l.get("classified_at"),
+                } for l in sl[:50]],
             })
     return result
 
@@ -518,14 +549,7 @@ async def get_uncrawled_count() -> int:
     pool = await get_pool()
     async with pool.connection() as conn:
         async with conn.cursor() as cur:
-            await cur.execute("""
-                SELECT COUNT(DISTINCT sr.payload->>'url')
-                FROM scraper.gmaps_search_results sr
-                LEFT JOIN scraper.gmaps_listings gl
-                  ON gl.source_url = sr.payload->>'url'
-                WHERE sr.payload->>'url' IS NOT NULL
-                  AND gl.source_url IS NULL
-            """)
+            await cur.execute(get_uncrawled_count_sql())
             return (await cur.fetchone())[0] or 0
 
 
@@ -543,7 +567,7 @@ async def export_leads_csv(filters: dict, limit: int = 0) -> str:
         async with conn.cursor() as cur:
             sql = (
                 f"SELECT name, category, phone, website, address, rating, "
-                f"review_count, latitude, longitude, place_id, source_url "
+                f"review_count, latitude, longitude, place_id, source_url, sector_id "
                 f"FROM scraper.gmaps_listings WHERE {where_sql} "
                 f"ORDER BY review_count DESC NULLS LAST"
             )
@@ -552,7 +576,7 @@ async def export_leads_csv(filters: dict, limit: int = 0) -> str:
             await cur.execute(sql, where_params)
             rows = await cur.fetchall()
             cols = ["Name", "Category", "Phone", "Website", "Address",
-                    "Rating", "Reviews", "Lat", "Lng", "Place ID", "Source URL"]
+                    "Rating", "Reviews", "Lat", "Lng", "Place ID", "Source URL", "Sector"]
 
             buf = io.StringIO()
             writer = csv.writer(buf)

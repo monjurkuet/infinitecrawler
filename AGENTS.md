@@ -64,32 +64,27 @@ PGPASSWORD=changeme psql -h 100.92.181.21 -U postgres -d infinitecrawler
 ```
 
 ### Classification
-
-Two-stage pipeline: **in-stream fallback** (zero-cost, running inside listing daemon) → **offline LLM** (cron, higher confidence).
-
-| Stage | Trigger | Method | `classification_method` constant |
-|-------|---------|--------|----------------------------------|
-| In-stream | Every listing extraction in `listing_daemon.py` | `_single_fallback()` rule-based keyword matching | `METHOD_FALLBACK_RULE` = `"fallback_rule"` |
-| Offline LLM | Cron `scripts/db_classify.py` | DeepSeek V4 Flash batch classification (50 leads/batch, 10 few-shot, 1M context) | `METHOD_LLM_PREFIX` = `"llm_"` + reasoning slug |
-| Offline cached | LLM run loads training_examples.jsonl | Reuses past LLM results without API call | `METHOD_LLM_CACHED` = `"llm_cached"` |
-| Offline fallback | LLM batch timeout/failure | Falls back to `_single_fallback()` for that batch | `METHOD_FALLBACK_LLM_ERROR` = `"fallback_llm_error"` |
-
-Constants live in `scripts/llm_classifier.py` — single source of truth for the PG `classification_method` column. Both `listing_daemon.py` and `db_classify.py` import them.
-
-LLM config: `BATCH_SIZE=50`, `MAX_FEW_SHOT=10`, `max_tokens=8192`, model `deepseek-ai/deepseek-v4-flash`, endpoint `LLM_BASE_URL` (default `https://llm.datasolved.org/v1`).
-
 ```bash
 # Offline classification (cron or manual)
 uv run python scripts/db_classify.py                     # classify up to 5000
 uv run python scripts/db_classify.py --max 2000           # custom limit
 uv run python scripts/db_classify.py --dry-run            # preview without DB writes
 uv run python scripts/db_classify.py --stats              # classification stats only
+uv run python scripts/db_classify.py --retry-failed --max 1300  # retry LLM error leads
 ```
 
 ### Health Monitor
 ```bash
 uv run python scripts/monitor_pipeline.py          # human-readable report
 uv run python scripts/monitor_pipeline.py --json    # machine-readable JSON
+uv run python scripts/monitor_pipeline.py --stats   # classification stats only
+```
+
+### Stuck Chrome Detection
+```bash
+# Check for Chrome processes stuck on newtab (should be on Google Maps)
+uv run bash scripts/check-stuck-chrome.sh
+# Or: systemctl --user status infinitecrawler-search infinitecrawler-listing --no-pager -l
 ```
 
 ## Query Generator

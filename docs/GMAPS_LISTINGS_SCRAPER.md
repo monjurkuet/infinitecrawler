@@ -14,8 +14,8 @@ python main.py --config config/gmaps_listings_working.yaml
 # Run headless (no browser window)
 python main.py --config config/gmaps_listings_working.yaml --headless
 
-# Run 4 parallel crawler instances
-uv run python scripts/run_listing_crawlers.py --instances 4 --config config/gmaps_listings_working.yaml
+# Start the listing daemon (replaces legacy parallel instances)
+systemctl --user start infinitecrawler-listing
 ```
 
 ## What It Extracts
@@ -137,15 +137,12 @@ workers:
 
 ### Parallel Execution
 
-For higher throughput, run 4 separate crawler processes against the same Redis queue using the launcher script:
+Parallelism is handled by the systemd daemon (`infinitecrawler-listing.service`).
+The legacy `run_listing_crawlers.py` launcher script has been removed.
 
 ```bash
-uv run python scripts/run_listing_crawlers.py --instances 4 --config config/gmaps_listings_working.yaml
+systemctl --user start infinitecrawler-listing
 ```
-
-This uses process-level parallelism. It does not rely on `workers.count` for concurrency, because the current implementation runs one browser/extraction pipeline per process.
-
-Each process gets its own `--instance-label` so logs are easy to distinguish.
 
 Operational notes:
 
@@ -335,8 +332,8 @@ The full raw record remains in `payload` as JSONB.
 ```bash
 redis-cli KEYS gmaps:*
 redis-cli LLEN gmaps:pending
-redis-cli LLEN gmaps:completed
-redis-cli LLEN gmaps:failed
+redis-cli SCARD gmaps:completed
+redis-cli HLEN gmaps:failed
 ```
 
 To force a rerun, clear the listing-detail queue keys:
@@ -364,14 +361,26 @@ ORDER BY count DESC;
 ### Common Issues
 
 #### 1. "No data extracted"
-**Cause**: Page didn't load properly
+**Cause**: Page didn't load properly or address field is missing (not all listings have addresses)
 **Solution**:
 ```bash
 # Run in headed mode to see what's happening
 python main.py --config config/gmaps_listings_working.yaml --headless false
+
+# Or check with the monitoring script
+./scripts/check-stuck-chrome.sh
 ```
 
-#### 2. "Redis connection refused"
+#### 2. Stuck Chrome / Timeouts
+**Cause**: Chrome process stuck on tab navigation or extraction hanging
+**Solution**:
+```bash
+# Check for stuck Chrome processes
+bash scripts/check-stuck-chrome.sh
+
+# Restart daemons to clear browser state
+systemctl --user restart infinitecrawler-search infinitecrawler-listing
+```
 **Cause**: Redis not running
 **Solution**:
 ```bash

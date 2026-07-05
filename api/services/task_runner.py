@@ -147,29 +147,10 @@ async def launch_task(
     return task
 
 
-def build_search_command(config: str, query: Optional[str] = None) -> list[str]:
-    cmd = ["uv", "run", "python", "main.py", "--config", config, "--headless"]
-    if query:
-        cmd.extend(["--query", query])
-    return cmd
-
-
-def build_crawl_command(config: str, instances: int = 3) -> list[str]:
-    return [
-        "uv", "run", "python", "scripts/run_listing_crawlers.py",
-        "--config", config,
-        "--count", str(instances),
-    ]
-
-
-def build_pipeline_command(generate_only: bool = False, crawl_only: bool = False, instances: int = 3) -> list[str]:
-    cmd = ["uv", "run", "python", "scripts/pipeline_manager.py"]
-    if generate_only:
-        cmd.append("--generate-only")
-    elif crawl_only:
-        cmd.append("--crawl-only")
-    cmd.extend(["--instances", str(instances)])
-    return cmd
+DEPRECATED_MSG = (
+    "Task launching is deprecated — use systemd daemons: "
+    "systemctl --user start infinitecrawler-search infinitecrawler-listing"
+)
 
 
 def get_task(task_id: str) -> Optional[RunningTask]:

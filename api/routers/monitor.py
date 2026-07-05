@@ -19,6 +19,42 @@ from api.services import pg_service, redis_service, task_runner
 router = APIRouter(prefix="/api", tags=["monitor"])
 _start_time = time.time()
 
+# ----- systemd daemon detection (replaces legacy main.py pgrep) -----
+_LISTING_UNIT = "infinitecrawler-listing"
+
+
+def _systemd_active(unit: str) -> bool:
+    try:
+        r = subprocess.run(
+            ["systemctl", "--user", "is-active", unit],
+            capture_output=True, text=True, timeout=5,
+        )
+        return r.stdout.strip() == "active"
+    except Exception:
+        return False
+
+
+def _listing_pids() -> list[int]:
+    """Return listing daemon PIDs. systemd MainPID when active, else vendor pgrep."""
+    if _systemd_active(_LISTING_UNIT):
+        try:
+            r = subprocess.run(
+                ["systemctl", "--user", "show", "-p", "MainPID", "--value", _LISTING_UNIT],
+                capture_output=True, text=True, timeout=5,
+            )
+            pid = r.stdout.strip()
+            return [int(pid)] if pid and pid != "0" else []
+        except Exception:
+            return []
+    try:
+        r = subprocess.run(
+            ["pgrep", "-f", r"daemons\.listing_daemon"],
+            capture_output=True, text=True, timeout=5,
+        )
+        return [int(p) for p in r.stdout.strip().split("\n") if p.strip()]
+    except Exception:
+        return []
+
 
 @router.get("/health")
 async def health():
@@ -39,24 +75,9 @@ async def health():
 
 @router.get("/status", response_model=SystemStatus)
 async def system_status(_user: str = Depends(verify_token)):
-    # Crawler processes
-    try:
-        result = subprocess.run(
-            ["pgrep", "-cf", r"main\.py.*listing"],
-            capture_output=True, text=True, timeout=5
-        )
-        crawlers_running = int(result.stdout.strip() or 0)
-    except Exception:
-        crawlers_running = 0
-
-    try:
-        pid_result = subprocess.run(
-            ["pgrep", "-f", r"main\.py.*listing"],
-            capture_output=True, text=True, timeout=5
-        )
-        pids = [int(p) for p in pid_result.stdout.strip().split("\n") if p]
-    except Exception:
-        pids = []
+    # Crawler processes (systemd daemon) — migrate from legacy pgrep to systemd
+    pids = _listing_pids()
+    crawlers_running = len(pids)
 
     # Queue stats
     queues = await redis_service.get_all_queue_stats()
@@ -98,35 +119,18 @@ async def system_status(_user: str = Depends(verify_token)):
 
 @router.get("/crawlers", response_model=list[CrawlerProcess])
 async def crawler_processes(_user: str = Depends(verify_token)):
-    try:
-        pid_result = subprocess.run(
-            ["pgrep", "-f", r"main\.py.*listing"],
-            capture_output=True, text=True, timeout=5
-        )
-        pids = [int(p) for p in pid_result.stdout.strip().split("\n") if p]
-    except Exception:
-        pids = []
+    pids = _listing_pids()
 
     processes = []
     for pid in pids:
         try:
             proc = psutil.Process(pid)
             cmdline = " ".join(proc.cmdline())
-            label = "unknown"
-            for part in proc.cmdline():
-                if "instance-label" in part or "listing" in part:
-                    label = part
-
-            # Extract instance-label value
-            cmd_parts = proc.cmdline()
-            for i, part in enumerate(cmd_parts):
-                if part == "--instance-label" and i + 1 < len(cmd_parts):
-                    label = cmd_parts[i + 1]
-                    break
+            label = "infinitecrawler-listing"
 
             processes.append(CrawlerProcess(
                 pid=pid,
-                command=" ".join(cmd_parts[-3:]) if len(cmd_parts) > 3 else " ".join(cmd_parts),
+                command=cmdline[-80:] if len(cmdline) > 80 else cmdline,
                 start_time=datetime.fromtimestamp(proc.create_time(), tz=timezone.utc).isoformat(),
                 memory_mb=round(proc.memory_info().rss / (1024**2), 2),
                 instance_label=label,

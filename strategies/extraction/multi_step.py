@@ -218,11 +218,21 @@ class MultiStepExtractionStrategy(ExtractionStrategy):
         timeout = field_config.get("timeout", self.element_timeout)
 
         if extract_type == "text":
-            element = await tab.select(selector, timeout=timeout)
+            try:
+                element = await asyncio.wait_for(
+                    tab.select(selector), timeout=timeout + 2
+                )
+            except asyncio.TimeoutError:
+                return None
             return element.text if element else None
 
         elif extract_type == "attribute":
-            element = await tab.select(selector, timeout=timeout)
+            try:
+                element = await asyncio.wait_for(
+                    tab.select(selector), timeout=timeout + 2
+                )
+            except asyncio.TimeoutError:
+                return None
             if not element:
                 return None
 
@@ -329,67 +339,6 @@ class MultiStepExtractionStrategy(ExtractionStrategy):
                 self.logger.warning(f"Failed to extract field '{field_name}': {e}")
 
         return extracted
-
-    async def _extract_field(self, tab, field_config: dict, field_name: str) -> Any:
-        """Extract a single field based on configuration"""
-        selector = field_config.get("selector")
-        extract_type = field_config.get("type", "text")
-
-        if not selector:
-            raise ValueError(f"No selector specified for field '{field_name}'")
-
-        if extract_type == "text":
-            element = await tab.select(selector, timeout=field_config.get("timeout", 2))
-            return element.text if element else None
-
-        elif extract_type == "attribute":
-            element = await tab.select(selector, timeout=field_config.get("timeout", 2))
-            if not element:
-                return None
-
-            attr_name = field_config.get("attribute")
-            if not attr_name:
-                raise ValueError(f"No attribute specified for field '{field_name}'")
-
-            value = element.attrs.get(attr_name, "")
-
-            # Apply regex if specified
-            regex_pattern = field_config.get("regex")
-            if regex_pattern and value:
-                match = re.search(regex_pattern, value)
-                return match.group(1) if match else None
-
-            return value
-
-        elif extract_type == "list":
-            sibling_selector = field_config.get("sibling_selector")
-            if sibling_selector:
-                # Extract from sibling elements
-                parent = await tab.select(
-                    selector, timeout=field_config.get("timeout", 2)
-                )
-                if not parent:
-                    return []
-                elements = await parent.select_all(sibling_selector)
-            else:
-                elements = await tab.select_all(
-                    selector, timeout=field_config.get("timeout", 2)
-                )
-
-            return [e.text for e in elements if e.text]
-
-        elif extract_type == "count":
-            elements = await tab.select_all(
-                selector, timeout=field_config.get("timeout", 2)
-            )
-            return len(elements)
-
-        elif extract_type == "exists":
-            element = await tab.select(selector, timeout=field_config.get("timeout", 1))
-            return element is not None
-
-        else:
-            raise ValueError(f"Unknown extract type: {extract_type}")
 
     async def _execute_navigate_step(self, step: dict, context: dict) -> bool:
         """Navigate to a page section"""

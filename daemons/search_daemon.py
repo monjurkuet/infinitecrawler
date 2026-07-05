@@ -13,12 +13,10 @@ systemd unit: ~/.config/systemd/user/infinitecrawler-search.service
 
 import asyncio
 import logging
-import os
 import random
-import signal
 import sys
 import time
-from datetime import datetime, timezone
+
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -33,24 +31,28 @@ from base.browser_manager import BrowserManager
 from factory.scraper_factory import ScraperFactory
 from daemons.query_generator import InfiniteQueryGenerator
 from utils.helpers import DelayManager
+from utils.pg import get_pg_config
+from daemons.common import (
+    BROWSER_RESTART_INTERVAL_SEC,
+    BROWSER_RESTART_PAGES,
+    QUEUE_LOW_THRESHOLD,
+    install_signal_handlers,
+    shutdown_strategies,
+)
 
 # ── Config ──────────────────────────────────────────────────────────────────
 
 load_dotenv(REPO_ROOT / ".env")
 
 CONFIG_PATH = REPO_ROOT / "config" / "gmaps_bd_business_search.yaml"
-BROWSER_RESTART_INTERVAL_SEC = 3600  # 1 hour
-BROWSER_RESTART_PAGES = 100  # Also restart after this many pages
-QUEUE_LOW_THRESHOLD = 20  # Refill queue when pending drops below this
+QUERY_NAV_TIMEOUT = 30  # Seconds for GMaps search query navigation
 QUERY_BATCH_SIZE = 50  # How many queries to generate per refill
 STALLED_REQUEUE_INTERVAL = 60  # Check for stalled processing items every N sec
 
 # PG connection (separate from output strategy — used for direct queries)
-PG_HOST = os.environ.get("POSTGRESQL_HOST", "100.92.181.21")
-PG_PORT = int(os.environ.get("POSTGRES_PORT", "5432"))
-PG_USER = os.environ.get("POSTGRES_USERNAME", "postgres")
-PG_PASSWORD = os.environ.get("POSTGRES_PASSWORD", "changeme")
-PG_DB = os.environ.get("POSTGRES_DB", "infinitecrawler")
+_pg = get_pg_config()
+PG_HOST, PG_PORT = _pg["host"], _pg["port"]
+PG_USER, PG_PASSWORD, PG_DB = _pg["user"], _pg["password"], _pg["dbname"]
 
 # ── Logging ─────────────────────────────────────────────────────────────────
 
@@ -169,8 +171,9 @@ async def init_infrastructure(state: DaemonState):
     log.info("Query pools: %s (total %d unique)",
              st["pool_sizes"], st["total_unique"])
 
-    # Delay manager
-    rate_limiting = config.get("rate_limiting") or {}
+    # Delay manager — config uses int rate_limit; convert to DelayManager's dict shape
+    rate_limit = config.get("rate_limit", 2)
+    rate_limiting = config.get("rate_limiting") or {"between_requests": (rate_limit, rate_limit)}
     state.delay_manager = DelayManager(rate_limiting)
 
     # Worker config
@@ -196,12 +199,22 @@ async def search_single_query(state: DaemonState, query: str) -> bool:
                                         "https://www.google.com/maps/search/{query}/")
         search_url = url_template.format(query=query)
         try:
-            await asyncio.wait_for(
+            tab = await asyncio.wait_for(
                 state.browser_manager.navigate(search_url),
-                timeout=30,
+                timeout=QUERY_NAV_TIMEOUT,
             )
         except asyncio.TimeoutError:
             log.warning("Navigation timed out for query '%s'", query[:60])
+            return False
+
+        # Verify navigation actually reached Google Maps (detect stuck browsers)
+        try:
+            current_url = await tab.evaluate("window.location.href", timeout=5)
+            if "google.com/maps" not in current_url:
+                log.warning("Navigation verification failed - expected GMaps, got: %s", current_url[:60])
+                return False
+        except Exception as e:
+            log.warning("Navigation verification error: %s", e)
             return False
 
         if state.delay_manager:
@@ -244,7 +257,7 @@ async def search_single_query(state: DaemonState, query: str) -> bool:
                 break
 
             scroll_attempts += 1
-            await asyncio.sleep(state.config.get("rate_limit", 2))
+            await state.delay_manager.apply_delay("between_requests")
 
         return True
 
@@ -355,18 +368,8 @@ async def eternal_loop(state: DaemonState):
 
 
 async def shutdown(state: DaemonState):
-    """Graceful cleanup."""
-    if state.browser_manager:
-        await state.browser_manager.cleanup()
-        state.browser_manager = None
-    if state.output_strategy and hasattr(state.output_strategy, "cleanup"):
-        cleanup = state.output_strategy.cleanup()
-        if asyncio.iscoroutine(cleanup):
-            await cleanup
-    if state.queue_strategy and hasattr(state.queue_strategy, "cleanup"):
-        cleanup = state.queue_strategy.cleanup()
-        if asyncio.iscoroutine(cleanup):
-            await cleanup
+    """Graceful cleanup — shared strategies + daemon-specific stats."""
+    await shutdown_strategies(state)
 
     stats = state.query_generator.stats() if state.query_generator else {}
     log.info("Search daemon stopped. Total pages: %d. Queries generated: %s",
@@ -376,23 +379,13 @@ async def shutdown(state: DaemonState):
 
 # ── Signal handling ─────────────────────────────────────────────────────────
 
-def _signal_handler(state: DaemonState):
-    """Set shutdown flag on SIGTERM/SIGINT — loop exits gracefully."""
-    def handler(sig, frame):
-        log.info("Received signal %s — initiating graceful shutdown", sig)
-        state.shutdown_requested = True
-    return handler
-
-
 # ── Entry point ─────────────────────────────────────────────────────────────
 
 async def main():
     state = DaemonState()
-    loop = asyncio.get_running_loop()
 
     # Register signal handlers
-    for sig in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(sig, _signal_handler(state), sig, None)
+    install_signal_handlers(state)
 
     log.info("=" * 60)
     log.info("InfiniteCrawler Search Daemon starting")
@@ -403,6 +396,9 @@ async def main():
     log.info("Queue low threshold: %d, batch size: %d",
              QUEUE_LOW_THRESHOLD, QUERY_BATCH_SIZE)
     log.info("=" * 60)
+
+    # Clean up orphaned Chrome temp dirs on startup
+    cleanup_orphaned_chrome_dirs()
 
     await init_infrastructure(state)
     await eternal_loop(state)

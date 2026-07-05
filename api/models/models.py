@@ -50,25 +50,6 @@ class ScraperTask(BaseModel):
     completed_at: Optional[str] = None
 
 
-class TaskCreateSearch(BaseModel):
-    query: Optional[str] = None
-    config: str = "config/gmaps_bd_business_search.yaml"
-    headless: bool = True
-
-
-class TaskCreateCrawl(BaseModel):
-    urls: Optional[list[str]] = None
-    from_uncrawled: bool = True
-    instances: int = 3
-    config: str = "config/gmaps_listings_file_input.yaml"
-
-
-class TaskCreatePipeline(BaseModel):
-    generate_only: bool = False
-    crawl_only: bool = False
-    instances: int = 3
-
-
 class TaskListResponse(BaseModel):
     tasks: list[ScraperTask]
     total: int
@@ -89,6 +70,10 @@ class Lead(BaseModel):
     website: Optional[str] = None
     latitude: Optional[float] = None
     longitude: Optional[float] = None
+    sector_id: Optional[str] = None
+    classification_confidence: Optional[float] = None
+    classification_method: Optional[str] = None
+    classified_at: Optional[str] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
 

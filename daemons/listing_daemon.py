@@ -14,9 +14,6 @@ systemd unit: ~/.config/systemd/user/infinitecrawler-listing.service
 
 import asyncio
 import logging
-import os
-import random
-import signal
 import sys
 import time
 from datetime import datetime, timezone
@@ -34,6 +31,15 @@ sys.path.insert(0, str(REPO_ROOT))
 from base.browser_manager import BrowserManager
 from factory.scraper_factory import ScraperFactory
 from utils.helpers import DelayManager
+from utils.pg import get_pg_config, get_uncrawled_urls_sql
+from daemons.common import (
+    BROWSER_RESTART_INTERVAL_SEC,
+    BROWSER_RESTART_PAGES,
+    QUEUE_LOW_THRESHOLD,
+    cleanup_orphaned_chrome_dirs,
+    install_signal_handlers,
+    shutdown_strategies,
+)
 from scripts.llm_classifier import _single_fallback, load_sectors, METHOD_FALLBACK_RULE
 
 # ── Config ──────────────────────────────────────────────────────────────────
@@ -41,32 +47,17 @@ from scripts.llm_classifier import _single_fallback, load_sectors, METHOD_FALLBA
 load_dotenv(REPO_ROOT / ".env")
 
 CONFIG_PATH = REPO_ROOT / "config" / "gmaps_listings_working.yaml"
-BROWSER_RESTART_INTERVAL_SEC = 3600  # 1 hour
-BROWSER_RESTART_PAGES = 100  # Also restart after this many pages
-QUEUE_LOW_THRESHOLD = 20  # Pull more URLs from PG when pending drops below this
 URL_FETCH_BATCH = 100  # How many uncrawled URLs to pull from PG per refill
 URL_MAX_RETRIES = 3  # Per-URL retry attempts
 URL_RETRY_DELAY = 5  # Seconds between per-URL retries
 URL_EXTRACTION_TIMEOUT = 45  # Seconds before extraction attempt is aborted
+URL_NAV_TIMEOUT = 30  # Seconds for initial URL navigation
 STALLED_REQUEUE_INTERVAL = 60  # Check for stalled processing items every N sec
 
 # PG connection (separate from output strategy — used for live URL feed)
-PG_HOST = os.environ.get("POSTGRESQL_HOST", "100.92.181.21")
-PG_PORT = int(os.environ.get("POSTGRES_PORT", "5432"))
-PG_USER = os.environ.get("POSTGRES_USERNAME", "postgres")
-PG_PASSWORD = os.environ.get("POSTGRES_PASSWORD", "changeme")
-PG_DB = os.environ.get("POSTGRES_DB", "infinitecrawler")
-
-UNCRAWLED_SQL = """
-    SELECT DISTINCT sr.payload->>'url' AS source_url
-    FROM scraper.gmaps_search_results sr
-    LEFT JOIN scraper.gmaps_listings gl
-      ON gl.source_url = sr.payload->>'url'
-    WHERE sr.payload->>'url' IS NOT NULL
-      AND gl.source_url IS NULL
-    ORDER BY source_url
-    LIMIT %s
-"""
+_pg = get_pg_config()
+PG_HOST, PG_PORT = _pg["host"], _pg["port"]
+PG_USER, PG_PASSWORD, PG_DB = _pg["user"], _pg["password"], _pg["dbname"]
 
 # ── Logging ─────────────────────────────────────────────────────────────────
 
@@ -217,7 +208,8 @@ def fetch_uncrawled_urls(state: DaemonState) -> list[str]:
         return []
     try:
         with state.pg_conn.cursor() as cur:
-            cur.execute(UNCRAWLED_SQL, (URL_FETCH_BATCH,))
+            sql, params = get_uncrawled_urls_sql(limit=URL_FETCH_BATCH)
+            cur.execute(sql, params)
             rows = cur.fetchall()
         urls = [r[0] for r in rows if r[0]]
         return urls
@@ -266,13 +258,11 @@ async def process_url(state: DaemonState, url: str) -> bool:
 
     for attempt in range(URL_MAX_RETRIES):
         try:
-            loop = asyncio.get_running_loop()
-
             # Navigate with timeout
             try:
                 await asyncio.wait_for(
                     state.browser_manager.navigate(url),
-                    timeout=30,
+                    timeout=URL_NAV_TIMEOUT,
                 )
             except asyncio.TimeoutError:
                 log.warning("Navigation timed out for %s (attempt %d/%d)",
@@ -332,9 +322,6 @@ async def process_url(state: DaemonState, url: str) -> bool:
             if attempt < URL_MAX_RETRIES - 1:
                 await restart_browser(state)
                 await asyncio.sleep(2)
-            else:
-                if attempt < URL_MAX_RETRIES - 1:
-                    await asyncio.sleep(URL_RETRY_DELAY)
 
     # All retries exhausted
     log.error("All %d attempts failed for %s", URL_MAX_RETRIES, url[:60])
@@ -416,18 +403,8 @@ async def eternal_loop(state: DaemonState):
 
 
 async def shutdown(state: DaemonState):
-    """Graceful cleanup."""
-    if state.browser_manager:
-        await state.browser_manager.cleanup()
-        state.browser_manager = None
-    if state.output_strategy and hasattr(state.output_strategy, "cleanup"):
-        cleanup = state.output_strategy.cleanup()
-        if asyncio.iscoroutine(cleanup):
-            await cleanup
-    if state.queue_strategy and hasattr(state.queue_strategy, "cleanup"):
-        cleanup = state.queue_strategy.cleanup()
-        if asyncio.iscoroutine(cleanup):
-            await cleanup
+    """Graceful cleanup — shared strategies + daemon-specific PG close."""
+    await shutdown_strategies(state)
     if state.pg_conn:
         try:
             state.pg_conn.close()
@@ -442,23 +419,13 @@ async def shutdown(state: DaemonState):
 
 # ── Signal handling ─────────────────────────────────────────────────────────
 
-def _signal_handler(state: DaemonState):
-    """Set shutdown flag on SIGTERM/SIGINT — loop exits gracefully."""
-    def handler(sig, frame):
-        log.info("Received signal %s — initiating graceful shutdown", sig)
-        state.shutdown_requested = True
-    return handler
-
-
 # ── Entry point ─────────────────────────────────────────────────────────────
 
 async def main():
     state = DaemonState()
-    loop = asyncio.get_running_loop()
 
     # Register signal handlers
-    for sig in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(sig, _signal_handler(state), sig, None)
+    install_signal_handlers(state)
 
     log.info("=" * 60)
     log.info("InfiniteCrawler Listing Daemon starting")
@@ -471,6 +438,9 @@ async def main():
     log.info("URL retries: %d attempts, %ds delay",
              URL_MAX_RETRIES, URL_RETRY_DELAY)
     log.info("=" * 60)
+
+    # Clean up orphaned Chrome temp dirs on startup
+    cleanup_orphaned_chrome_dirs()
 
     # Preload BPT sectors once for in-stream fallback classification
     try:

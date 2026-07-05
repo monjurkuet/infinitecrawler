@@ -25,7 +25,8 @@ import logging
 import os
 import shutil
 import subprocess
-import sys
+import time
+
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -33,6 +34,10 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(level
 log = logging.getLogger("monitor_pipeline")
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+import sys
+sys.path.insert(0, str(REPO_ROOT))
+
+from utils.pg import get_uncrawled_count_sql, PG_DEFAULT_HOST, PG_DEFAULT_PASSWORD, PG_DEFAULT_DB
 
 
 def redis_cmd(cmd: str) -> str:
@@ -52,12 +57,11 @@ def pg_query(sql: str) -> str:
     """Run a PostgreSQL query, return stripped output."""
     try:
         env = os.environ.copy()
-        env["PGPASSWORD"] = os.environ.get("POSTGRES_PASSWORD", "changeme")
+        env["PGPASSWORD"] = PG_DEFAULT_PASSWORD
         env["PGCONNECT_TIMEOUT"] = "10"
-        host = os.environ.get("POSTGRESQL_HOST", "100.92.181.21")
-        db = os.environ.get("POSTGRES_DB", "infinitecrawler")
         result = subprocess.run(
-            ["psql", "-h", host, "-U", "postgres", "-d", db, "-t", "-A", "-c", sql],
+            ["psql", "-h", PG_DEFAULT_HOST, "-U", "postgres", "-d", PG_DEFAULT_DB,
+             "-t", "-A", "-c", sql],
             capture_output=True, text=True, timeout=60, env=env
         )
         return result.stdout.strip()
@@ -69,27 +73,51 @@ def pg_query(sql: str) -> str:
         return "error"
 
 
-def count_listing_processes() -> int:
-    """Count running listing crawler processes."""
+def _systemd_daemon_active(unit: str) -> bool:
+    """Check if a systemd user unit is active."""
     try:
         result = subprocess.run(
-            ["pgrep", "-f", r"main\.py.*instance-label listing"],
-            capture_output=True, text=True, timeout=5
+            ["systemctl", "--user", "is-active", unit],
+            capture_output=True, text=True, timeout=5,
         )
-        pids = [p for p in result.stdout.strip().split("\n") if p.strip()]
+        return result.stdout.strip() == "active"
+    except Exception:
+        return False
+
+
+def count_listing_processes() -> int:
+    """Count running listing daemon processes (systemd first, pgrep fallback)."""
+    pids = get_crawler_pids()
+    if pids:
         return len(pids)
+    # Fallback: pgrep for daemons.listing_daemon when not running under systemd
+    try:
+        result = subprocess.run(
+            ["pgrep", "-c", "-f", r"daemons\.listing_daemon"],
+            capture_output=True, text=True, timeout=5,
+        )
+        return int(result.stdout.strip() or 0)
     except Exception:
         return 0
 
 
 def get_crawler_pids() -> list[str]:
-    """Get PIDs of running listing crawler processes."""
+    """Return the listing daemon PID(s) via systemd, or legacy pgrep fallback.
+
+    The 24/7 daemons run as ``uv run python -m daemons.listing_daemon`` under
+    systemd, so there is exactly one process when active. We surface its MainPID
+    when available.
+    """
+    if not _systemd_daemon_active("infinitecrawler-listing"):
+        return []
     try:
         result = subprocess.run(
-            ["pgrep", "-f", r"main\.py.*instance-label listing"],
-            capture_output=True, text=True, timeout=5
+            ["systemctl", "--user", "show", "-p", "MainPID", "--value",
+             "infinitecrawler-listing"],
+            capture_output=True, text=True, timeout=5,
         )
-        return result.stdout.strip().split("\n") if result.stdout.strip() else []
+        pid = result.stdout.strip()
+        return [pid] if pid and pid != "0" else []
     except Exception:
         return []
 
@@ -125,12 +153,14 @@ def kill_orphan_chrome():
         )
         chrome_pids = [p.strip() for p in chrome_procs.stdout.strip().split("\n") if p.strip()]
 
-        # Get Python crawler PIDs
-        py_procs = subprocess.run(
-            ["pgrep", "-f", r"main\.py.*instance-label listing"],
-            capture_output=True, text=True, timeout=5,
-        )
-        py_pids = set(p.strip() for p in py_procs.stdout.strip().split("\n") if p.strip())
+        # Get Python daemon PIDs (systemd MainPID) — falls back to pgrep for non-systemd runs
+        py_pids = set(get_crawler_pids())
+        if not py_pids:
+            legacy = subprocess.run(
+                ["pgrep", "-f", r"daemons\.listing_daemon"],
+                capture_output=True, text=True, timeout=5,
+            )
+            py_pids = set(p.strip() for p in legacy.stdout.strip().split("\n") if p.strip())
 
         if not chrome_pids:
             return
@@ -176,73 +206,49 @@ def kill_orphan_chrome():
 
 
 def restart_crawlers():
-    """Restart listing crawlers using the launch script."""
-    log.info("Restarting listing crawlers...")
+    """Restart listing daemon via systemd (replaces legacy launch script).
+
+    The 24/7 daemons are managed by systemd; launching the old
+    ``launch_listing_crawlers.sh`` script would race the systemd daemons on the
+    Redis queues and PG writes. ``systemctl --user restart`` is the only safe
+    way.
+    """
+    log.info("Restarting listing daemon via systemd...")
     try:
-        # Clean up stale lock
         lock_dir = "/tmp/listing-crawler.lock"
         subprocess.run(["rm", "-rf", lock_dir], capture_output=True, timeout=5)
-
-        # Kill orphan Chrome before killing Python (preserves parentage check)
         kill_orphan_chrome()
 
-        # Kill any remaining crawler processes
-        subprocess.run(["pkill", "-f", r"main\.py.*listing"], capture_output=True, timeout=5)
-
-        # Start via launch script (handles lock, URL export, etc.)
-        result = subprocess.run(
-            ["bash", str(REPO_ROOT / "scripts" / "launch_listing_crawlers.sh")],
-            capture_output=True, text=True, timeout=180,
-            cwd=str(REPO_ROOT),
+        unit = "infinitecrawler-listing"
+        # Clear any failed state — restart won't start a failed unit
+        subprocess.run(
+            ["systemctl", "--user", "reset-failed", unit],
+            capture_output=True, text=True, timeout=10,
         )
-        if result.returncode == 0:
-            log.info("Crawlers restarted successfully")
-            log.info(result.stdout[-500:])
-        else:
-            log.error(f"Crawler restart failed: {result.stderr[-500:]}")
-        return result.returncode == 0
-    except Exception as e:
-        log.error(f"Restart failed: {e}")
+
+        result = subprocess.run(
+            ["systemctl", "--user", "restart", unit],
+            capture_output=True, text=True, timeout=60,
+        )
+        if result.returncode != 0:
+            log.error("Listing daemon restart failed: %s", result.stderr[-500:])
+            return False
+
+        # Post-restart health check — wait 3s then verify MainPID
+        time.sleep(3)
+        health = subprocess.run(
+            ["systemctl", "--user", "show", "-p", "MainPID", "--value", unit],
+            capture_output=True, text=True, timeout=10,
+        )
+        pid = health.stdout.strip()
+        if pid and pid != "0":
+            log.info("Listing daemon restarted successfully (PID %s)", pid)
+            return True
+        log.error("Listing daemon not running after restart — MainPID=%s", pid or "missing")
         return False
-
-
-def export_uncrawled_urls():
-    """Export uncrawled URLs from PG to file."""
-    env = os.environ.copy()
-    env["PGPASSWORD"] = os.environ.get("POSTGRES_PASSWORD", "changeme")
-    env["PGCONNECT_TIMEOUT"] = "10"
-    host = os.environ.get("POSTGRESQL_HOST", "100.92.181.21")
-    db = os.environ.get("POSTGRES_DB", "infinitecrawler")
-
-    try:
-        # Export using COPY TO STDOUT (no CSV quoting issues)
-        export_sql = """
-            COPY (
-                SELECT DISTINCT sr.payload->>'url' AS source_url
-                FROM scraper.gmaps_search_results sr
-                LEFT JOIN scraper.gmaps_listings gl
-                  ON gl.source_url = sr.payload->>'url'
-                WHERE sr.payload->>'url' IS NOT NULL
-                  AND gl.source_url IS NULL
-                ORDER BY source_url
-            ) TO STDOUT
-        """
-        result = subprocess.run(
-            ["psql", "-h", host, "-U", "postgres", "-d", db, "-t", "-A", "-c", export_sql],
-            capture_output=True, text=True, timeout=60, env=env
-        )
-        out_path = REPO_ROOT / "input" / "uncrawled_urls.txt"
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        content = result.stdout.strip()
-        if content:
-            out_path.write_text(content)
-            return content.count("\n") + 1
-        else:
-            out_path.write_text("")
-            return 0
     except Exception as e:
-        log.error(f"URL export failed: {e}")
-        return -1
+        log.error("Restart failed: %s", e)
+        return False
 
 
 def run_checks(restart: bool = False) -> dict:
@@ -276,14 +282,7 @@ def run_checks(restart: bool = False) -> dict:
     )
 
     # 4. Uncrawled count
-    uncrawled = pg_query("""
-        SELECT COUNT(DISTINCT sr.payload->>'url')
-        FROM scraper.gmaps_search_results sr
-        LEFT JOIN scraper.gmaps_listings gl
-          ON gl.source_url = sr.payload->>'url'
-        WHERE sr.payload->>'url' IS NOT NULL
-          AND gl.source_url IS NULL
-    """)
+    uncrawled = pg_query(get_uncrawled_count_sql())
 
     # 5. Lead quality
     leads_with_website = pg_query(
