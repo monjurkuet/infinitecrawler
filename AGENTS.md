@@ -93,12 +93,12 @@ uv run bash scripts/check-stuck-chrome.sh
 
 | Pool | Size | Description |
 |------|------|-------------|
-| BD-Local | 17,130 | "{keyword} in {city}" × 15 cities × 15 sectors × en+bn |
-| BD-National | 1,094 | "{keyword} Bangladesh" / "{keyword} outside Dhaka" |
-| Global | 3,132 | "{keyword} {country}" × 6 countries × 11 export-eligible sectors |
-| **Total** | **21,356** | Shuffled cycle, reshuffles on exhaustion (~50h at 40q/h) |
+| BD-Local | 18,780 | "{keyword} in {city}" × 15 cities × 16 sectors × en+bn |
+| BD-National | 1,194 | "{keyword} Bangladesh" / "{keyword} outside Dhaka" |
+| Global | 3,486 | "{keyword} {country}" × 6 countries × 12 export-eligible sectors |
+| **Total** | **23,460** | Shuffled cycle, reshuffles on exhaustion (~55h at 40q/h) |
 
-Global-eligible sectors (11): BIM, Media-Marketing-Digital, Electronics-Gadgets, Clothing-Fashion, Travel-Tourism, Healthcare-Pharma, Food-Beverage, Education-Training, Logistics-Transport, Agriculture-Agro, Construction-Real-Estate.
+Global-eligible sectors (12): BIM, Media-Marketing-Digital, Electronics-Gadgets, Clothing-Fashion, Travel-Tourism, Healthcare-Pharma, Food-Beverage, Education-Training, Logistics-Transport, Agriculture-Agro, Construction-Real-Estate, Service-Agents-Distribution.
 
 Ultra-technical BIM keywords (MEP design, scan-to-BIM, BIM outsourcing) are global-only — they have no Google Maps results in Bangladeshi cities.
 

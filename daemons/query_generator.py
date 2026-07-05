@@ -75,6 +75,7 @@ GLOBAL_ELIGIBLE_SECTORS = {
     "logistics-transport",    # freight forwarding, shipping
     "agriculture-agro",       # agro-processing, shrimp, jute, tea
     "construction-real-estate",  # developer, contractor — exportable services
+    "service-agents-distribution",  # C&F, importers, trade agents, commission agents
 }
 
 # Keywords that are TOO technical/niche for BD-local city queries.
@@ -93,6 +94,9 @@ GLOBAL_ONLY_KEYWORDS = {
     "3pl logistics bd", "supply chain company bangladesh",
     "medical transcription", "pharmaceutical manufacturing",
     "food processing company bd", "agro processing company bd",
+    # Service agents — B2B trade/international terms, not Maps-indexed locally
+    "indenting agent bd", "buying house bangladesh",
+    "procurement agent dhaka", "commercial importer bangladesh",
 }
 
 
