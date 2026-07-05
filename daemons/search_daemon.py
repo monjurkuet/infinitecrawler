@@ -36,6 +36,7 @@ from daemons.common import (
     BROWSER_RESTART_INTERVAL_SEC,
     BROWSER_RESTART_PAGES,
     QUEUE_LOW_THRESHOLD,
+    cleanup_orphaned_chrome_dirs,
     install_signal_handlers,
     shutdown_strategies,
 )
