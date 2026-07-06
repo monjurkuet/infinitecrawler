@@ -210,7 +210,10 @@ async def search_single_query(state: DaemonState, query: str) -> bool:
 
         # Verify navigation actually reached Google Maps (detect stuck browsers)
         try:
-            current_url = await tab.evaluate("window.location.href", timeout=5)
+            current_url = await asyncio.wait_for(
+                tab.evaluate("window.location.href"),
+                timeout=5.0
+            )
             if "google.com/maps" not in current_url:
                 log.warning("Navigation verification failed - expected GMaps, got: %s", current_url[:60])
                 return False

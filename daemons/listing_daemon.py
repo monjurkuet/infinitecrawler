@@ -50,7 +50,7 @@ CONFIG_PATH = REPO_ROOT / "config" / "gmaps_listings_working.yaml"
 URL_FETCH_BATCH = 100  # How many uncrawled URLs to pull from PG per refill
 URL_MAX_RETRIES = 3  # Per-URL retry attempts
 URL_RETRY_DELAY = 5  # Seconds between per-URL retries
-URL_EXTRACTION_TIMEOUT = 45  # Seconds before extraction attempt is aborted
+URL_EXTRACTION_TIMEOUT = 25  # Seconds before extraction attempt is aborted
 URL_NAV_TIMEOUT = 30  # Seconds for initial URL navigation
 STALLED_REQUEUE_INTERVAL = 60  # Check for stalled processing items every N sec
 
@@ -284,12 +284,28 @@ async def process_url(state: DaemonState, url: str) -> bool:
                 log.warning("Extraction timed out after %ds for %s",
                             URL_EXTRACTION_TIMEOUT, url[:60])
                 items = []
+                # A stuck tab is the most common cause of an extraction timeout.
+                # Force a browser restart right away instead of wasting the next
+                # attempts on the same unresponsive page.  The restart loop in
+                # `eternal_loop` will reset `consecutive_errors` on success.
+                state.consecutive_errors += 1
+                if state.consecutive_errors >= state.max_consecutive_errors:
+                    log.warning("Restarting browser after extraction timeout "
+                                "(consecutive_errors=%d)", state.consecutive_errors)
+                    await restart_browser(state)
+                    state.consecutive_errors = 0
 
             if not items:
                 log.warning("No data extracted from %s (attempt %d/%d)",
                             url[:60], attempt + 1, URL_MAX_RETRIES)
+                # Extraction timeout OR empty result: increment error counter so
+                # a stuck browser tab triggers a restart on threshold instead of
+                # silently wasting 45s per URL.  Empty extraction on the final
+                # attempt is treated as failure (was previously phantom-success,
+                # which inflated the listing count with empty rows).
+                state.consecutive_errors += 1
                 if attempt == URL_MAX_RETRIES - 1:
-                    return True  # Count as success — data might not exist
+                    return False
                 await asyncio.sleep(URL_RETRY_DELAY)
                 continue
 
