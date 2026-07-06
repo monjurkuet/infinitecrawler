@@ -288,7 +288,7 @@ for attempt in range(3):
         try:
             value = await extract(selector)
             if value: return value
-        except:
+        except Exception:
             continue
     await asyncio.sleep(2 ** attempt)  # 2s, 4s, 8s
 ```
@@ -300,7 +300,7 @@ for attempt in range(3):
     try:
         await extract_all_fields()
         return True
-    except:
+    except Exception:
         if attempt < 2:  # Restart before retry 2 & 3
             await restart_browser()
         await asyncio.sleep(5 * (attempt + 1))
