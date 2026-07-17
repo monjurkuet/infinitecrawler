@@ -13,6 +13,7 @@ systemd unit: ~/.config/systemd/user/infinitecrawler-search.service
 
 import asyncio
 import logging
+import os
 import random
 import sys
 import time
@@ -113,7 +114,7 @@ async def start_browser(state: DaemonState):
 
 
 async def restart_browser(state: DaemonState):
-    """Clean shutdown + fresh start. Removes Chrome temp profiles."""
+    """Clean shutdown + fresh start. Removes Chrome temp profiles, kills orphans."""
     log.info("Restarting browser (pages=%d, uptime=%ds)...",
              state.pages_since_restart, int(time.time() - state.last_restart_time))
     if state.browser_manager:
@@ -122,9 +123,78 @@ async def restart_browser(state: DaemonState):
     # Unbind strategies that hold browser references
     state.extraction_strategy = None
     state.pagination_strategy = None
+    # Kill any orphaned Chrome processes from the old browser
+    await _kill_orphaned_chrome()
     await asyncio.sleep(3)
     await start_browser(state)
     await _init_browser_bound_strategies(state)
+
+
+async def _kill_orphaned_chrome():
+    """Kill Chrome processes not descendant of this daemon process.
+
+    Walks the full ancestry of each Chrome process up to PID 1.
+    If our own PID appears anywhere in the chain, the process is owned and spared.
+    Crashpad handlers re-parented to systemd (PPID=1 or session leader) are killed
+    if no living Chrome browser claims them.
+    """
+    import psutil
+    our_pid = os.getpid()
+    # Collect PIDs of Chrome browsers that ARE our descendants (have our_pid in ancestry)
+    our_chrome_pids = set()
+    all_chrome_pids = []
+    for proc in psutil.process_iter(['pid', 'name', 'ppid']):
+        try:
+            info = proc.info or {}
+            if info.get('name') and 'chrome' in info['name'].lower():
+                all_chrome_pids.append(info['pid'])
+                # Walk ancestry
+                cur = info['pid']
+                for _ in range(15):
+                    ppid = 0
+                    try:
+                        ppid = psutil.Process(cur).ppid()
+                    except psutil.NoSuchProcess:
+                        break
+                    if ppid == our_pid:
+                        our_chrome_pids.add(info['pid'])
+                        break
+                    if ppid <= 1:
+                        break
+                    cur = ppid
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+
+    # Now kill any Chrome process whose ancestry does NOT include our_pid,
+    # EXCEPT children of our owned Chrome browsers (zygotes, renderers, crashpads)
+    killed = 0
+    for proc in psutil.process_iter(['pid', 'name', 'ppid']):
+        try:
+            info = proc.info or {}
+            if not (info.get('name') and 'chrome' in info['name'].lower()):
+                continue
+            pid = info['pid']
+            ppid = info['ppid']
+            # Is this a child of one of our owned Chrome browsers?
+            if ppid in our_chrome_pids or pid in our_chrome_pids:
+                continue
+            # Is this a crashpad handler? Check if any owned Chrome has it as a child
+            kill_it = True
+            for cp in our_chrome_pids:
+                try:
+                    cp_proc = psutil.Process(cp)
+                    if cp_proc.is_running():
+                        kill_it = False
+                        break
+                except psutil.NoSuchProcess:
+                    pass
+            if kill_it:
+                proc.kill()
+                killed += 1
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            pass
+    if killed:
+        log.info("Killed %d orphaned Chrome processes", killed)
 
 
 async def _init_browser_bound_strategies(state: DaemonState):
@@ -298,9 +368,18 @@ def requeue_stalled(state: DaemonState):
 
 # ── Main loop ───────────────────────────────────────────────────────────────
 
+def _check_staleness(state: DaemonState, last_write_time: float, label: str) -> float:
+    """Log WARNING if no new data written in 1h. Returns current time."""
+    now = time.monotonic()
+    if now - last_write_time > 3600:  # 1 hour
+        log.warning("STALENESS ALERT: no new %s data written in 1h", label)
+    return now
+
+
 async def eternal_loop(state: DaemonState):
     """The forever loop: refill → dequeue → search → repeat."""
     last_stalled_check = 0.0
+    last_write_time = time.monotonic()  # staleness watchdog
 
     while not state.shutdown_requested:
         try:
@@ -334,7 +413,10 @@ async def eternal_loop(state: DaemonState):
                 await restart_browser(state)
                 state.consecutive_errors = 0
 
-            # 5. Dequeue next query
+            # 5. Staleness watchdog
+            last_write_time = _check_staleness(state, last_write_time, "search")
+
+            # 6. Dequeue next query
             query = state.queue_strategy.dequeue(timeout=10)
             if not query:
                 stats = state.queue_strategy.get_stats()
@@ -343,23 +425,18 @@ async def eternal_loop(state: DaemonState):
                 await asyncio.sleep(5)
                 continue
 
-            # 6. Search
-            log.info("Processing query: %s", query[:80])
+            # 7. Process the query
             success = await search_single_query(state, query)
-
             if success:
-                state.queue_strategy.mark_completed(query)
+                last_write_time = time.monotonic()  # update staleness timer
                 state.consecutive_errors = 0
                 state.pages_since_restart += 1
                 state.total_pages_processed += 1
             else:
                 state.consecutive_errors += 1
-                state.queue_strategy.mark_failed(query, "Search failed",
-                                                 state.consecutive_errors)
 
-            # 7. Jitter delay (anti-detection)
-            jitter = random.uniform(2.0, 5.0)
-            await asyncio.sleep(jitter)
+            # 8. Jitter delay
+            await state.delay_manager.apply_delay("between_requests")
 
         except Exception as e:
             log.error("Loop iteration failed: %s", e, exc_info=True)

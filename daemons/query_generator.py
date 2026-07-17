@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Query Generator — Infinite three-tier rotation: BD-Local, BD-National, Global.
 
-Generates Google Maps search queries from BPT sector configs (sectors.yaml).
-Rotates through 15 BD cities × 7 sectors × keywords, plus Bangladesh-level
+Generates Google Maps search queries from BPT sector configs (software_sectors.yaml).
+Targets customer business types that would BUY the software, not the software vendors.
+Rotates through 15 BD cities × 15 software sectors × buyer keywords, plus Bangladesh-level
 and international-market queries. Never exhausts — shuffles and restarts cycle.
 
 Mix ratio (per batch of 50):
@@ -48,7 +49,7 @@ SECTORS_YAML_PATH = (
     / "business-plan-template"
     / "_system"
     / "config"
-    / "sectors.yaml"
+    / "software_sectors.yaml"
 )
 
 
@@ -125,13 +126,19 @@ def _load_sectors() -> dict:
 
 
 def _extract_keywords(sector_config: dict) -> list[str]:
-    """Pull all searchable keywords from a sector config."""
+    """Pull searchable keywords from a sector config (buyer business types preferred)."""
     kw = []
+    tbt = sector_config.get("target_business_types") or {}
+    has_tbt = bool(tbt.get("en") or tbt.get("bn"))
+    if has_tbt:
+        kw.extend(tbt.get("en", []))
+        kw.extend(tbt.get("bn", []))
+        return kw
+    # Fallback: legacy keywords
     kd = sector_config.get("keywords", {})
     kw.extend(kd.get("en", []))
     kw.extend(kd.get("bn", []))
-    for sub in sector_config.get("subsegments", []):
-        kw.append(sub)
+    kw.extend(sector_config.get("subsegments", []))
     return kw
 
 

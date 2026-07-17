@@ -14,6 +14,7 @@ systemd unit: ~/.config/systemd/user/infinitecrawler-listing.service
 
 import asyncio
 import logging
+import os
 import sys
 import time
 from datetime import datetime, timezone
@@ -121,7 +122,7 @@ async def start_browser(state: DaemonState):
 
 
 async def restart_browser(state: DaemonState):
-    """Clean shutdown + fresh start. Removes Chrome temp profiles."""
+    """Clean shutdown + fresh start. Removes Chrome temp profiles, kills orphans."""
     log.info("Restarting browser (pages=%d, uptime=%ds)...",
              state.pages_since_restart, int(time.time() - state.last_restart_time))
     if state.browser_manager:
@@ -129,9 +130,77 @@ async def restart_browser(state: DaemonState):
     state.browser_manager = None
     # Unbind browser-bound strategies
     state.extraction_strategy = None
+    # Kill any orphaned Chrome processes from the old browser
+    await _kill_orphaned_chrome()
     await asyncio.sleep(3)
     await start_browser(state)
     await _refresh_browser_bound_strategies(state)
+
+
+async def _kill_orphaned_chrome():
+    """Kill Chrome processes not descendant of this daemon process.
+
+    Walks the full ancestry of each Chrome process up to PID 1.
+    If our own PID appears anywhere in the chain, the process is owned and spared.
+    Crashpad handlers re-parented to systemd (PPID=1 or session leader) are killed
+    if no living Chrome browser claims them.
+    """
+    import psutil
+    our_pid = os.getpid()
+    # Collect PIDs of Chrome browsers that ARE our descendants (have our_pid in ancestry)
+    our_chrome_pids = set()
+    for proc in psutil.process_iter(['pid', 'name', 'ppid']):
+        try:
+            # Defensive: proc.info may be None if process vanishes mid-iteration
+            info = proc.info or {}
+            if info.get('name') and 'chrome' in info['name'].lower():
+                cur = info['pid']
+                for _ in range(15):
+                    ppid = 0
+                    try:
+                        ppid = psutil.Process(cur).ppid()
+                    except psutil.NoSuchProcess:
+                        break
+                    if ppid == our_pid:
+                        our_chrome_pids.add(info['pid'])
+                        break
+                    if ppid <= 1:
+                        break
+                    cur = ppid
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+
+    # Kill any Chrome process whose ancestry does NOT include our_pid,
+    # EXCEPT children of our owned Chrome browsers (zygotes, renderers, crashpads)
+    killed = 0
+    for proc in psutil.process_iter(['pid', 'name', 'ppid']):
+        try:
+            info = proc.info or {}
+            if not (info.get('name') and 'chrome' in info['name'].lower()):
+                continue
+            pid = info['pid']
+            ppid = info['ppid']
+            # Is this a child of one of our owned Chrome browsers?
+            if ppid in our_chrome_pids or pid in our_chrome_pids:
+                continue
+            # Is this a crashpad handler? Check if any owned Chrome has it as a child
+            # (if the Chrome browser that spawned it is still alive, the crashpad is legit)
+            kill_it = True
+            for cp in our_chrome_pids:
+                try:
+                    cp_proc = psutil.Process(cp)
+                    if cp_proc.is_running():
+                        kill_it = False
+                        break
+                except psutil.NoSuchProcess:
+                    pass
+            if kill_it:
+                proc.kill()
+                killed += 1
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            pass
+    if killed:
+        log.info("Killed %d orphaned Chrome processes", killed)
 
 
 async def _refresh_browser_bound_strategies(state: DaemonState):
@@ -202,8 +271,44 @@ async def init_infrastructure(state: DaemonState):
 
 # ── Live URL feed from PG ───────────────────────────────────────────────────
 
+def _pg_reconnect(state: DaemonState) -> None:
+    """Reconnect PG if the connection is closed or broken."""
+    if state.pg_conn is not None:
+        try:
+            with state.pg_conn.cursor() as cur:
+                cur.execute("SELECT 1")
+            return  # alive
+        except Exception:
+            log.info("PG connection stale — reconnecting…")
+            try:
+                state.pg_conn.close()
+            except Exception:
+                pass
+            state.pg_conn = None
+    try:
+        state.pg_conn = psycopg.connect(
+            host=PG_HOST, port=PG_PORT, user=PG_USER,
+            password=PG_PASSWORD, dbname=PG_DB,
+            connect_timeout=10,
+        )
+        state.pg_conn.autocommit = True
+        log.info("PG reconnected: %s:%s/%s", PG_HOST, PG_PORT, PG_DB)
+    except Exception as e:
+        log.error("PG reconnect failed: %s", e)
+        state.pg_conn = None
+
+
+def _check_staleness(state: DaemonState, last_write_time: float, label: str) -> float:
+    """Log WARNING if no new data written in 1h. Returns current time."""
+    now = time.monotonic()
+    if now - last_write_time > 3600:  # 1 hour
+        log.warning("STALENESS ALERT: no new %s data written in 1h", label)
+    return now
+
+
 def fetch_uncrawled_urls(state: DaemonState) -> list[str]:
     """Pull uncrawled listing URLs directly from PG (no file intermediary)."""
+    _pg_reconnect(state)
     if not state.pg_conn:
         return []
     try:
@@ -215,6 +320,7 @@ def fetch_uncrawled_urls(state: DaemonState) -> list[str]:
         return urls
     except Exception as e:
         log.error("PG URL fetch failed: %s", e)
+        state.pg_conn = None  # invalidate so next call reconnects
         return []
 
 
