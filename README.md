@@ -2,7 +2,7 @@
 
 ![Built with uv](https://img.shields.io/badge/Built%20with-uv-purple)
 
-A modular, configuration-driven Google Maps scraping framework running 24/7 via systemd daemons. Generates qualified business leads from 15 BD sectors defined in [business-plan-template](https://github.com/monjurkuet/business-plan-template).
+A modular, configuration-driven Google Maps scraping framework running 24/7 via systemd daemons. Generates qualified business leads from 16 BD sectors (including hotels/hospitality) defined in [business-plan-template](https://github.com/monjurkuet/business-plan-template).
 
 ## Architecture: Two Eternal Daemons
 
@@ -39,9 +39,9 @@ uv run python -m api.main
 
 PostgreSQL on remote VPS. Redis on localhost for queue management (`gmaps_bd_business:*` for search, `gmaps:*` for listing).
 
-## Sector Coverage (15 Sectors)
+## Sector Coverage (16 Sectors)
 
-9 researched sectors + 6 pipeline-only sectors defined in BPT `sectors.yaml`. See [AGENTS.md](AGENTS.md) for full query pool breakdown.
+15 BPT software-product sectors + 1 hospitality/hotel sector defined in `software_sectors.yaml`. The query generator's infinite cycle searches BD-Local (city×keyword), BD-National, and Global (export-eligible keywords only) tiers. See [AGENTS.md](AGENTS.md) for full query pool breakdown.
 
 ## Key Features
 
