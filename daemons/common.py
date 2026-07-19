@@ -53,34 +53,13 @@ def install_signal_handlers(state):
 
 
 def cleanup_orphaned_chrome_dirs():
-    """Remove orphaned Chrome temp profile directories."""
-    import shutil
-    from pathlib import Path
-    import psutil
+    """No-op stub — kept for backward compatibility with callers that still
+    invoke it.
 
-    cleaned = 0
-    # Find all processes using Chrome temp dirs
-    used_dirs = set()
-    for proc in psutil.process_iter(['cmdline']):
-        try:
-            cmdline = proc.info['cmdline'] or []
-            if cmdline:
-                for arg in cmdline:
-                    if arg.startswith('user-data-dir=/tmp/uc_'):
-                        used_dirs.add(arg.split('=', 1)[1])
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            pass
-
-    # Remove unused temp dirs
-    for base in [Path("/tmp")]:
-        if base.exists():
-            for d in base.glob("uc_*"):
-                if d.name not in used_dirs:
-                    try:
-                        shutil.rmtree(d, ignore_errors=True)
-                        cleaned += 1
-                    except Exception:
-                        pass
-    if cleaned:
-        log.info("Cleaned %d orphaned Chrome temp directories", cleaned)
-    return cleaned
+    With pinchtab the browser runs in an external server and manages its own
+    Chrome profile directory (`/root/.pinchtab/chrome-profile`), so there are
+    no per-process temp profile dirs to clean up.  Before the pinchtab migration
+    this function dropped nodriver's `~/.local/share/nodriver/uc_*` and
+    `/tmp/uc_*` temp dirs.
+    """
+    return 0

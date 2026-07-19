@@ -31,6 +31,10 @@ Redis queues:
 
 Database: PostgreSQL (remote VPS) — `scraper.gmaps_search_results` and `scraper.gmaps_listings`
 
+The `source_type` column on each row identifies which run wrote it:
+- `gmaps_search` / `gmaps_listing` = legacy / current pinchtab-era
+- (former side-by-side `gmaps_search_pinchtab` was retired when nodriver was removed.)
+
 ## Commands
 
 ### Systemd
@@ -40,6 +44,18 @@ systemctl --user stop     infinitecrawler-search                          # stop
 systemctl --user restart  infinitecrawler-listing                         # restart one
 systemctl --user status   infinitecrawler-search --no-pager -l -n 50      # logs
 systemctl --user is-active infinitecrawler-search                         # quick check
+
+# Pinchtab browser server (the daemon's Chrome provider — required dependency).
+# Both daemon units declare After=pinchtab.service, so starting pinchtab means
+# you don't have to worry about starting it first.
+systemctl --user status   pinchtab.service                                # status
+systemctl --user restart  pinchtab.service                                # restart it
+tail -f /root/.pinchtab/server.log                                          # raw server log
+
+# Timer services (email every 2h, LinkedIn every 4h)
+systemctl --user start    infinitecrawler-email-extract.timer             # start email timer
+systemctl --user start    infinitecrawler-linkedin-search.timer           # start LinkedIn timer
+systemctl --user list-timers --no-pager | grep infinitecrawler            # next fire times
 ```
 
 ### Redis
@@ -80,11 +96,19 @@ uv run python scripts/monitor_pipeline.py --json    # machine-readable JSON
 uv run python scripts/monitor_pipeline.py --stats   # classification stats only
 ```
 
-### Stuck Chrome Detection
+### Pinchtab health
+
 ```bash
-# Check for Chrome processes stuck on newtab (should be on Google Maps)
-uv run bash scripts/check-stuck-chrome.sh
-# Or: systemctl --user status infinitecrawler-search infinitecrawler-listing --no-pager -l
+# Quick server health (no daemon restart needed)
+PINCHTAB_TOKEN=$(cat /root/.pinchtab/config.json | python3 -c "import sys,json;print(json.load(sys.stdin)['server']['token'])")
+curl -s -H "Authorization: Bearer $PINCHTAB_TOKEN" http://127.0.0.1:9868/health
+
+# Should see tab count, recent crashes, restart counts
+# "crashes.recent" > 0 is normal — pinchtab's supervisor handles it
+# "tabs": 0 means the always-on supervisor hasn't restarted Chrome yet
+
+systemctl --user status pinchtab.service --no-pager -l -n 20
+tail -50 /root/.pinchtab/server.log
 ```
 
 ## Query Generator
@@ -112,8 +136,11 @@ Ultra-technical BIM keywords (MEP design, scan-to-BIM, BIM outsourcing) are glob
 | `scripts/monitor_pipeline.py` | Health monitor (Redis + PG + systemd checks) |
 | `scripts/llm_classifier.py` | LLM classifier module: prompt building, fallback, few-shot, training examples |
 | `scripts/db_classify.py` | Offline cron: reads unclassified leads from PG, calls LLM, writes back |
+| `scripts/db_email_extract.py` | Offline HTTP email extraction backfill (runs every 2h via timer) |
+| `scripts/db_linkedin_search.py` | Offline LinkedIn profile discovery via DDGS (runs every 4h via timer) |
 | `api/` | FastAPI REST server (port 8015, bearer auth) |
 | `~/.config/systemd/user/infinitecrawler-*.service` | systemd unit files |
+| `~/.config/systemd/user/infinitecrawler-*.timer` | systemd timer unit files |
 | `~/.hermes/scripts/bd-watchdog.sh` | Hermes cron watchdog (every 60m, no_agent) |
 
 ## Important Notes
@@ -121,5 +148,43 @@ Ultra-technical BIM keywords (MEP design, scan-to-BIM, BIM outsourcing) are glob
 - `gmaps_bd_business:failed` is a **HASH** (not LIST). Use `HLEN` not `LLEN`.
 - Search config uses `rate_limit: 2` (int), not `rate_limiting: {...}` (dict). Daemon handles this.
 - Both daemons have no restart limits (`StartLimitIntervalSec=0`). systemd never gives up.
-- Browser restarts every hour OR 100 pages — whichever hits first. Chrome temp dirs cleaned.
-- Memory capped at 3G per daemon via systemd `MemoryMax`.
+- Browser reconnects every 1h OR 100 pages — reconnect just releases the HTTP session and grabs a fresh tab.  Pinchtab's `always-on` supervisor handles Chrome crashes (instant restart); the daemon never touches Chrome directly.
+- Memory capped at 3G per daemon via systemd `MemoryMax`; pinchtab itself gets 6G for Chrome + its always-on supervisor.
+
+## Browser Engine: pinchtab
+
+The crawler daemons talk to a separate `pinchtab server` process (port 9868 by default)
+over a thin async HTTP client at `base/pinchtab_client.py`.  Pinchtab manages
+Chrome's lifecycle and crashes automatically — the daemons are pure observers
+that issue `POST /navigate` and `POST /evaluate` requests.
+
+| Component | Path |
+|---|---|
+| HTTP client + Tab adapter | `base/pinchtab_client.py` |
+| Browser wrapper | `base/browser_manager.py` (no nodriver branch — pinchtab only) |
+| Pinchtab binary | `/root/.pinchtab/bin/0.15.0/pinchtab-linux-amd64` |
+| Pinchtab config | `/root/.pinchtab/config.json` |
+| Pinchtab systemd unit | `~/.config/systemd/user/pinchtab.service` |
+
+The Tab adapter shims nodriver's `Tab.evaluate() / select() / select_all() /
+wait()` interface so the existing `strategies/extraction/*.py`,
+`strategies/pagination/*.py`, and `strategies/navigation/*.py` files work
+unchanged.
+
+### Pinchtab Chrome stability patch — REQUIRED
+
+Pinchtab 0.15 ships Chrome with `--max_old_space_size=512
+--renderer-process-limit=1` which OOM-crashes on Google Maps every 1-3
+navigations.  Override via `extraFlags` in
+`/root/.pinchtab/config.json`:
+
+```json
+"browser": { "extraFlags": "--max_old_space_size=2048 --renderer-process-limit=5" }
+```
+
+After this flag is set, Chromium uses 2GB V8 heap + 5 renderer processes and
+stays alive through the daemon's 1h/100-page cycle.  Without it the
+auto-recovery loop kicks in 3-5 times per minute and throughput drops ~40%.
+
+See the `pinchtab-chrome-stability` Hermes skill for the full diagnosis.
+

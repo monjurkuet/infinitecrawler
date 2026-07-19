@@ -39,18 +39,21 @@ class InfiniteScrollPaginationStrategy(PaginationStrategy):
                 )
                 return False
 
-            # Get current scroll height
-            current_height = await tab.evaluate(
-                f"document.querySelector('{container_selector}').scrollHeight"
-            )
-
-            # Scroll to the bottom using configured script or default
+            # Scroll to the bottom using configured script or a safe interpolation.
+            # NOTE: the older template `f"document.querySelector('{sel}')…"` produced
+            # invalid JS when `sel` itself contained single quotes (e.g.
+            # `div[role='feed']`). We now build the JS by injecting the selector as
+            # a JSON-encoded string literal, which is always syntactically valid.
             scroll_script = self.config.get("scroll_script")
             if scroll_script:
                 await tab.evaluate(scroll_script)
             else:
+                import json as _json
+                sel_js = _json.dumps(container_selector)
                 await tab.evaluate(
-                    f"document.querySelector('{container_selector}').scrollTo(0, {current_height})"
+                    "(() => {const el = document.querySelector(" + sel_js + ");"
+                    " if (el) el.scrollTo(0, el.scrollHeight);"
+                    " return el ? el.scrollHeight : 0;})()"
                 )
 
             # Wait for new content to load

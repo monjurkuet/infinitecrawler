@@ -47,7 +47,7 @@ PostgreSQL on remote VPS. Redis on localhost for queue management (`gmaps_bd_bus
 
 - **24/7 Continuous** — systemd-supervised eternal loops, never exhausts queries
 - **Auto-classification** — In-stream fallback (rule-based) + offline LLM (DeepSeek V4 Flash) assigns every listing to a BPT sector
-- **Anti-bot resistant** — nodriver (Chrome-based) with browser restarts every hour
+- **Anti-bot resistant** — pinchtab (Chrome-based) with browser restarts every hour
 - **Three-tier queries** — BD city-level, Bangladesh-national, and international (USA, UK, AU, CA, UAE, KSA)
 - **REST API** — Full programmatic access on port 8015 (31 routes, Bearer auth)
 - **Health monitoring** — Hermes cron watchdog every 60m + 1m API keepalive

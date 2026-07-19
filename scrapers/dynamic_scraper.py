@@ -9,7 +9,7 @@ from typing import Dict
 
 
 class DynamicScraper(BaseScraper):
-    """Dynamic scraper for JavaScript-heavy websites using nodriver."""
+    """Dynamic scraper for JavaScript-heavy websites using pinchtab."""
 
     def __init__(self, config: Dict, **kwargs):
         super().__init__(config, **kwargs)
@@ -238,21 +238,20 @@ class DynamicScraper(BaseScraper):
             self.logger.warning("No output strategy configured; using no-op output")
 
     async def start_browser(self):
-        """Start browser instance."""
+        """Attach to the running pinchtab server."""
         browser_config = self.config.get("browser", {})
-        engine = browser_config.get(
-            "automation", self.config.get("browser_automation", "nodriver")
-        )
         headless = browser_config.get("headless", self.headless)
         page_wait_seconds = browser_config.get("page_wait_seconds", 1.0)
+        pinchtab_cfg = self.config.get("pinchtab", {})
 
         self.browser_manager = BrowserManager(
-            engine=engine,
+            engine="pinchtab",
             headless=headless,
             page_wait_seconds=page_wait_seconds,
+            pinchtab_config=pinchtab_cfg,
         )
         await self.browser_manager.start()
-        self.logger.info(f"Browser started (headless={headless})")
+        self.logger.info(f"Pinchtab browser attached (headless={headless})")
 
     async def get_search_url(self, query: str) -> str:
         """Generate search URL based on configuration."""

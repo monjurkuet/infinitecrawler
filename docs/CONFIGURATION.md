@@ -9,7 +9,7 @@ The framework uses YAML files to define scraper behavior. This allows for rapid 
 | Field | Type | Required | Description |
 | :--- | :--- | :--- | :--- |
 | `name` | string | Yes | Human-readable name of the scraper |
-| `content_type` | enum | Yes | `dynamic` (nodriver) or `listing_crawler` |
+| `content_type` | enum | Yes | `dynamic` (pinchtab) or `listing_crawler` |
 | `browser_automation` | string | No | Legacy browser engine key; normalized to `browser.automation` |
 | `headless` | boolean | No | Legacy top-level headless flag; normalized to `browser.headless` |
 
@@ -203,7 +203,7 @@ rate_limit: 2  # Simple delay between requests
 name: "Google Maps Search"
 content_type: "dynamic"
 browser:
-  automation: "nodriver"
+  automation: "pinchtab"
   headless: true
 
 # Input: Load queries from file
@@ -277,7 +277,7 @@ name: "Google Maps Listing Crawler"
 content_type: "listing_crawler"
 
 browser:
-  automation: "nodriver"
+  automation: "pinchtab"
   headless: true
 
 input:

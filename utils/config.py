@@ -52,7 +52,7 @@ def normalize_config(config: Dict[str, Any]) -> Dict[str, Any]:
         normalized["browser"] = browser
 
     if "browser" in normalized:
-        normalized["browser_automation"] = browser.get("automation", "nodriver")
+        normalized["browser_automation"] = browser.get("automation", "pinchtab")
         normalized["headless"] = browser.get("headless", True)
 
     for section_name in (

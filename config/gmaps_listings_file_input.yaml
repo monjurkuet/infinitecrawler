@@ -2,7 +2,7 @@ name: "Google Maps Listing Crawler (File Input)"
 content_type: "listing_crawler"
 
 browser:
-  automation: "nodriver"
+  automation: "pinchtab"
   headless: true
   page_wait_seconds: 1.0
 

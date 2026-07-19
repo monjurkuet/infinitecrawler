@@ -82,7 +82,7 @@ uv pip install psycopg[binary] python-dotenv redis
 
 name: "Google Maps Search"
 content_type: "dynamic"
-browser_automation: "nodriver"
+browser_automation: "pinchtab"
 headless: true
 
 # Input: Load queries from file
@@ -249,7 +249,7 @@ output:
 │  ┌──────────────────────────────────────────────────────────┐   │
 │  │  For each worker:                                         │   │
 │  │  ┌─────────────────────────────────────────────────────┐ │   │
-│  │  │  Browser Manager (nodriver)                         │ │   │
+│  │  │  Browser Manager (pinchtab)                         │ │   │
 │  │  │  ┌─────────────────────────────────────────────┐   │ │   │
 │  │  │  │  1. Get query from queue                    │   │ │   │
 │  │  │  │  2. Navigate to search URL                  │   │ │   │

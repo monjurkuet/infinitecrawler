@@ -1,9 +1,14 @@
 name: Google Maps Listing Crawler (Working Config)
 content_type: listing_crawler
 browser:
-  automation: nodriver
+  automation: pinchtab
   headless: true
-  page_wait_seconds: 1.0
+  page_wait_seconds: 15.0
+pinchtab:
+  server_url: "http://127.0.0.1:9867"
+  instance_url: "http://127.0.0.1:9868"
+  token: "e03c396c760e5c790e727d638ac97e03ef8be266487e6b6c"
+  navigate_timeout: 90
 input:
   strategy: postgresql_uncrawled_gmaps
   config:
@@ -154,7 +159,7 @@ extraction:
     delay: 2
     backoff: exponential
   timeouts:
-    page_load: 2
+    page_load: 30
     element: 1
 output:
   strategy: postgresql_listing_upsert

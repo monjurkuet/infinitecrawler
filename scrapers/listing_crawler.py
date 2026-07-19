@@ -175,20 +175,18 @@ class ListingCrawler(BaseScraper):
             )
 
     async def start_browser(self):
-        """Start browser instance"""
+        """Attach to the running pinchtab server."""
         browser_config = self.config.get("browser", {})
-        engine = browser_config.get(
-            "automation", self.config.get("browser_automation", "nodriver")
-        )
         headless = browser_config.get("headless", self.config.get("headless", True))
 
         self.browser_manager = BrowserManager(
-            engine=engine,
+            engine="pinchtab",
             headless=headless,
             page_wait_seconds=self.browser_page_wait_seconds,
+            pinchtab_config=self.config.get("pinchtab", {}),
         )
         await self.browser_manager.start()
-        self.logger.info(f"Browser started (headless={headless})")
+        self.logger.info(f"Pinchtab browser attached (headless={headless})")
 
     async def navigate_to_search(self, url: str):
         """Navigate to URL - required by base class"""

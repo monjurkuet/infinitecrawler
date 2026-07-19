@@ -21,7 +21,6 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-import nodriver as uc
 from dotenv import load_dotenv
 
 # ── Project imports ─────────────────────────────────────────────────────────
@@ -37,7 +36,6 @@ from daemons.common import (
     BROWSER_RESTART_INTERVAL_SEC,
     BROWSER_RESTART_PAGES,
     QUEUE_LOW_THRESHOLD,
-    cleanup_orphaned_chrome_dirs,
     install_signal_handlers,
     shutdown_strategies,
 )
@@ -48,6 +46,9 @@ load_dotenv(REPO_ROOT / ".env")
 
 CONFIG_PATH = REPO_ROOT / "config" / "gmaps_bd_business_search.yaml"
 QUERY_NAV_TIMEOUT = 30  # Seconds for GMaps search query navigation
+EXTRACTION_TIMEOUT = 25  # Seconds for extraction (prevents browser tab hang)
+SCROLL_TIMEOUT = 15  # Seconds for scroll/load-more operations
+BROWSER_START_TIMEOUT = 30  # Seconds for browser launch
 QUERY_BATCH_SIZE = 50  # How many queries to generate per refill
 STALLED_REQUEUE_INTERVAL = 60  # Check for stalled processing items every N sec
 
@@ -97,25 +98,38 @@ class DaemonState:
 # ── Browser lifecycle ───────────────────────────────────────────────────────
 
 async def start_browser(state: DaemonState):
-    """Launch a fresh Chrome instance via nodriver."""
+    """Attach to the running pinchtab server (port 9868 by default).
+
+    Pinchtab's `always-on` policy auto-restarts crashed Chrome instances, so we
+    don't have to launch Chrome ourselves — we just connect to the existing
+    server.  See `base/pinchtab_client.py` for the HTTP client + Tab adapter.
+    """
     browser_config = state.config.get("browser", {})
     headless = browser_config.get("headless", True)
     page_wait = browser_config.get("page_wait_seconds", 1.0)
+    pinchtab_cfg = state.config.get("pinchtab", {})
 
     state.browser_manager = BrowserManager(
-        engine="nodriver",
+        engine="pinchtab",
         headless=headless,
         page_wait_seconds=page_wait,
+        pinchtab_config=pinchtab_cfg,
     )
     await state.browser_manager.start()
     state.last_restart_time = time.time()
     state.pages_since_restart = 0
-    log.info("Browser started (headless=%s)", headless)
+    log.info("Browser started (engine=pinchtab, headless=%s)", headless)
 
 
 async def restart_browser(state: DaemonState):
-    """Clean shutdown + fresh start. Removes Chrome temp profiles, kills orphans."""
-    log.info("Restarting browser (pages=%d, uptime=%ds)...",
+    """Clean reconnect to pinchtab + re-bind strategies.
+
+    With pinchtab there are no orphaned Chrome processes to kill — the
+    `always-on` supervisor manages Chrome itself, and it auto-restarts a
+    crashed instance within seconds.  We only need to release our HTTP
+    session and acquire a fresh tab.
+    """
+    log.info("Reconnecting to pinchtab (pages=%d, uptime=%ds)...",
              state.pages_since_restart, int(time.time() - state.last_restart_time))
     if state.browser_manager:
         await state.browser_manager.cleanup()
@@ -123,78 +137,15 @@ async def restart_browser(state: DaemonState):
     # Unbind strategies that hold browser references
     state.extraction_strategy = None
     state.pagination_strategy = None
-    # Kill any orphaned Chrome processes from the old browser
-    await _kill_orphaned_chrome()
-    await asyncio.sleep(3)
-    await start_browser(state)
-    await _init_browser_bound_strategies(state)
-
-
-async def _kill_orphaned_chrome():
-    """Kill Chrome processes not descendant of this daemon process.
-
-    Walks the full ancestry of each Chrome process up to PID 1.
-    If our own PID appears anywhere in the chain, the process is owned and spared.
-    Crashpad handlers re-parented to systemd (PPID=1 or session leader) are killed
-    if no living Chrome browser claims them.
-    """
-    import psutil
-    our_pid = os.getpid()
-    # Collect PIDs of Chrome browsers that ARE our descendants (have our_pid in ancestry)
-    our_chrome_pids = set()
-    all_chrome_pids = []
-    for proc in psutil.process_iter(['pid', 'name', 'ppid']):
-        try:
-            info = proc.info or {}
-            if info.get('name') and 'chrome' in info['name'].lower():
-                all_chrome_pids.append(info['pid'])
-                # Walk ancestry
-                cur = info['pid']
-                for _ in range(15):
-                    ppid = 0
-                    try:
-                        ppid = psutil.Process(cur).ppid()
-                    except psutil.NoSuchProcess:
-                        break
-                    if ppid == our_pid:
-                        our_chrome_pids.add(info['pid'])
-                        break
-                    if ppid <= 1:
-                        break
-                    cur = ppid
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            pass
-
-    # Now kill any Chrome process whose ancestry does NOT include our_pid,
-    # EXCEPT children of our owned Chrome browsers (zygotes, renderers, crashpads)
-    killed = 0
-    for proc in psutil.process_iter(['pid', 'name', 'ppid']):
-        try:
-            info = proc.info or {}
-            if not (info.get('name') and 'chrome' in info['name'].lower()):
-                continue
-            pid = info['pid']
-            ppid = info['ppid']
-            # Is this a child of one of our owned Chrome browsers?
-            if ppid in our_chrome_pids or pid in our_chrome_pids:
-                continue
-            # Is this a crashpad handler? Check if any owned Chrome has it as a child
-            kill_it = True
-            for cp in our_chrome_pids:
-                try:
-                    cp_proc = psutil.Process(cp)
-                    if cp_proc.is_running():
-                        kill_it = False
-                        break
-                except psutil.NoSuchProcess:
-                    pass
-            if kill_it:
-                proc.kill()
-                killed += 1
-        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-            pass
-    if killed:
-        log.info("Killed %d orphaned Chrome processes", killed)
+    await asyncio.sleep(1)
+    try:
+        await asyncio.wait_for(start_browser(state), timeout=BROWSER_START_TIMEOUT)
+        await asyncio.wait_for(
+            _init_browser_bound_strategies(state), timeout=BROWSER_START_TIMEOUT)
+    except asyncio.TimeoutError:
+        log.error("Pinchtab reconnect timed out after %ds", BROWSER_START_TIMEOUT)
+        state.browser_manager = None
+        raise
 
 
 async def _init_browser_bound_strategies(state: DaemonState):
@@ -308,10 +259,26 @@ async def search_single_query(state: DaemonState, query: str) -> bool:
             if state.output_strategy and state.output_strategy.has_reached_limit():
                 break
 
-            if not await state.pagination_strategy.has_more_results():
+            try:
+                has_more = await asyncio.wait_for(
+                    state.pagination_strategy.has_more_results(),
+                    timeout=SCROLL_TIMEOUT,
+                )
+            except asyncio.TimeoutError:
+                log.warning("has_more_results timed out — breaking scroll loop")
+                break
+            if not has_more:
                 break
 
-            items = await state.extraction_strategy.extract_items()
+            try:
+                items = await asyncio.wait_for(
+                    state.extraction_strategy.extract_items(),
+                    timeout=EXTRACTION_TIMEOUT,
+                )
+            except asyncio.TimeoutError:
+                log.warning("extract_items timed out after %ds — breaking scroll loop",
+                            EXTRACTION_TIMEOUT)
+                break
             new_count = 0
 
             for item in items:
@@ -327,7 +294,15 @@ async def search_single_query(state: DaemonState, query: str) -> bool:
             log.info("Query '%s': extracted %d items (%d new)",
                      query[:60], len(items), new_count)
 
-            if not await state.pagination_strategy.load_more_results():
+            try:
+                loaded = await asyncio.wait_for(
+                    state.pagination_strategy.load_more_results(),
+                    timeout=SCROLL_TIMEOUT,
+                )
+            except asyncio.TimeoutError:
+                log.warning("load_more_results timed out — breaking scroll loop")
+                break
+            if not loaded:
                 break
 
             scroll_attempts += 1
@@ -478,12 +453,9 @@ async def main():
              QUEUE_LOW_THRESHOLD, QUERY_BATCH_SIZE)
     log.info("=" * 60)
 
-    # Clean up orphaned Chrome temp dirs on startup
-    cleanup_orphaned_chrome_dirs()
-
     await init_infrastructure(state)
     await eternal_loop(state)
 
 
 if __name__ == "__main__":
-    uc.loop().run_until_complete(main())
+    asyncio.run(main())

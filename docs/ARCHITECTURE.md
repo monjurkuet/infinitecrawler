@@ -90,7 +90,7 @@ classDiagram
 │  └──────────────────────────────────────────────────────────┘   │
 │                            │                                    │
 │                            ▼                                    │
-│  3. BROWSER (nodriver)                                        │
+|  3. BROWSER (pinchtab)                                            |
 │  ┌──────────────────────────────────────────────────────────┐   │
 │  │  - Headless Chrome automation                          │   │
 │  │  - Automatic page navigation                           │   │

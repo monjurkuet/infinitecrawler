@@ -60,7 +60,7 @@ name: "Google Maps Listing Crawler"
 content_type: "listing_crawler"
 
 browser:
-  automation: "nodriver"
+  automation: "pinchtab"
   headless: true  # Set to false for debugging
 
 input:
@@ -190,7 +190,7 @@ If you still want to seed URLs manually for debugging, `file_url_loader` remains
 │  ┌──────────────────────────────────────────────────────────┐   │
 │  │                    Browser Manager                        │   │
 │  │  ┌─────────────────────────────────────────────────────┐ │   │
-│  │  │                   nodriver                          │ │   │
+│  │  │                   pinchtab                          │ │   │
 │  │  │  - Headless Chrome automation                       │ │   │
 │  │  │  - Automatic retry on failures                     │ │   │
 │  │  │  - Browser restart every 100 pages                  │ │   │
@@ -235,7 +235,7 @@ If you still want to seed URLs manually for debugging, `file_url_loader` remains
 - Tracks completion/failure status
 - Can be configured to ignore stale Redis `completed` state when PostgreSQL should be authoritative
 
-#### 3. Browser Manager (`nodriver`)
+#### 3. Browser Manager (`pinchtab`)
 - Controls Chrome browser
 - Handles page navigation
 - Manages browser lifecycle

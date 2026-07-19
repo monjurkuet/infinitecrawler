@@ -15,7 +15,6 @@ Usage:
 import argparse
 import asyncio
 import logging
-import nodriver as uc
 from dotenv import load_dotenv
 from factory.scraper_factory import ScraperFactory
 
@@ -120,5 +119,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    # Run the async function
-    uc.loop().run_until_complete(main())
+    asyncio.run(main())

@@ -20,14 +20,14 @@ class CliAndConfigTests(unittest.TestCase):
         config = normalize_config(
             {
                 "content_type": "dynamic",
-                "browser_automation": "nodriver",
+                "browser_automation": "pinchtab",
                 "headless": False,
                 "output_strategy": "jsonl_file",
                 "output": {"file_path": "output/data_{query}.jsonl", "max_results": 10},
             }
         )
 
-        self.assertEqual(config["browser"]["automation"], "nodriver")
+        self.assertEqual(config["browser"]["automation"], "pinchtab")
         self.assertFalse(config["browser"]["headless"])
         self.assertEqual(config["output"]["strategy"], "jsonl_file")
         self.assertEqual(

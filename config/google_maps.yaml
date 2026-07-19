@@ -1,6 +1,6 @@
 name: "Google Maps"
 content_type: "dynamic"
-browser_automation: "nodriver"
+browser_automation: "pinchtab"
 headless: true
 pagination_strategy: "infinite_scroll"
 extraction_strategy: "generic_selector"
