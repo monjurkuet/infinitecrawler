@@ -60,14 +60,18 @@ class BrowserManager:
         return self.tab
 
     async def cleanup(self):
-        """Release the HTTP session.  Never kill pinchtab's Chrome — the always-on
+        """Release the HTTP session, close aiohttp connector.
+
+        We intentionally do NOT kill pinchtab's Chrome — the always-on
         supervisor manages that lifecycle.  Killing from outside desyncs the
-        dashboard."""
+        dashboard.  But we DO need to close our HTTP/TCP layers cleanly or
+        aiohttp spams "Unclosed connector" warnings on GC.
+        """
         if self._pinchtab:
             try:
                 await self._pinchtab.cleanup()
             except Exception as e:
                 self.logger.warning("Pinchtab cleanup error: %s", e)
-            self._pinchtab = None
+        self._pinchtab = None
         self.tab = None
         self.logger.info("Pinchtab session cleaned up")

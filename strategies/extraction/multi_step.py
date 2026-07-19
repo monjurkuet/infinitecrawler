@@ -308,14 +308,74 @@ class MultiStepExtractionStrategy(ExtractionStrategy):
             raise ValueError(f"Unknown extract type: {extract_type}")
 
     async def _execute_extract_step(self, step: dict, context: dict) -> Dict:
-        """Extract fields using selectors with retry logic"""
+        """Extract fields using selectors with retry logic.
+
+        Optimisation: when all fields define a single primary selector (no
+        fallback-selectors array), we issue one batched ``extract_fields``
+        round-trip instead of N individual ``tab.select`` calls.  The old
+        per-field loop still runs when fallback selectors exist or the
+        batched path is unavailable.
+        """
         extracted = {}
         fields = step.get("fields", {})
         tab = self.browser_manager.tab
-
-        # Check if retry is enabled for this step
         use_retry = step.get("retry", self.retry_config.get("enabled", True))
 
+        # Check if batched optimisation applies: every field must have
+        # exactly one selector (no fallback selectors array) and we must
+        # be running on the pinchtab Tab adapter.
+        all_simple = all(
+            not fc.get("selectors") for fc in fields.values()
+        ) if fields else False
+        can_batch = all_simple and fields and hasattr(tab, "extract_fields")
+
+        if can_batch:
+            primary_specs = []
+            for field_name, fc in fields.items():
+                primary_specs.append({
+                    "name": field_name,
+                    "selector": fc.get("selector", ""),
+                    "attr": fc.get("attribute"),
+                })
+            try:
+                batch = await tab.extract_fields(primary_specs)
+                if batch:
+                    for name in fields:
+                        raw = batch.get(name)
+                        fc = fields[name]
+                        if raw is None or raw == "":
+                            # Primary missed — fall back to per-field retry
+                            if use_retry:
+                                value = await self._extract_field_with_retry(tab, fc, name)
+                            else:
+                                value = await self._extract_field_once(
+                                    tab, [fc.get("selector", "")], fc, name,
+                                )
+                            extracted[name] = value
+                        else:
+                            extract_type = fc.get("type", "text")
+                            if extract_type in ("text",) or not fc.get("attribute"):
+                                extracted[name] = raw  # text content already trimmed
+                            elif extract_type == "attribute":
+                                # Post-process: regex + fallback
+                                regex_pattern = fc.get("regex")
+                                if regex_pattern and raw:
+                                    match = re.search(regex_pattern, raw)
+                                    if match:
+                                        candidate = match.group(1)
+                                        if re.search(r"\d", self._normalize_digits(candidate)):
+                                            extracted[name] = candidate
+                                            continue
+                                    extracted[name] = None
+                                    continue
+                                extracted[name] = raw
+                            else:
+                                extracted[name] = raw
+                    return extracted
+            except Exception:
+                self.logger.debug("batched extract_fields failed; falling back", exc_info=True)
+
+        # Per-field fallback / simple-request
         for field_name, field_config in fields.items():
             try:
                 if use_retry:
@@ -331,9 +391,7 @@ class MultiStepExtractionStrategy(ExtractionStrategy):
                         field_name,
                     )
                 extracted[field_name] = value
-
             except Exception as e:
-                # Skip field on error but log detailed error
                 extracted[field_name] = None
                 extracted[f"_{field_name}_error"] = str(e)
                 self.logger.warning(f"Failed to extract field '{field_name}': {e}")

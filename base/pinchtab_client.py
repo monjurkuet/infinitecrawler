@@ -57,17 +57,50 @@ class PinchtabElement:
     `.html`, plus `__getattr__` forwarding dict lookups (so `el.href` works).
     """
 
-    __slots__ = ("attrs", "text", "html", "_tag")
+    __slots__ = ("_selector", "attrs", "text", "html", "_tag", "_tab")
 
-    def __init__(self, attrs: dict, text: str, html: str, tag: str = ""):
+    def __init__(
+        self,
+        attrs: dict,
+        text: str,
+        html: str,
+        tag: str = "",
+        tab: Optional["PinchtabTab"] = None,
+        selector: str = "",
+    ):
         self.attrs = attrs
         self.text = text
         self.html = html
         self._tag = tag
+        self._tab = tab
+        self._selector = selector  # CSS selector used to fetch this element
 
     @property
     def tag(self) -> str:
         return self._tag
+
+    async def click(self, timeout: float = 5):
+        """Programmatically click this element.
+
+        Implemented as a single evaluate round-trip — we find the element by
+        CSS selector (matched via the bookmark-friendly `__pc_click` data
+        attribute we set on each query), fire its click handler, and wait
+        for navigation to settle.  Returns nothing.
+        """
+        if self._tab is None:
+            return
+        sel = json.dumps(self._selector or "")
+        expr = """
+        (() => {
+            const sel = %s;
+            const el = document.querySelector(sel);
+            if (!el) return 'no-element';
+            el.dispatchEvent(new MouseEvent('click',
+                {bubbles: true, cancelable: true, view: window}));
+            return 'clicked';
+        })()
+        """ % sel
+        await self._tab.evaluate(expr)
 
     def __getattr__(self, item: str) -> Any:
         # Forward unknown attribute lookups into the attrs dict (legacy shim
@@ -167,7 +200,14 @@ class PinchtabTab:
         except (json.JSONDecodeError, TypeError):
             return []
         return [
-            PinchtabElement(p["attrs"], p.get("text", ""), p.get("html", ""), p.get("tag", ""))
+            PinchtabElement(
+                p["attrs"],
+                p.get("text", ""),
+                p.get("html", ""),
+                p.get("tag", ""),
+                tab=self,
+                selector=selector,  # so element.click() can re-find it
+            )
             for p in payload
         ]
 
@@ -224,9 +264,74 @@ class PinchtabTab:
         except (json.JSONDecodeError, TypeError):
             return []
         return [
-            PinchtabElement(p["attrs"], p.get("text", ""), p.get("html", ""), p.get("tag", ""))
+            PinchtabElement(p["attrs"], p.get("text", ""), p.get("html", ""), p.get("tag", ""), self)
             for p in payload
         ]
+
+    # ── Batched operations (efficiency win) ──────────────────────────────────
+
+    async def extract_fields(
+        self, spec: list[dict]
+    ) -> dict[str, str | None]:
+        """Pull many fields in a single HTTP round-trip.
+
+        `spec` is a list of dicts: [{"name": "phone", "selector": "…", "attr": "…"}, …]
+        Returns a dict {name: text-or-attr-value-or-None}.
+
+        This folds what used to be ~9 RTTs (one per tab.select()) into 1.
+        """
+        spec_json = json.dumps(spec)
+        expr = """
+        (() => {
+            const spec = %s;
+            const out = {};
+            for (const f of spec) {
+                const el = document.querySelector(f.selector);
+                if (!el) { out[f.name] = null; continue; }
+                if (!f.attr) {
+                    out[f.name] = (el.textContent || '').trim();
+                } else if (f.attr === 'outerHTML') {
+                    out[f.name] = el.outerHTML;
+                } else {
+                    out[f.name] = el.getAttribute(f.attr) || '';
+                }
+            }
+            return JSON.stringify(out);
+        })()
+        """ % spec_json
+        raw = await self.evaluate(expr)
+        if not raw:
+            return {f["name"]: None for f in spec}
+        try:
+            return json.loads(raw) if isinstance(raw, str) else raw
+        except (json.JSONDecodeError, TypeError):
+            return {f["name"]: None for f in spec}
+
+
+    async def extract_emails_from_page(self) -> dict:
+        """Pull body text + all mailto: hrefs in a single Round-trip.
+
+        Replaces raw httpx in the email extractor: the browser has already
+        rendered the page (including JS-injected email obfuscation patterns),
+        so we get more matches, fewer false positives from unread scripts,
+        and one HTTP call into pinchtab instead of a full TCP round to the
+        target website.
+        """
+        expr = """
+        (() => {
+            const text = document.body ? (document.body.innerText || '') : '';
+            const mailtoHrefs = Array.from(document.querySelectorAll('a[href^="mailto:"]'))
+                .map(a => a.getAttribute('href'));
+            return JSON.stringify({text, mailtoHrefs});
+        })()
+        """
+        raw = await self.evaluate(expr)
+        if not raw:
+            return {"text": "", "mailto_hrefs": []}
+        try:
+            return json.loads(raw) if isinstance(raw, str) else raw
+        except (json.JSONDecodeError, TypeError):
+            return {"text": "", "mailto_hrefs": []}
 
 
 # ── HTTP client ─────────────────────────────────────────────────────────────
@@ -239,6 +344,9 @@ class PinchtabConfig:
     page_wait_seconds: float = 1.0
     headless: bool = True
     navigate_timeout: float = 60.0
+    element_timeout: float = 5.0       # per-element wait via setInterval
+    click_timeout: float = 5.0         # window for click() to fire navigation
+    evaluate_timeout: float = 30.0     # per-evaluate (v8 scripting)
 
     @classmethod
     def from_env_and_config(cls, config: dict) -> "PinchtabConfig":
@@ -252,6 +360,8 @@ class PinchtabConfig:
             page_wait_seconds=config.get("page_wait_seconds", 1.0),
             headless=config.get("headless", True),
             navigate_timeout=pt.get("navigate_timeout", 60.0),
+            element_timeout=pt.get("element_timeout", 5.0),
+            click_timeout=pt.get("click_timeout", 5.0),
         )
 
 
@@ -269,7 +379,25 @@ class PinchtabClient:
             headers = {}
             if self.cfg.token:
                 headers["Authorization"] = f"Bearer {self.cfg.token}"
-            self._session = aiohttp.ClientSession(headers=headers)
+            # Pin a TCPConnector with a small, predictable pool so we don't
+            # race with ourselves when many daemon workers call pinchtab
+            # concurrently.  Default aiohttp connector is unbounded which
+            # works but is wasteful for short-lived HTTP calls.
+            connector = aiohttp.TCPConnector(
+                limit=20,             # global cap per host (browser bridge)
+                limit_per_host=20,    # (no proxy in front of pinchtab)
+                ttl_dns_cache=300,
+                keepalive_timeout=75,
+                enable_cleanup_closed=True,
+            )
+            # We DO own this connector (default) so session.close() tears
+            # it down.  connector_owner=False was leaking the TCP socket
+            # ("Unclosed connector" warnings on GC).
+            self._session = aiohttp.ClientSession(
+                headers=headers,
+                connector=connector,
+                timeout=aiohttp.ClientTimeout(total=120),
+            )
         assert self._session is not None  # set above; for type-checker
         return self._session
 
@@ -278,25 +406,43 @@ class PinchtabClient:
         return self.cfg.instance_url or self.cfg.server_url
 
     async def _post(self, path: str, data: dict) -> dict:
+        import time as _t
+        start = _t.monotonic()
         session = await self._ensure_session()
         url = f"{self._base()}{path}"
-        async with session.post(url, json=data) as r:
-            text = await r.text()
-            try:
-                return json.loads(text)
-            except json.JSONDecodeError:
-                self.logger.warning("pinchtab: non-JSON %s → %s", path, text[:200])
-                return {"code": "error", "error": f"non-JSON response: {text[:200]}"}
+        result = {"code": "error", "error": "no response"}
+        try:
+            async with session.post(url, json=data) as r:
+                text = await r.text()
+                try:
+                    result = json.loads(text)
+                except json.JSONDecodeError:
+                    self.logger.warning("pinchtab: non-JSON %s → %s", path, text[:200])
+                    result = {"code": "error", "error": f"non-JSON response: {text[:200]}"}
+            return result
+        finally:
+            from base.pinchtab_metrics import get as _m
+            is_err = result.get("code") == "error"
+            _m().record(path, _t.monotonic() - start, error=is_err)
 
     async def _get(self, path: str) -> dict:
+        import time as _t
+        start = _t.monotonic()
         session = await self._ensure_session()
         url = f"{self._base()}{path}"
-        async with session.get(url) as r:
-            text = await r.text()
-            try:
-                return json.loads(text)
-            except json.JSONDecodeError:
-                return {"code": "error", "error": f"non-JSON response: {text[:200]}"}
+        result = {"code": "error", "error": "no response"}
+        try:
+            async with session.get(url) as r:
+                text = await r.text()
+                try:
+                    result = json.loads(text)
+                except json.JSONDecodeError:
+                    result = {"code": "error", "error": f"non-JSON response: {text[:200]}"}
+            return result
+        finally:
+            from base.pinchtab_metrics import get as _m
+            is_err = "error" in path or result.get("code") == "error"
+            _m().record(path, _t.monotonic() - start, error=is_err)
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
@@ -347,16 +493,31 @@ class PinchtabClient:
             self.tab = None
 
     async def cleanup(self):
-        """Release HTTP session.  We intentionally do NOT kill the browser
-        instance — pinchtab manages its own lifecycle and the always-on policy
-        will restart it anyway.  Killing Chrome from outside pinchtab's
-        knowledge can desync its dashboard."""
+        """Close the aiohttp HTTP session and underlying TCPConnector.
+
+        We intentionally do NOT kill the browser instance — pinchtab manages
+        its own lifecycle and the always-on policy will restart it anyway.
+        Killing Chrome from outside pinchtab's knowledge can desync its
+        dashboard.
+        """
         if self.tab:
             try:
                 await self.close_tab()
             except Exception:
                 pass
-        if self._session and not self._session.closed:
-            await self._session.close()
+        if self._session is not None and not self._session.closed:
+            try:
+                # Close the connector explicitly so aiohttp doesn't leak
+                # TCP sockets on next GC (was visible as "Unclosed connector"
+                # warnings when many daemon workers churned).
+                await self._session.close()
+            except Exception:
+                pass
+        # Force-close the connector in case session.close missed anything
+        try:
+            if self._session and not self._session.connector.closed:
+                await self._session.connector.close()
+        except Exception:
+            pass
         self._session = None
         self.tab = None

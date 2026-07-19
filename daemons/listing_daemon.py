@@ -315,44 +315,74 @@ EMAIL_BATCH_INSERT = True  # batch emails before PG commit
 
 
 async def extract_emails_from_website(
-    website_url: str, listing_id: int
+    website_url: str, listing_id: int, tab=None
 ) -> list[dict]:
-    """Fetch a company website via HTTP and extract email addresses.
+    """Fetch a company website and extract email addresses.
 
-    Uses httpx (no browser tab) — fast, lightweight, independent of the
-    browser session. Falls back silently on any error.
+    Two paths:
+      1. **Browser path** (tab is a PinchtabTab) — reuses the daemon's open
+         browser tab to navigate to the target website.  Since the page is
+         fully rendered in Chrome, JS‑injected obfuscations and
+         dynamically‑loaded content are captured.  Cost: one navigation +
+         one ``extract_emails_from_page`` round‑trip (≈4 s).
+      2. **HTTP path** (tab is None) — plain httpx GET of the raw HTML.
+         Faster (≈2 s) but misses emails rendered by client‑side JS.
 
     Returns list of dicts ready for upsert_emails().
     """
     import httpx
 
     results: list[dict] = []
+    method_tag = "http"
+
     try:
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(EMAIL_EXTRACTION_TIMEOUT),
-            follow_redirects=True,
-            headers={
-                "User-Agent": (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/125.0.0.0 Safari/537.36"
-                ),
-                "Accept": "text/html,application/xhtml+xml",
-            },
-        ) as client:
-            resp = await client.get(website_url)
-            if resp.status_code != 200:
-                log.debug("Website fetch returned %d for %s", resp.status_code, website_url[:60])
-                return results
+        if tab is not None and hasattr(tab, "extract_emails_from_page"):
+            # ── Browser path ──────────────────────────────────────────────
+            try:
+                await tab._client.navigate(website_url)
+            except Exception:
+                return results  # browser unavailable, skip silently
+            page = await tab.extract_emails_from_page()
+            text_source = page.get("text", "")
+            html_source = text_source  # not raw HTML — body text is enough
+            method_tag = "browser"
+        else:
+            # ── HTTP path (fallback) ─────────────────────────────────────
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(EMAIL_EXTRACTION_TIMEOUT),
+                follow_redirects=True,
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/125.0.0.0 Safari/537.36"
+                    ),
+                    "Accept": "text/html,application/xhtml+xml",
+                },
+            ) as client:
+                resp = await client.get(website_url)
+                if resp.status_code != 200:
+                    return results
+                text_source = resp.text
+                html_source = resp.text
+                method_tag = "http"
 
-            text = resp.text
-            page_text = resp.text
+        # Shared extraction pipeline (identical for both paths)
+        found = scan_text_for_emails(text_source)
 
-            # 1. Standard + obfuscated emails from page text
-            found = scan_text_for_emails(page_text)
-
-            # 2. mailto: links from HTML
-            mailto_emails = extract_mailto_links(text)
+        # mailto: links (available in the HTML, or from browser page.mailtoHrefs)
+        if tab is not None and hasattr(tab, "extract_emails_from_page"):
+            mailto_hrefs = page.get("mailto_hrefs", [])
+            for href in mailto_hrefs:
+                email = href.replace("mailto:", "").strip().lower()
+                if email and not any(e["email"] == email for e in found):
+                    found.append({
+                        "email": email,
+                        "is_obfuscated": False,
+                        "context_snippet": href[:200],
+                    })
+        else:
+            mailto_emails = extract_mailto_links(html_source)
             for email in mailto_emails:
                 if not any(e["email"] == email for e in found):
                     found.append({
@@ -361,24 +391,22 @@ async def extract_emails_from_website(
                         "context_snippet": f"mailto:{email}",
                     })
 
-            # 3. Filter noise
-            found = filter_noise(found)
-            found = deduplicate_emails(found)
+        found = filter_noise(found)
+        found = deduplicate_emails(found)
 
-            # 4. Build upsert dicts
-            for e in found:
-                results.append({
-                    "listing_id": listing_id,
-                    "website_url": website_url,
-                    "email": e["email"],
-                    "email_type": "general",
-                    "extraction_method": "http" if not e["is_obfuscated"] else "obfuscated",
-                    "is_obfuscated": e["is_obfuscated"],
-                    "context_snippet": e.get("context_snippet", "")[:200],
-                })
+        for e in found:
+            results.append({
+                "listing_id": listing_id,
+                "website_url": website_url,
+                "email": e["email"],
+                "email_type": "general",
+                "extraction_method": method_tag if not e["is_obfuscated"] else "obfuscated",
+                "is_obfuscated": e["is_obfuscated"],
+                "context_snippet": e.get("context_snippet", "")[:200],
+            })
 
-            if results:
-                log.info("Found %d email(s) on %s", len(results), website_url[:50])
+        if results:
+            log.info("Found %d email(s) on %s (method=%s)", len(results), website_url[:50], method_tag)
 
     except httpx.TimeoutException:
         log.debug("Timeout fetching %s for email extraction", website_url[:60])
