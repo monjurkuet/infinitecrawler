@@ -299,7 +299,7 @@ def retry_stale_failures(state: DaemonState, max_age_hours: float = 6.0):
         return 0
 
     try:
-        failed_raw = state.queue_strategy.redis.hgetall(state.queue_strategy.keys["failed"])
+        failed_raw = state.queue_strategy.client.hgetall(state.queue_strategy.keys["failed"])
     except Exception as e:
         log.debug("Cannot read failed hash: %s", e)
         return 0
@@ -330,11 +330,11 @@ def retry_stale_failures(state: DaemonState, max_age_hours: float = 6.0):
 
     try:
         for url in to_retry:
-            state.queue_strategy.redis.rpush(
+            state.queue_strategy.client.rpush(
                 state.queue_strategy.keys["pending"], url
             )
         for url in to_remove:
-            state.queue_strategy.redis.hdel(state.queue_strategy.keys["failed"], url)
+            state.queue_strategy.client.hdel(state.queue_strategy.keys["failed"], url)
         log.info("Retried %d stale failures (older than %.1fh)",
                  len(to_retry), max_age_hours)
     except Exception as e:
@@ -355,9 +355,7 @@ def requeue_stalled(state: DaemonState):
 
 
 def _has_meaningful_data(item: dict) -> bool:
-    """Check if extracted item has at least one non-empty key field."""
-    required = ['name', 'phone', 'website', 'category', 'rating']
-    return any(item.get(k) for k in required)
+    return bool(item.get("name"))
 
 
 async def process_url(state: DaemonState, url: str) -> bool:
@@ -441,10 +439,12 @@ async def process_url(state: DaemonState, url: str) -> bool:
             return True
 
         except Exception as e:
+            err_msg = str(e)
+            if 'duplicate key' in err_msg and 'source_url' in err_msg:
+                log.debug("Already in DB (duplicate source_url): %s", url[:60])
+                return True
             log.warning("Attempt %d/%d failed for %s: %s",
                         attempt + 1, URL_MAX_RETRIES, url[:60], e)
-
-            # Restart browser before retry if configured
             if attempt < URL_MAX_RETRIES - 1:
                 await restart_browser(state)
                 await asyncio.sleep(2)

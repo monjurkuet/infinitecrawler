@@ -9,15 +9,6 @@ pinchtab:
   instance_url: "http://127.0.0.1:9868"
   token: "123456"
   navigate_timeout: 90
-input:
-  strategy: postgresql_uncrawled_gmaps
-  config:
-    database: infinitecrawler
-    schema: scraper
-    search_results_table: gmaps_search_results
-    listings_table: gmaps_listings
-    source_url_field: url
-    batch_size: 1000
 queue:
   strategy: redis_queue
   config:
@@ -55,96 +46,72 @@ extraction:
     - action: extract
       fields:
         name:
-          selector: h1.DUwDvf
+          selector: .qBF1Pd.fontHeadlineSmall
+          selectors:
+          - .qBF1Pd.fontHeadlineSmall
+          - h1.DUwDvf
           type: text
         rating:
-          selector: div.F7nice span.ceNzKf[aria-label*='stars']
+          selector: .e4rVHe.fontBodyMedium span[role="img"].ZkP5Je
           selectors:
+          - .e4rVHe.fontBodyMedium span[role="img"].ZkP5Je
           - div.F7nice span.ceNzKf[aria-label*='stars']
           - div.F7nice [aria-label*='stars']
-          - div.F7nice [aria-label*='star']
           - div.F7nice [role='img']
-          - div.F7nice span[aria-hidden='true']
-          - div.F7nice
           type: attribute
           attribute: aria-label
           regex: ([0-9.]+)
-          retry:
-            attempts: 1
-            delay: 0.2
         review_count:
-          selector: div.F7nice span[role="img"][aria-label*="reviews"]
+          selector: .e4rVHe.fontBodyMedium span[role="img"].ZkP5Je
           selectors:
+          - .e4rVHe.fontBodyMedium span[role="img"].ZkP5Je
           - div.F7nice span[role="img"][aria-label*="reviews"]
           - div.F7nice [aria-label*="reviews"]
-          - div.F7nice [aria-label*="review"]
           - div.F7nice [role="img"]
-          - div.F7nice
           type: attribute
           attribute: aria-label
-          regex: ([\d,]+)
-          retry: false
+          regex: ([\d,]+)\s*
     - action: transform
       field: review_count
       operation: remove_commas
     - action: extract
       fields:
-        address:
-          selector: button[data-item-id="address"] .Io6YTe
-          selectors:
-          - button[data-item-id="address"] .Io6YTe
-          - button[data-item-id="address"]
-          - '[data-item-id="address"] .Io6YTe'
-          type: text
-          transform: clean_address
-          retry: false
         phone:
-          selector: button[data-item-id^="phone"] .Io6YTe
+          selector: .UsdlK
           selectors:
+          - .UsdlK
           - button[data-item-id^="phone"] .Io6YTe
           - button[data-item-id^="phone"]
-          - '[data-item-id^="phone"] .Io6YTe'
           type: text
           transform: clean_phone
-          retry: false
         website:
-          selector: a[data-item-id="authority"]
+          selector: a.lcr4fd.S9kvJb[data-value="Website"]
           selectors:
+          - a.lcr4fd.S9kvJb[data-value="Website"]
           - a[data-item-id="authority"]
           - a[aria-label*="Website"]
           type: attribute
           attribute: href
-          retry: false
-        plus_code:
-          selector: button[data-item-id="oloc"] .Io6YTe
+        address:
+          selector: .W4Efsd .W4Efsd
           selectors:
-          - button[data-item-id="oloc"] .Io6YTe
-          - button[data-item-id="oloc"]
+          - .W4Efsd .W4Efsd
+          - button[data-item-id="address"] .Io6YTe
+          - button[data-item-id="address"]
           type: text
-          transform: clean_plus_code
-          retry: false
         category:
-          selector: button[jsaction*="category"]
+          selector: .W4Efsd span:first-child
           selectors:
+          - .W4Efsd span:first-child
           - button[jsaction*="category"]
           - button[aria-label*="Category"]
           type: text
-          retry: false
-        is_claimed:
-          selector: a[href*="claim"]
-          type: exists
-          retry: false
-        booking_url:
-          selector: a[href*="calendly.com"]
+        plus_code:
+          selector: .W4Efsd .W4Efsd:last-child
           selectors:
-          - a[href*="calendly.com"]
-          - a[href*="appointy.com"]
-          - a[href*="/book"]
-          - a[href*="scheduling"]
-          - a[href*="appointment"]
-          type: attribute
-          attribute: href
-          retry: false
+          - .W4Efsd .W4Efsd:last-child
+          - button[data-item-id="oloc"] .Io6YTe
+          type: text
     - action: extract_url
       fields:
         latitude:
