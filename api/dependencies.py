@@ -1,14 +1,14 @@
 """FastAPI dependencies — injected services."""
 
-from fastapi import Depends, HTTPException, Security
+import os
+
+from fastapi import HTTPException, Security
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from psycopg_pool import AsyncConnectionPool
 
 from api.services import pg_service, redis_service
 
 _bearer_scheme = HTTPBearer(auto_error=False)
-# Simple bearer token auth — set INFINITECRAWLER_API_TOKEN env var
-import os
 _API_TOKEN = os.environ.get("INFINITECRAWLER_API_TOKEN", "changeme")
 
 

@@ -19,7 +19,7 @@ import argparse
 import asyncio
 import logging
 import sys
-from datetime import datetime, timezone
+
 from pathlib import Path
 
 import httpx
@@ -28,13 +28,13 @@ import psycopg
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
-from utils.email_extractor import (
+from utils.email_extractor import (  # noqa: E402
     scan_text_for_emails,
     extract_mailto_links,
     filter_noise,
     deduplicate_emails,
 )
-from utils.pg import get_pg_config, get_unprocessed_emails, upsert_emails
+from utils.pg import get_pg_config, get_unprocessed_emails, upsert_emails  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,
@@ -135,7 +135,7 @@ async def process_batch(
                     written = upsert_emails(conn, results)
                     emails_written += written
 
-    tasks = [process_one(l) for l in listings]
+    tasks = [process_one(lead) for lead in listings]
     await asyncio.gather(*tasks, return_exceptions=True)
     return listings_processed, emails_written
 
@@ -161,14 +161,14 @@ def show_stats(conn):
         """)
         methods = cur.fetchall()
 
-    print(f"\n{'=' * 55}")
-    print(f"  Email Extraction Stats")
-    print(f"{'=' * 55}")
+    print("\n" + "=" * 55)
+    print("  Email Extraction Stats")
+    print("=" * 55)
     print(f"  Total emails extracted:        {total_emails:>6}")
     print(f"  Listings with emails:          {listings_with_email:>6}")
     print(f"  Listings with website (total): {listings_with_website:>6}")
     print(f"  Coverage: {listings_with_email / max(listings_with_website, 1) * 100:.1f}%")
-    print(f"\n  By extraction method:")
+    print("\n  By extraction method:")
     for method, count in methods:
         print(f"    {method:<25} {count:>6}")
     print(f"{'=' * 55}")
@@ -203,8 +203,8 @@ def main():
 
         if args.dry_run:
             log.info("=== DRY RUN === (no writes)")
-            for l in listings[:5]:
-                log.info("  [%d] %s", l["id"], l["website"][:60])
+            for lead in listings[:5]:
+                log.info("  [%d] %s", lead["id"], lead["website"][:60])
             if len(listings) > 5:
                 log.info("  ... and %d more", len(listings) - 5)
             return

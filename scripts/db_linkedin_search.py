@@ -18,12 +18,9 @@ Usage:
 
 import argparse
 import asyncio
-import json
 import logging
 import re
 import sys
-import time
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -33,7 +30,7 @@ import psycopg
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
-from utils.pg import get_pg_config, get_unprocessed_linkedin, upsert_linkedin_profiles
+from utils.pg import get_pg_config, get_unprocessed_linkedin, upsert_linkedin_profiles  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,
@@ -300,13 +297,13 @@ def show_stats(conn):
         """)
         conf_dist = cur.fetchall()
 
-    print(f"\n{'=' * 55}")
-    print(f"  LinkedIn Profile Discovery Stats")
-    print(f"{'=' * 55}")
+    print("\n" + "=" * 55)
+    print("  LinkedIn Profile Discovery Stats")
+    print("=" * 55)
     print(f"  Total profiles found:              {total:>6}")
     print(f"  Unique listings with profiles:     {listings_with:>6}")
     print(f"  Avg confidence (30d):              {avg_conf:>6}")
-    print(f"\n  Confidence distribution:")
+    print("\n  Confidence distribution:")
     for conf, count in conf_dist:
         bar = "█" * min(count, 20)
         print(f"    {conf:.2f} [{bar:<20}] {count}")
@@ -361,8 +358,8 @@ def main():
 
         if args.dry_run:
             log.info("=== DRY RUN === (no writes)")
-            for l in listings[:5]:
-                log.info("  Would search: '%s' (id=%d)", l["name"], l["id"])
+            for lead in listings[:5]:
+                log.info("  Would search: '%s' (id=%d)", lead["name"], lead["id"])
             if len(listings) > 5:
                 log.info("  ... and %d more", len(listings) - 5)
             return

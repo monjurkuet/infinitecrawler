@@ -150,10 +150,11 @@ Ultra-technical BIM keywords (MEP design, scan-to-BIM, BIM outsourcing) are glob
 - Both daemons have no restart limits (`StartLimitIntervalSec=0`). systemd never gives up.
 - Browser reconnects every 1h OR 100 pages — reconnect just releases the HTTP session and grabs a fresh tab.  Pinchtab's `always-on` supervisor handles Chrome crashes (instant restart); the daemon never touches Chrome directly.
 - Memory capped at 3G per daemon via systemd `MemoryMax`; pinchtab itself gets 6G for Chrome + its always-on supervisor.
+- **Staleness threshold**: 1h without new data triggers a WARNING log and (if configured) the `HEALTHCHECK_WEBHOOK_URL` webhook alert via `scripts/watchdog.sh`.
 
 ## Browser Engine: pinchtab
 
-The crawler daemons talk to a separate `pinchtab server` process (port 9868 by default)
+The crawler daemons talk to a separate `pinchtab server` process (bridge port 9868 by default, configurable via `instancePortStart`)
 over a thin async HTTP client at `base/pinchtab_client.py`.  Pinchtab manages
 Chrome's lifecycle and crashes automatically — the daemons are pure observers
 that issue `POST /navigate` and `POST /evaluate` requests.

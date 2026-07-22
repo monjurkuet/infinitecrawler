@@ -1,7 +1,7 @@
 [project]
-name = "googlemaps-scraper"
-version = "0.1.0"
-description = "Add your description here"
+name = "infinitecrawler"
+version = "1.0.0"
+description = "Continuous 24/7 Google Maps lead generation pipeline with systemd daemons"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -15,4 +15,10 @@ dependencies = [
     "pydantic>=2.0.0",
     "httpx>=0.27.0",
     "psutil>=5.9.0",
+]
+
+[dependency-groups]
+dev = [
+    "pyright>=1.1.411",
+    "ruff>=0.15.22",
 ]

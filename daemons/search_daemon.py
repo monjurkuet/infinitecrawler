@@ -5,7 +5,7 @@ search_daemon.py — Eternal Google Maps search daemon.
 Runs 24/7: generates queries from BPT sectors × BD cities × international markets,
 searches Google Maps, extracts result URLs, upserts to PostgreSQL.
 
-Reuses existing DynamicScraper strategies (pagination, extraction, output, queue).
+Uses pinchtab-based strategies (pagination, extraction) + Redis queue + PG upsert.
 Adds: infinite query generation, wall-clock browser restart (1h), PG connection pool.
 
 systemd unit: ~/.config/systemd/user/infinitecrawler-search.service
@@ -13,13 +13,11 @@ systemd unit: ~/.config/systemd/user/infinitecrawler-search.service
 
 import asyncio
 import logging
-import os
-import random
 import sys
 import time
 
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from dotenv import load_dotenv
 
@@ -27,12 +25,12 @@ from dotenv import load_dotenv
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from base.browser_manager import BrowserManager
-from factory.scraper_factory import ScraperFactory
-from daemons.query_generator import InfiniteQueryGenerator
-from utils.helpers import DelayManager
-from utils.pg import get_pg_config
-from daemons.common import (
+from base.browser_manager import BrowserManager  # noqa: E402
+from factory.scraper_factory import ScraperFactory  # noqa: E402
+from daemons.query_generator import InfiniteQueryGenerator  # noqa: E402
+from utils.helpers import DelayManager  # noqa: E402
+from utils.pg import get_pg_config  # noqa: E402
+from daemons.common import (  # noqa: E402
     BROWSER_RESTART_INTERVAL_SEC,
     BROWSER_RESTART_PAGES,
     QUEUE_LOW_THRESHOLD,
@@ -98,7 +96,7 @@ class DaemonState:
 # ── Browser lifecycle ───────────────────────────────────────────────────────
 
 async def start_browser(state: DaemonState):
-    """Attach to the running pinchtab server (port 9868 by default).
+    """Attach to the running pinchtab server (bridge port 9868 by default).
 
     Pinchtab's `always-on` policy auto-restarts crashed Chrome instances, so we
     don't have to launch Chrome ourselves — we just connect to the existing
@@ -110,7 +108,6 @@ async def start_browser(state: DaemonState):
     pinchtab_cfg = state.config.get("pinchtab", {})
 
     state.browser_manager = BrowserManager(
-        engine="pinchtab",
         headless=headless,
         page_wait_seconds=page_wait,
         pinchtab_config=pinchtab_cfg,

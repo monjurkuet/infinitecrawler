@@ -7,12 +7,11 @@ import logging
 from typing import Any, Optional
 
 from psycopg_pool import AsyncConnectionPool
+from utils.pg import get_pg_config, get_uncrawled_count_sql
 
 log = logging.getLogger("api.pg_service")
 
 # ─── Connection ─────────────────────────────────────────────────────────────
-
-from utils.pg import get_pg_config, get_uncrawled_count_sql
 
 _pool: Optional[AsyncConnectionPool] = None
 
@@ -442,23 +441,23 @@ async def get_leads_by_sector() -> list[dict]:
                 "display_name": sid.replace("-", " ").title(),
                 "count": len(sl),
                 "leads": [{
-                    "id": l.get("id"),
-                    "place_id": l.get("place_id"),
-                    "source_url": l.get("source_url"),
-                    "name": l.get("name"),
-                    "category": l.get("category"),
-                    "rating": l.get("rating"),
-                    "review_count": l.get("review_count"),
-                    "address": l.get("address"),
-                    "phone": l.get("phone"),
-                    "website": l.get("website"),
-                    "latitude": l.get("latitude"),
-                    "longitude": l.get("longitude"),
-                    "sector_id": l.get("sector_id"),
-                    "classification_confidence": l.get("classification_confidence"),
-                    "classification_method": l.get("classification_method"),
-                    "classified_at": l.get("classified_at"),
-                } for l in sl[:50]],
+                    "id": lead.get("id"),
+                    "place_id": lead.get("place_id"),
+                    "source_url": lead.get("source_url"),
+                    "name": lead.get("name"),
+                    "category": lead.get("category"),
+                    "rating": lead.get("rating"),
+                    "review_count": lead.get("review_count"),
+                    "address": lead.get("address"),
+                    "phone": lead.get("phone"),
+                    "website": lead.get("website"),
+                    "latitude": lead.get("latitude"),
+                    "longitude": lead.get("longitude"),
+                    "sector_id": lead.get("sector_id"),
+                    "classification_confidence": lead.get("classification_confidence"),
+                    "classification_method": lead.get("classification_method"),
+                    "classified_at": lead.get("classified_at"),
+                } for lead in sl[:50]],
             })
     return result
 

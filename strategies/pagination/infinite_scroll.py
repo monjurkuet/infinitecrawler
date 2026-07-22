@@ -1,6 +1,6 @@
 from base.strategies import PaginationStrategy
 import logging
-import asyncio
+
 
 
 class InfiniteScrollPaginationStrategy(PaginationStrategy):

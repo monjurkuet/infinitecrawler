@@ -301,6 +301,7 @@ def call_llm(messages: list[dict], retries: int = 2, model: str | None = None) -
     }
 
     for attempt in range(retries):
+        resp = None
         try:
             with httpx.Client(timeout=LLM_HTTP_TIMEOUT) as client:
                 resp = client.post(
@@ -309,7 +310,6 @@ def call_llm(messages: list[dict], retries: int = 2, model: str | None = None) -
                     json=payload,
                 )
                 resp.raise_for_status()
-                # Handle multi-line JSON responses (some proxies return one object per line)
                 resp_text = resp.text.strip()
                 body = None
                 for line in resp_text.split("\n"):
@@ -328,9 +328,11 @@ def call_llm(messages: list[dict], retries: int = 2, model: str | None = None) -
                 content = body["choices"][0]["message"]["content"]
                 return json.loads(content)
         except httpx.TimeoutException:
+            status_code = resp.status_code if resp else "N/A"
+            resp_len = len(resp.text) if resp else 0
             log.warning(
                 f"LLM timeout (attempt {attempt + 1}/{retries}) "
-                f"status={resp.status_code if 'resp' in dir() else 'N/A'} len={len(resp.text) if 'resp' in dir() else 0}"
+                f"status={status_code} len={resp_len}"
             )
             if attempt < retries - 1:
                 sleep_time = 2 ** (attempt + 1)  # 2s, 4s, 8s exponential backoff

@@ -50,16 +50,3 @@ def install_signal_handlers(state):
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, create_signal_handler(state), sig, None)
-
-
-def cleanup_orphaned_chrome_dirs():
-    """No-op stub — kept for backward compatibility with callers that still
-    invoke it.
-
-    With pinchtab the browser runs in an external server and manages its own
-    Chrome profile directory (`/root/.pinchtab/chrome-profile`), so there are
-    no per-process temp profile dirs to clean up.  Before the pinchtab migration
-    this function dropped nodriver's `~/.local/share/nodriver/uc_*` and
-    `/tmp/uc_*` temp dirs.
-    """
-    return 0

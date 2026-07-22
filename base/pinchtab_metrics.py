@@ -15,7 +15,7 @@ import logging
 import threading
 import time
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 log = logging.getLogger("pinchtab_metrics")

@@ -1,15 +1,13 @@
 # InfiniteCrawler — Continuous Google Maps Lead Generation
 
-![Built with uv](https://img.shields.io/badge/Built%20with-uv-purple)
-
-A modular, configuration-driven Google Maps scraping framework running 24/7 via systemd daemons. Generates qualified business leads from 16 BD sectors (including hotels/hospitality) defined in [business-plan-template](https://github.com/monjurkuet/business-plan-template).
+A modular, configuration-driven Google Maps scraping framework running 24/7 via systemd daemons. Generates qualified business leads from 16 BPT sectors.
 
 ## Architecture: Two Eternal Daemons
 
 ```
 search-daemon                           listing-daemon
   │ Generates infinite query cycle        │ Reads uncrawled URLs from PG
-  │ from BPT's 15 sectors (21,356         │ → Redis queue
+  │ from BPT's 15 sectors (23,460        │ → Redis queue
   │ unique queries, 3-tier mix)           │ Deep extraction (phone, website,
   │ GMaps scroll → PG upsert              │ rating, category, place_id)
   │                                      │ PG upsert
@@ -20,13 +18,8 @@ search-daemon                           listing-daemon
 ## Quick Start
 
 ```bash
-# Start daemons
 systemctl --user enable --now infinitecrawler-search infinitecrawler-listing
-
-# Health check
 uv run python scripts/monitor_pipeline.py
-
-# REST API (port 8015, Bearer auth)
 uv run python -m api.main
 ```
 
@@ -35,22 +28,18 @@ uv run python -m api.main
 | Table | Source | Content |
 |-------|--------|---------|
 | `scraper.gmaps_search_results` | search-daemon | Business name + URL per query |
-| `scraper.gmaps_listings` | listing-daemon | Full profile: phone, website, address, rating, coordinates, **sector_id** (classified) |
+| `scraper.gmaps_listings` | listing-daemon | Full profile: phone, website, address, rating, coordinates, sector_id |
 
-PostgreSQL on remote VPS. Redis on localhost for queue management (`gmaps_bd_business:*` for search, `gmaps:*` for listing).
-
-## Sector Coverage (16 Sectors)
-
-15 BPT software-product sectors + 1 hospitality/hotel sector defined in `software_sectors.yaml`. The query generator's infinite cycle searches BD-Local (city×keyword), BD-National, and Global (export-eligible keywords only) tiers. See [AGENTS.md](AGENTS.md) for full query pool breakdown.
+PostgreSQL on remote VPS. Redis on localhost for queue management.
 
 ## Key Features
 
 - **24/7 Continuous** — systemd-supervised eternal loops, never exhausts queries
-- **Auto-classification** — In-stream fallback (rule-based) + offline LLM (DeepSeek V4 Flash) assigns every listing to a BPT sector
+- **Auto-classification** — In-stream fallback (rule-based) + offline LLM (DeepSeek V4 Flash)
 - **Anti-bot resistant** — pinchtab (Chrome-based) with browser restarts every hour
 - **Three-tier queries** — BD city-level, Bangladesh-national, and international (USA, UK, AU, CA, UAE, KSA)
-- **REST API** — Full programmatic access on port 8015 (31 routes, Bearer auth)
-- **Health monitoring** — Hermes cron watchdog every 60m + 1m API keepalive
+- **REST API** — 30+ routes on port 8015 (Bearer auth)
+- **Health monitoring** — Hermes cron watchdog every 60m
 
 ## Prerequisites
 

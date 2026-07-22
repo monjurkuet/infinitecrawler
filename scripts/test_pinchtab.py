@@ -15,9 +15,8 @@ sys.path.insert(0, str(REPO))
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 log = logging.getLogger("test_pinchtab")
 
-from base.pinchtab_client import PinchtabClient, PinchtabConfig
-from base.browser_manager import BrowserManager
-from factory.scraper_factory import ScraperFactory
+from base.browser_manager import BrowserManager  # noqa: E402
+from factory.scraper_factory import ScraperFactory  # noqa: E402
 
 
 async def main():
@@ -27,7 +26,6 @@ async def main():
     # Create BrowserManager with pinchtab engine
     pinchtab_cfg = config.get("pinchtab", {})
     bm = BrowserManager(
-        engine="pinchtab",
         headless=True,
         page_wait_seconds=4.0,
         pinchtab_config=pinchtab_cfg,

@@ -25,9 +25,8 @@ import argparse
 import json
 import logging
 import os
-import shutil
 import subprocess
-import time
+import sys
 
 from datetime import datetime, timezone
 from pathlib import Path
@@ -36,10 +35,9 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(level
 log = logging.getLogger("monitor_pipeline")
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-import sys
 sys.path.insert(0, str(REPO_ROOT))
 
-from utils.pg import get_uncrawled_count_sql, PG_DEFAULT_HOST, PG_DEFAULT_PASSWORD, PG_DEFAULT_DB
+from utils.pg import get_uncrawled_count_sql, PG_DEFAULT_HOST, PG_DEFAULT_PASSWORD  # noqa: E402
 
 
 def redis_cmd(cmd: str) -> str:
@@ -67,7 +65,7 @@ def pg_query(sql: str) -> str:
                 "-t", "-A",
                 "-c", sql,
             ],
-            capture_output=True, text=True, timeout=15,
+            capture_output=True, text=True, timeout=20,
             env={**os.environ, "PGPASSWORD": PG_DEFAULT_PASSWORD},
         )
         out = result.stdout.strip()

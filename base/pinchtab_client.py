@@ -1,7 +1,7 @@
 """Pinchtab HTTP client + Tab adapter.
 
 The crawler daemons talk to a running pinchtab browser server (default port
-9868) over a tiny async HTTP client.  The Tab / Element shape mimics the small
+9868 for the bridge instance) over a tiny async HTTP client.  The Tab / Element shape mimics the small
 subset of nodriver's interface that the daemon strategies actually use, so the
 existing pagination/extraction code keeps working without changes:
 
@@ -32,8 +32,7 @@ import asyncio
 import json
 import logging
 import os
-import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Optional
 
 try:

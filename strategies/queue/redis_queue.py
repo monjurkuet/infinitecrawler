@@ -101,7 +101,7 @@ class RedisQueueStrategy(QueueStrategy):
         """
         try:
             # Atomic move from pending to processing
-            result = self.client.brpoplpush(
+            result: str | None = self.client.brpoplpush(
                 self.keys["pending"], self.keys["processing"], timeout=timeout
             )
 
@@ -171,8 +171,8 @@ class RedisQueueStrategy(QueueStrategy):
         Requeue URLs that have been processing longer than visibility_timeout.
         Returns count of requeued URLs.
         """
-        stalled = []
-        timestamps = self.client.hgetall(f"{self.keys['processing']}:timestamps")
+        stalled: list[str] = []
+        timestamps: dict[str, str] = self.client.hgetall(f"{self.keys['processing']}:timestamps")
         current_time = time.time()
 
         for url, timestamp_str in timestamps.items():

@@ -9,8 +9,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from api.dependencies import _API_TOKEN
-from api.routers import configs, leads, monitor, search, system, tasks
-from api.services import pg_service, redis_service, task_runner
+from api.routers import configs, leads, monitor, search, system
+from api.services import pg_service, redis_service
 
 log = logging.getLogger("api.server")
 
@@ -22,7 +22,7 @@ async def lifespan(app: FastAPI):
 
     # Initialize PG pool
     try:
-        pg_pool = await pg_service.create_pool()
+        await pg_service.create_pool()
         await pg_service.ensure_tasks_table()
         log.info("PostgreSQL pool ready")
     except Exception as e:
@@ -37,12 +37,6 @@ async def lifespan(app: FastAPI):
         log.error(f"Failed to connect to Redis: {e}")
         log.warning("API will start but Redis queries will fail")
 
-    # Restore running tasks as failed
-    try:
-        await task_runner.restore_tasks()
-    except Exception as e:
-        log.warning(f"Task restore skipped: {e}")
-
     api_token = _API_TOKEN if _API_TOKEN != "changeme" else "[NOT SET — authentication disabled]"
     log.info(f"API token: {api_token}")
 
@@ -50,7 +44,6 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     log.info("Shutting down API server...")
-    await task_runner.kill_all()
     await pg_service.close_pool()
     await redis_service.close_client()
 
@@ -73,7 +66,6 @@ def create_app() -> FastAPI:
     )
 
     # Register routers
-    app.include_router(tasks.router)
     app.include_router(leads.router)
     app.include_router(search.router)
     app.include_router(monitor.router)

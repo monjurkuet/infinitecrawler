@@ -1,12 +1,12 @@
 import asyncio
 import logging
-from typing import Optional
+
 
 
 class BrowserManager:
     """Manages the pinchtab-attached browser.
 
-    The browser runs in an external `pinchtab server` process (port 9868 by
+    The browser runs in an external `pinchtab server` process (bridge port 9868 by
     default, configurable via PINCHTAB_INSTANCE_URL).  We don't launch Chrome
     ourselves — the pinchtab `always-on` supervisor restarts crashed instances
     automatically.  Stability is greatly improved by setting
@@ -20,12 +20,10 @@ class BrowserManager:
 
     def __init__(
         self,
-        engine: str = "pinchtab",
         headless: bool = True,
         page_wait_seconds: float = 1.0,
         pinchtab_config: dict | None = None,
     ):
-        self.engine = engine
         self.headless = headless
         self.page_wait_seconds = page_wait_seconds
         self.tab = None

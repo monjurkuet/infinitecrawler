@@ -56,20 +56,20 @@ class _PostgreSQLOutputBase(OutputStrategy):
         """Connect to PostgreSQL."""
         try:
             host = self._resolve_setting(
-                "host", ("POSTGRESQL_HOST", "POSTGRES_HOST"), None
+                "host", ("PG_HOST",), None
             )
             if not host:
                 raise RuntimeError(
-                    "PostgreSQL host not configured. Set POSTGRESQL_HOST env var or add 'host' to the config YAML."
+                    "PostgreSQL host not configured. Set PG_HOST env var or add 'host' to the config YAML."
                 )
-            port = int(self._resolve_setting("port", ("POSTGRES_PORT",), "5432"))
+            port = int(self._resolve_setting("port", ("PG_PORT",), "5432"))
             user = self._resolve_setting(
-                "user", ("POSTGRES_USERNAME", "POSTGRES_USER"), "postgres"
+                "user", ("PG_USER", "POSTGRES_USERNAME", "POSTGRES_USER"), "postgres"
             )
-            password = self._resolve_setting("password", ("POSTGRES_PASSWORD",), "")
+            password = self._resolve_setting("password", ("PG_PASSWORD", "POSTGRES_PASSWORD"), "")
             database = self._resolve_setting(
                 "database",
-                ("POSTGRES_DB", "POSTGRES_DATABASE"),
+                ("PG_DB", "POSTGRES_DB", "POSTGRES_DATABASE"),
                 "infinitecrawler",
             )
 
@@ -456,12 +456,12 @@ class PostgreSQLListingDetailsUpsertStrategy(_PostgreSQLOutputBase):
                 ("classified_at", "TIMESTAMPTZ"),
             ):
                 cursor.execute(
-                    sql.SQL("ALTER TABLE {}.{} ADD COLUMN IF NOT EXISTS {} {}").format(
-                        sql.Identifier(self.schema),
-                        sql.Identifier(self.table),
-                        sql.Identifier(col),
-                        sql.SQL(coltype),
-                    )
+                        sql.SQL("ALTER TABLE {}.{} ADD COLUMN IF NOT EXISTS {} {}").format(
+                            sql.Identifier(self.schema),
+                            sql.Identifier(self.table),
+                            sql.Identifier(col),  # type: ignore  # str accepted by psycopg
+                            sql.SQL(coltype),
+                        )
                 )
             cursor.execute(unique_index)
             for index_sql in indexes:
@@ -473,10 +473,13 @@ class PostgreSQLListingDetailsUpsertStrategy(_PostgreSQLOutputBase):
         return self._clean_text(source_url)
 
     def _resolve_key_value(self, item: Dict) -> Optional[str]:
+        source_url = self._resolve_source_url(item)
+        if source_url:
+            return source_url
         place_id = self._clean_text(item.get("place_id"))
         if place_id:
             return place_id
-        return self._resolve_source_url(item)
+        return None
 
     def _map_row(self, item: Dict) -> Optional[Dict[str, Any]]:
         source_url = self._resolve_source_url(item)

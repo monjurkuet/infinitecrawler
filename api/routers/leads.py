@@ -7,8 +7,6 @@ from api.dependencies import verify_token
 from api.models.models import (
     CityBreakdown,
     Lead,
-    LeadExportFilter,
-    LeadFilter,
     LeadStats,
     PaginatedLeads,
     SectorBreakdown,
@@ -44,7 +42,7 @@ async def list_leads(
     }
     leads, total = await pg_service.query_leads(filters, limit, offset)
     return PaginatedLeads(
-        leads=[Lead(**l) for l in leads],
+        leads=[Lead(**lead) for lead in leads],
         total=total,
         limit=limit,
         offset=offset,

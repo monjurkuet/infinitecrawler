@@ -40,7 +40,7 @@ OUTPUT_DIR = REPO_ROOT / "output" / "leads"
 
 # ---- DB connection -----------------------------------------------------------
 
-from utils.pg import get_pg_config
+from utils.pg import get_pg_config  # noqa: E402
 
 DB_CONFIG = get_pg_config()
 
@@ -300,8 +300,8 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Summary
-    fb_count = sum(1 for l in leads if l["has_fb"])
-    outside_count = sum(1 for l in leads if l["outside_dhaka"])
+    fb_count = sum(1 for lead in leads if lead["has_fb"])
+    outside_count = sum(1 for lead in leads if lead["outside_dhaka"])
     cities = group_by_city(leads)
     log.info(f"  Facebook pages: {fb_count}")
     log.info(f"  Outside Dhaka:  {outside_count}")
@@ -334,7 +334,7 @@ def main():
             "with_facebook": fb_count,
             "outside_dhaka": outside_count,
             "cities": {city: len(cl) for city, cl in sorted(cities.items())},
-            "avg_score": round(sum(l["lead_score"] for l in leads) / len(leads), 4),
+            "avg_score": round(sum(lead["lead_score"] for lead in leads) / len(leads), 4),
         }
         summary_path = out_dir / "summary.json"
         summary_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False))

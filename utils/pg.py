@@ -11,17 +11,17 @@ import os
 def get_pg_config() -> dict:
     """Return a psycopg-compatible connection config dict from env vars."""
     return {
-        "host": os.environ.get("POSTGRESQL_HOST", "100.92.181.21"),
-        "port": int(os.environ.get("POSTGRES_PORT", "5432")),
-        "user": os.environ.get("POSTGRES_USERNAME", "postgres"),
-        "password": os.environ.get("POSTGRES_PASSWORD", "changeme"),
-        "dbname": os.environ.get("POSTGRES_DB", "infinitecrawler"),
+        "host": os.environ.get("PG_HOST", "100.92.181.21"),
+        "port": int(os.environ.get("PG_PORT", "5432")),
+        "user": os.environ.get("PG_USER", "postgres"),
+        "password": os.environ.get("PG_PASSWORD", "changeme"),
+        "dbname": os.environ.get("PG_DB", "infinitecrawler"),
     }
 
 # Exported defaults so subprocess callers (monitor) don't duplicate them.
-PG_DEFAULT_HOST = os.environ.get("POSTGRESQL_HOST", "100.92.181.21")
-PG_DEFAULT_PASSWORD = os.environ.get("POSTGRES_PASSWORD", "changeme")
-PG_DEFAULT_DB = os.environ.get("POSTGRES_DB", "infinitecrawler")
+PG_DEFAULT_HOST = os.environ.get("PG_HOST", "100.92.181.21")
+PG_DEFAULT_PASSWORD = os.environ.get("PG_PASSWORD", "changeme")
+PG_DEFAULT_DB = os.environ.get("PG_DB", "infinitecrawler")
 
 # ── Queries ──────────────────────────────────────────────────────────
 

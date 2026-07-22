@@ -15,14 +15,13 @@ sys.path.insert(0, str(REPO))
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 log = logging.getLogger("test_scrollback")
 
-from base.browser_manager import BrowserManager
-from factory.scraper_factory import ScraperFactory
+from base.browser_manager import BrowserManager  # noqa: E402
+from factory.scraper_factory import ScraperFactory  # noqa: E402
 
 
 async def main():
     config = ScraperFactory.load_config(str(REPO / "config" / "gmaps_bd_business_search.yaml"))
     bm = BrowserManager(
-        engine="pinchtab",
         headless=True,
         page_wait_seconds=4.0,
         pinchtab_config=config.get("pinchtab", {}),

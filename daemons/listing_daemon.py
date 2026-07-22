@@ -6,20 +6,20 @@ Runs 24/7: pulls uncrawled listing URLs from PostgreSQL (search results not yet
 extracted), deep-extracts phone/website/category/rating via multi-step scraping,
 upserts to scraper.gmaps_listings.
 
-Reuses existing ListingCrawler strategies (extraction, output, queue, navigation).
+Uses pinchtab-based strategies (extraction, output, queue, navigation).
 Adds: live PG feed (no file export step), wall-clock browser restart (1h).
 
 systemd unit: ~/.config/systemd/user/infinitecrawler-listing.service
 """
 
 import asyncio
+import json
 import logging
-import os
 import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 import psycopg
 from dotenv import load_dotenv
@@ -28,25 +28,18 @@ from dotenv import load_dotenv
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from base.browser_manager import BrowserManager
-from factory.scraper_factory import ScraperFactory
-from utils.helpers import DelayManager
-from utils.pg import get_pg_config, get_uncrawled_urls_sql
-from daemons.common import (
+from base.browser_manager import BrowserManager  # noqa: E402
+from factory.scraper_factory import ScraperFactory  # noqa: E402
+from utils.helpers import DelayManager  # noqa: E402
+from utils.pg import get_pg_config, get_uncrawled_urls_sql  # noqa: E402
+from daemons.common import (  # noqa: E402
     BROWSER_RESTART_INTERVAL_SEC,
     BROWSER_RESTART_PAGES,
     QUEUE_LOW_THRESHOLD,
     install_signal_handlers,
     shutdown_strategies,
 )
-from scripts.llm_classifier import _single_fallback, load_sectors, METHOD_FALLBACK_RULE
-from utils.email_extractor import (
-    scan_text_for_emails,
-    extract_mailto_links,
-    filter_noise,
-    deduplicate_emails,
-)
-from utils.pg import upsert_emails, get_pg_config as pg_cfg
+from scripts.llm_classifier import _single_fallback, load_sectors, METHOD_FALLBACK_RULE  # noqa: E402
 
 # ── Config ──────────────────────────────────────────────────────────────────
 
@@ -100,17 +93,13 @@ class DaemonState:
         self.consecutive_errors: int = 0
         self.max_consecutive_errors: int = 10
 
-        # Retry tracking
-        self.retry_counts: dict[str, int] = {}  # url → attempts
-
-        # Shutdown flag
         self.shutdown_requested: bool = False
 
 
 # ── Browser lifecycle ───────────────────────────────────────────────────────
 
 async def start_browser(state: DaemonState):
-    """Attach to the running pinchtab server (port 9868 by default).
+    """Attach to the running pinchtab server (bridge port 9868 by default).
 
     Pinchtab's `always-on` policy auto-restarts crashed Chrome instances, so we
     don't have to launch Chrome ourselves — we just connect to the existing
@@ -122,7 +111,6 @@ async def start_browser(state: DaemonState):
     pinchtab_cfg = state.config.get("pinchtab", {})
 
     state.browser_manager = BrowserManager(
-        engine="pinchtab",
         headless=headless,
         page_wait_seconds=page_wait,
         pinchtab_config=pinchtab_cfg,
@@ -130,7 +118,6 @@ async def start_browser(state: DaemonState):
     await state.browser_manager.start()
     state.last_restart_time = time.time()
     state.pages_since_restart = 0
-    state.retry_counts.clear()
     log.info("Browser started (engine=pinchtab, headless=%s)", headless)
 
 
@@ -300,120 +287,68 @@ def refill_queue(state: DaemonState):
     return added
 
 
+def retry_stale_failures(state: DaemonState, max_age_hours: float = 6.0):
+    """Re-enqueue failed extraction URLs that are older than max_age_hours.
+
+    Failed items that hit transient errors (timeouts, rate caps, network blips)
+    get a second life after cooling down.  Permanently dead listings (removed
+    from Google Maps) will fail again and re-enter the failed hash with a fresh
+    timestamp.
+    """
+    if not state.queue_strategy:
+        return 0
+
+    try:
+        failed_raw = state.queue_strategy.redis.hgetall(state.queue_strategy.keys["failed"])
+    except Exception as e:
+        log.debug("Cannot read failed hash: %s", e)
+        return 0
+
+    if not failed_raw:
+        return 0
+
+    cutoff = time.time() - (max_age_hours * 3600)
+    to_retry: list[str] = []
+    to_remove: list[str] = []
+
+    for url, raw in failed_raw.items():
+        try:
+            info = json.loads(raw) if isinstance(raw, str) else {}
+        except Exception:
+            info = {}
+        failed_at = info.get("failed_at", 0)
+        if failed_at < cutoff:
+            to_retry.append(url)
+            to_remove.append(url)
+
+    if not to_retry:
+        return 0
+
+    import random
+
+    random.shuffle(to_retry)
+
+    try:
+        for url in to_retry:
+            state.queue_strategy.redis.rpush(
+                state.queue_strategy.keys["pending"], url
+            )
+        for url in to_remove:
+            state.queue_strategy.redis.hdel(state.queue_strategy.keys["failed"], url)
+        log.info("Retried %d stale failures (older than %.1fh)",
+                 len(to_retry), max_age_hours)
+    except Exception as e:
+        log.warning("Stale failure retry partially failed: %s", e)
+
+    return len(to_retry)
+
+
 def requeue_stalled(state: DaemonState):
     """Move timed-out processing items back to pending."""
     if state.queue_strategy and hasattr(state.queue_strategy, "maybe_requeue_stalled"):
         requeued = state.queue_strategy.maybe_requeue_stalled()
         if requeued:
             log.info("Requeued %d stalled URLs", requeued)
-
-
-# ── Email extraction ─────────────────────────────────────────────────────────
-
-EMAIL_EXTRACTION_TIMEOUT = 10  # seconds per website fetch
-EMAIL_BATCH_INSERT = True  # batch emails before PG commit
-
-
-async def extract_emails_from_website(
-    website_url: str, listing_id: int, tab=None
-) -> list[dict]:
-    """Fetch a company website and extract email addresses.
-
-    Two paths:
-      1. **Browser path** (tab is a PinchtabTab) — reuses the daemon's open
-         browser tab to navigate to the target website.  Since the page is
-         fully rendered in Chrome, JS‑injected obfuscations and
-         dynamically‑loaded content are captured.  Cost: one navigation +
-         one ``extract_emails_from_page`` round‑trip (≈4 s).
-      2. **HTTP path** (tab is None) — plain httpx GET of the raw HTML.
-         Faster (≈2 s) but misses emails rendered by client‑side JS.
-
-    Returns list of dicts ready for upsert_emails().
-    """
-    import httpx
-
-    results: list[dict] = []
-    method_tag = "http"
-
-    try:
-        if tab is not None and hasattr(tab, "extract_emails_from_page"):
-            # ── Browser path ──────────────────────────────────────────────
-            try:
-                await tab._client.navigate(website_url)
-            except Exception:
-                return results  # browser unavailable, skip silently
-            page = await tab.extract_emails_from_page()
-            text_source = page.get("text", "")
-            html_source = text_source  # not raw HTML — body text is enough
-            method_tag = "browser"
-        else:
-            # ── HTTP path (fallback) ─────────────────────────────────────
-            async with httpx.AsyncClient(
-                timeout=httpx.Timeout(EMAIL_EXTRACTION_TIMEOUT),
-                follow_redirects=True,
-                headers={
-                    "User-Agent": (
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/125.0.0.0 Safari/537.36"
-                    ),
-                    "Accept": "text/html,application/xhtml+xml",
-                },
-            ) as client:
-                resp = await client.get(website_url)
-                if resp.status_code != 200:
-                    return results
-                text_source = resp.text
-                html_source = resp.text
-                method_tag = "http"
-
-        # Shared extraction pipeline (identical for both paths)
-        found = scan_text_for_emails(text_source)
-
-        # mailto: links (available in the HTML, or from browser page.mailtoHrefs)
-        if tab is not None and hasattr(tab, "extract_emails_from_page"):
-            mailto_hrefs = page.get("mailto_hrefs", [])
-            for href in mailto_hrefs:
-                email = href.replace("mailto:", "").strip().lower()
-                if email and not any(e["email"] == email for e in found):
-                    found.append({
-                        "email": email,
-                        "is_obfuscated": False,
-                        "context_snippet": href[:200],
-                    })
-        else:
-            mailto_emails = extract_mailto_links(html_source)
-            for email in mailto_emails:
-                if not any(e["email"] == email for e in found):
-                    found.append({
-                        "email": email,
-                        "is_obfuscated": False,
-                        "context_snippet": f"mailto:{email}",
-                    })
-
-        found = filter_noise(found)
-        found = deduplicate_emails(found)
-
-        for e in found:
-            results.append({
-                "listing_id": listing_id,
-                "website_url": website_url,
-                "email": e["email"],
-                "email_type": "general",
-                "extraction_method": method_tag if not e["is_obfuscated"] else "obfuscated",
-                "is_obfuscated": e["is_obfuscated"],
-                "context_snippet": e.get("context_snippet", "")[:200],
-            })
-
-        if results:
-            log.info("Found %d email(s) on %s (method=%s)", len(results), website_url[:50], method_tag)
-
-    except httpx.TimeoutException:
-        log.debug("Timeout fetching %s for email extraction", website_url[:60])
-    except Exception as e:
-        log.debug("Email extraction failed for %s: %s", website_url[:60], e)
-
-    return results
 
 
 # ── Listing extraction logic ────────────────────────────────────────────────
@@ -429,10 +364,6 @@ async def process_url(state: DaemonState, url: str) -> bool:
     """Deep-extract a single listing URL with retry logic.
     Returns True if data was extracted and written to PG, False otherwise.
     """
-    # Track retries per URL
-    if url not in state.retry_counts:
-        state.retry_counts[url] = 0
-
     for attempt in range(URL_MAX_RETRIES):
         try:
             # Navigate with timeout
@@ -505,42 +436,6 @@ async def process_url(state: DaemonState, url: str) -> bool:
                     item["classified_at"] = datetime.now(timezone.utc)
                 await state.output_strategy.write_item(item)
 
-            # ── Inline email extraction ─────────────────────────────────────
-            if items and items[0].get("website"):
-                website_url = items[0]["website"]
-                # source_url is the GMaps listing URL — use it to look up listing_id
-                source_url = items[0].get("_crawl_meta", {}).get("source_url") or url
-                if website_url.startswith(("http://", "https://")):
-                    try:
-                        listing_id = None
-                        if state.pg_conn:
-                            with state.pg_conn.cursor() as cur:
-                                cur.execute(
-                                    "SELECT id FROM scraper.gmaps_listings "
-                                    "WHERE source_url = %s LIMIT 1",
-                                    (source_url,),
-                                )
-                                row = cur.fetchone()
-                                if row:
-                                    listing_id = row[0]
-
-                        if not listing_id:
-                            log.debug("Could not resolve listing_id for %s", source_url[:60])
-                        else:
-                            emails = await asyncio.wait_for(
-                                extract_emails_from_website(website_url, listing_id),
-                                timeout=EMAIL_EXTRACTION_TIMEOUT + 5,
-                            )
-                            if emails and state.pg_conn:
-                                written = upsert_emails(state.pg_conn, emails)
-                                if written:
-                                    log.info("Upserted %d email(s) for listing %d",
-                                             written, listing_id)
-                    except asyncio.TimeoutError:
-                        log.debug("Email extraction timed out for %s", website_url[:50])
-                    except Exception:
-                        log.debug("Email extraction error for %s", website_url[:50], exc_info=True)
-
             log.info("Extracted %d fields from %s (attempt %d/%d)",
                      len(items), url[:60], attempt + 1, URL_MAX_RETRIES)
             return True
@@ -576,6 +471,9 @@ async def eternal_loop(state: DaemonState):
 
             # 2. Refill queue from PG if low
             refill_queue(state)
+
+            # 2b. Retry stale failures (older than 6h)
+            retry_stale_failures(state, max_age_hours=6.0)
 
             # 3. Check browser restart triggers
             need_restart = False

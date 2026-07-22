@@ -5,7 +5,7 @@ import time
 from datetime import datetime, timezone
 
 import psutil
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 
 from api.dependencies import verify_token
 from api.models.models import (
@@ -14,7 +14,7 @@ from api.models.models import (
     QueueStats,
     SystemStatus,
 )
-from api.services import pg_service, redis_service, task_runner
+from api.services import pg_service, redis_service
 
 router = APIRouter(prefix="/api", tags=["monitor"])
 _start_time = time.time()
@@ -93,8 +93,8 @@ async def system_status(_user: str = Depends(verify_token)):
         "uncrawled_urls": uncrawled,
     }
 
-    # Tasks running
-    running_tasks = len(task_runner.get_all_tasks(status="running"))
+    # Tasks running (deprecated — task_runner removed)
+    running_tasks = 0
 
     # Issues
     issues = []

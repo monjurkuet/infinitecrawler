@@ -14,7 +14,7 @@ search_url_template: "https://www.google.com/maps/search/{query}/"
 pinchtab:
   server_url: "http://127.0.0.1:9867"
   instance_url: "http://127.0.0.1:9868"
-  token: "e03c396c760e5c790e727d638ac97e03ef8be266487e6b6c"
+  token: "123456"
   navigate_timeout: 60
 
 selectors:

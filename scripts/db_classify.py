@@ -30,7 +30,7 @@ log = logging.getLogger("db_classify")
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.llm_classifier import (
+from scripts.llm_classifier import (  # noqa: E402
     load_sectors,
     load_training_examples,
     _single_fallback,
@@ -47,7 +47,7 @@ from scripts.llm_classifier import (
     METHOD_LLM_PREFIX,
     MIN_TRAIN_CONFIDENCE,
 )
-from utils.pg import get_pg_config
+from utils.pg import get_pg_config  # noqa: E402
 
 PG_CONFIG = get_pg_config()
 
@@ -287,7 +287,7 @@ def main():
             print(f"Qualified (phone+web): {stats['qualified']:,}")
             print(f"Classified:           {stats['classified']:,}")
             print(f"Remaining:            {stats['remaining']:,}")
-            print(f"\nBy sector:")
+            print("\nBy sector:")
             for sid, cnt in sorted(stats['by_sector'].items(), key=lambda x: -x[1]):
                 print(f"  {sid}: {cnt:,}")
             return

@@ -20,7 +20,7 @@ import psycopg
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
-from utils.pg import get_pg_config
+from utils.pg import get_pg_config  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,
@@ -99,7 +99,7 @@ def run_migration(dry_run: bool = False) -> bool:
         with conn.cursor() as cur:
             for stmt in ALL_STATEMENTS:
                 log.info("Executing: %s ...", stmt.split("\n")[1].strip()[:60])
-                cur.execute(stmt)
+                cur.execute(stmt)  # type: ignore  # dynamic SQL string
         log.info("Migration complete — all tables and indexes created.")
         return True
     except Exception as e:
