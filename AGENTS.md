@@ -133,15 +133,32 @@ Ultra-technical BIM keywords (MEP design, scan-to-BIM, BIM outsourcing) are glob
 | `daemons/search_daemon.py` | Eternal search loop: query generation → GMaps scroll → PG upsert |
 | `daemons/listing_daemon.py` | Eternal listing loop: PG URL feed → deep extraction → PG upsert |
 | `daemons/query_generator.py` | Infinite three-tier query rotation engine |
+| `daemons/common.py` | Shared daemon boilerplate (browser restart constants, signal handling) |
 | `scripts/monitor_pipeline.py` | Health monitor (Redis + PG + systemd checks) |
 | `scripts/llm_classifier.py` | LLM classifier module: prompt building, fallback, few-shot, training examples |
 | `scripts/db_classify.py` | Offline cron: reads unclassified leads from PG, calls LLM, writes back |
 | `scripts/db_email_extract.py` | Offline HTTP email extraction backfill (runs every 2h via timer) |
 | `scripts/db_linkedin_search.py` | Offline LinkedIn profile discovery via DDGS (runs every 4h via timer) |
+| `scripts/generate_leads.py` | Export qualified leads from gmaps_listings to CSV |
+| `scripts/schema_migration.py` | Create enrichment tables (emails, linkedin_profiles) |
+| `scripts/seed_hotel_queries.py` | Seed hotel-only queries into Redis pending queue |
 | `api/` | FastAPI REST server (port 8015, bearer auth) |
+| `config/gmaps_bd_business_search.yaml` | Search daemon YAML config |
+| `config/gmaps_listings_working.yaml` | Listing daemon YAML config |
+| `_system/classification/training_examples.jsonl` | LLM few-shot training examples |
 | `~/.config/systemd/user/infinitecrawler-*.service` | systemd unit files |
 | `~/.config/systemd/user/infinitecrawler-*.timer` | systemd timer unit files |
 | `~/.hermes/scripts/bd-watchdog.sh` | Hermes cron watchdog (every 60m, no_agent) |
+
+Legacy files removed in cleanup (2026-07-22):
+- `main.py` — old single-run entrypoint
+- `scrapers/dynamic_scraper.py`, `scrapers/listing_crawler.py` — replaced by daemon inline logic
+- `base/scraper.py` — dead BaseScraper ABC
+- `strategies/input/file_url_loader.py`, `postgresql_uncrawled.py` — daemons use direct PG
+- `strategies/output/null_output.py`, `composite.py`, `jsonl_file.py` — unused
+- `strategies/pagination/next_button.py` — unused
+- `config/google_maps.yaml`, `yelp_example.yaml`, `gmaps_listings_file_input.yaml` — unused
+- `KNOWLEDGE_BASE.md`, `docs/ARCHITECTURE.md` — superseded by AGENTS.md
 
 ## Important Notes
 
