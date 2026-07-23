@@ -50,11 +50,51 @@ for u in infinitecrawler-search infinitecrawler-listing pinchtab; do
   systemctl --user cat "$u.service" > /dev/null 2>&1 && echo "$u: OK" || echo "STALE: $u"
 done
 
+
+# 0f. Phase 1 commands produce expected output
+OUT=$(systemctl --user is-active infinitecrawler-search 2>&1) || true
+echo "search active: $OUT"
+case "$OUT" in active|inactive|failed|activating|deactivating) ;;
+  *) echo "STALE: systemctl returned unexpected output \"$OUT\"" ;;
+esac
+
+# 0g. Phase 2 commands — Redis responds
+redis-cli PING > /dev/null && echo "redis: OK" || echo "STALE: Redis not responding"
+
+# 0h. Phase 3 commands — PG responds
+PGPASSWORD=changeme psql -h 100.92.181.21 -U postgres -d infinitecrawler -t -A -c "SELECT 1" > /dev/null 2>&1 \
+  && echo "pg: OK" \
+  || echo "STALE: PG not reachable (check .env / network)"
+
+# 0i. Config files load correctly (same as Phase 5e)
+uv run python -c "
+from factory.scraper_factory import ScraperFactory
+c1 = ScraperFactory.load_config('config/gmaps_bd_business_search.yaml')
+c2 = ScraperFactory.load_config('config/gmaps_listings_working.yaml')
+print('configs: %d+%d keys' % (len(c1), len(c2)))
+" 2>&1 || echo "STALE: config files unloadable"
+
+# 0j. Python modules import (same as Phase 5f)
+uv run python -c "
+from daemons.search_daemon import DaemonState
+from daemons.listing_daemon import DaemonState
+from strategies.queue.redis_queue import RedisQueueStrategy
+from strategies.output.postgresql import PostgreSQLUpsertStrategy
+print('imports: OK')
+" 2>&1 || echo "STALE: Python imports broken"
+
 echo "--- If any STALE, stop and update KEY FACTS + commands ---"
 ```
 
 
 ---
+
+> **Honest limitation:** This prompt validates static assumptions (files, ports, Redis, PG).
+> It does NOT auto-adapt. If you rename a daemon, change a Redis key prefix,
+> replace psql with a different client, or restructure the codebase, the
+> commands, red flags, and KEY FACTS go stale until YOU update them.
+> Phase 0 only detects drift. It does not fix it.
+
 ## META-RULES (Self-Evolving Prompt)
 
 **This document is the living source of truth for the pipeline.** After every audit session where you discover something new — a broken path, a config mismatch, a removed file, a changed port, a new queue namespace — you MUST update this document:
