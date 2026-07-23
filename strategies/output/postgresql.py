@@ -52,34 +52,32 @@ class _PostgreSQLOutputBase(OutputStrategy):
 
         return ""
 
+    def _get_connection_params(self) -> tuple:
+        """Return (host, port, user, password, database) from config/env."""
+        host = self._resolve_setting("host", ("PG_HOST",), None)
+        if not host:
+            raise RuntimeError(
+                "PostgreSQL host not configured. Set PG_HOST env var or add 'host' to the config YAML."
+            )
+        port = int(self._resolve_setting("port", ("PG_PORT",), "5432"))
+        user = self._resolve_setting(
+            "user", ("PG_USER", "POSTGRES_USERNAME", "POSTGRES_USER"), "postgres"
+        )
+        password = self._resolve_setting("password", ("PG_PASSWORD", "POSTGRES_PASSWORD"), "")
+        database = self._resolve_setting(
+            "database",
+            ("PG_DB", "POSTGRES_DB", "POSTGRES_DATABASE"),
+            "infinitecrawler",
+        )
+        return host, port, user, password, database
+
     def _connect(self):
         """Connect to PostgreSQL."""
         try:
-            host = self._resolve_setting(
-                "host", ("PG_HOST",), None
-            )
-            if not host:
-                raise RuntimeError(
-                    "PostgreSQL host not configured. Set PG_HOST env var or add 'host' to the config YAML."
-                )
-            port = int(self._resolve_setting("port", ("PG_PORT",), "5432"))
-            user = self._resolve_setting(
-                "user", ("PG_USER", "POSTGRES_USERNAME", "POSTGRES_USER"), "postgres"
-            )
-            password = self._resolve_setting("password", ("PG_PASSWORD", "POSTGRES_PASSWORD"), "")
-            database = self._resolve_setting(
-                "database",
-                ("PG_DB", "POSTGRES_DB", "POSTGRES_DATABASE"),
-                "infinitecrawler",
-            )
-
+            host, port, user, password, database = self._get_connection_params()
             self._ensure_database_exists(host, port, user, password, database)
             self._connection = connect(
-                host=host,
-                port=port,
-                user=user,
-                password=password,
-                dbname=database,
+                host=host, port=port, user=user, password=password, dbname=database,
             )
             self._connection.autocommit = True
             self.logger.info(
@@ -90,6 +88,26 @@ class _PostgreSQLOutputBase(OutputStrategy):
             raise
         except Exception as e:
             self.logger.error(f"Failed to connect to PostgreSQL: {e}")
+            raise
+
+    def _ensure_connection(self):
+        """Reconnect if the PG connection is closed or broken."""
+        if self._connection is not None:
+            try:
+                with self._connection.cursor() as cur:
+                    cur.execute("SELECT 1")
+                return
+            except Exception:
+                self.logger.info("PG connection stale — reconnecting…")
+                try:
+                    self._connection.close()
+                except Exception:
+                    pass
+                self._connection = None
+        try:
+            self._connect()
+        except Exception as e:
+            self.logger.error(f"PG reconnect failed: {e}")
             raise
 
     def _ensure_database_exists(
@@ -244,6 +262,7 @@ class PostgreSQLOutputStrategy(_PostgreSQLOutputBase):
     async def write_item(self, item: Dict):
         """Insert item into PostgreSQL."""
         try:
+            self._ensure_connection()
             if self.results_count >= self.max_results:
                 self.logger.warning(f"Max results limit ({self.max_results}) reached")
                 return
@@ -303,6 +322,7 @@ class PostgreSQLUpsertStrategy(_PostgreSQLOutputBase):
     async def write_item(self, item: Dict):
         """Upsert item into PostgreSQL using configured key field."""
         try:
+            self._ensure_connection()
             if self.results_count >= self.max_results:
                 self.logger.warning(f"Max results limit ({self.max_results}) reached")
                 return
@@ -358,6 +378,7 @@ class PostgreSQLListingDetailsUpsertStrategy(_PostgreSQLOutputBase):
         super().__init__(config)
 
     def _ensure_schema_and_table(self):
+        self._ensure_connection()
         if not self._connection:
             raise RuntimeError("PostgreSQL connection not initialized")
 
@@ -401,9 +422,9 @@ class PostgreSQLListingDetailsUpsertStrategy(_PostgreSQLOutputBase):
         ).format(sql.Identifier(self.schema), sql.Identifier(self.table))
 
         unique_index = sql.SQL(
-            "CREATE UNIQUE INDEX IF NOT EXISTS {} ON {}.{} (key_value)"
+            "CREATE UNIQUE INDEX IF NOT EXISTS {} ON {}.{} (source_url)"
         ).format(
-            sql.Identifier(f"{self.table}_key_value_uidx"),
+            sql.Identifier(f"{self.table}_source_url_uidx"),
             sql.Identifier(self.schema),
             sql.Identifier(self.table),
         )
@@ -520,6 +541,7 @@ class PostgreSQLListingDetailsUpsertStrategy(_PostgreSQLOutputBase):
     async def write_item(self, item: Dict):
         """Upsert listing details into PostgreSQL."""
         try:
+            self._ensure_connection()
             if self.results_count >= self.max_results:
                 self.logger.warning(f"Max results limit ({self.max_results}) reached")
                 return
@@ -550,7 +572,8 @@ class PostgreSQLListingDetailsUpsertStrategy(_PostgreSQLOutputBase):
                     %s, %s, %s, %s, %s,
                     %s, %s, %s, %s, %s, %s, NOW(), NOW()
                 )
-                ON CONFLICT (key_value) DO UPDATE SET
+                ON CONFLICT (source_url) DO UPDATE SET
+                    key_value = COALESCE(EXCLUDED.key_value, gmaps_listings.key_value),
                     place_id = EXCLUDED.place_id,
                     source_url = EXCLUDED.source_url,
                     source_type = EXCLUDED.source_type,

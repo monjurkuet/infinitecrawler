@@ -29,11 +29,6 @@ pagination:
   max_scroll_attempts: 500
   items_selector: "a.hfpxzc"
 
-input:
-  strategy: "file_url_loader"
-  config:
-    file_path: "input/search_queries_bd_businesses.txt"
-    deduplicate: true
 
 queue:
   strategy: "redis_queue"

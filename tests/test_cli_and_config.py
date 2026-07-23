@@ -10,26 +10,26 @@ class CliAndConfigTests(unittest.TestCase):
             "content_type": "dynamic",
             "browser_automation": "pinchtab",
             "headless": False,
-            "output_strategy": "jsonl_file",
+            "output_strategy": "postgresql_upsert",
             "output": {"file_path": "output/data_{query}.jsonl", "max_results": 10},
         })
         self.assertEqual(config["browser"]["automation"], "pinchtab")
         self.assertFalse(config["browser"]["headless"])
-        self.assertEqual(config["output"]["strategy"], "jsonl_file")
+        self.assertEqual(config["output"]["strategy"], "postgresql_upsert")
         self.assertEqual(config["output"]["config"]["file_path"], "output/data_{query}.jsonl")
 
     def test_normalize_preserves_composite_output(self):
         config = normalize_config({
             "content_type": "dynamic",
-            "output_strategy": "composite",
+            "output_strategy": "postgresql_upsert",
             "output": {
                 "strategies": [
-                    {"strategy": "jsonl_file", "config": {"file_path": "output/data.jsonl"}}
+                    {"strategy": "postgresql_listing_upsert", "config": {"file_path": "output/data.jsonl"}}
                 ]
             },
         })
         self.assertIn("strategies", config["output"])
-        self.assertEqual(config["output"]["strategies"][0]["strategy"], "jsonl_file")
+        self.assertEqual(config["output"]["strategies"][0]["strategy"], "postgresql_listing_upsert")
         self.assertNotIn("config", config["output"])
 
     def test_validate_config_rejects_unknown_output_strategy(self):

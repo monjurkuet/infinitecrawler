@@ -234,9 +234,11 @@ async def search_single_query(state: DaemonState, query: str) -> bool:
             )
             if "google.com/maps" not in current_url:
                 log.warning("Navigation verification failed - expected GMaps, got: %s", current_url[:60])
+                await restart_browser(state)
                 return False
         except Exception as e:
             log.warning("Navigation verification error: %s", e)
+            await restart_browser(state)
             return False
 
         if state.delay_manager:

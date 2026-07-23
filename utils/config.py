@@ -59,7 +59,6 @@ def normalize_config(config: Dict[str, Any]) -> Dict[str, Any]:
         "input",
         "queue",
         "output",
-        "secondary_output",
         "navigation",
         "extraction",
     ):
@@ -89,21 +88,6 @@ def normalize_config(config: Dict[str, Any]) -> Dict[str, Any]:
                     if key not in {"strategy", "config"}:
                         del output[key]
             normalized["output"] = output
-
-    if "secondary_output_strategy" in normalized:
-        secondary_output = _wrap_section(normalized.get("secondary_output"))
-        if "strategy" not in secondary_output:
-            secondary_output["strategy"] = normalized["secondary_output_strategy"]
-        if "config" not in secondary_output:
-            secondary_output["config"] = {
-                key: value
-                for key, value in secondary_output.items()
-                if key != "strategy"
-            }
-            for key in list(secondary_output.keys()):
-                if key not in {"strategy", "config"}:
-                    del secondary_output[key]
-        normalized["secondary_output"] = secondary_output
 
     return normalized
 
@@ -136,7 +120,6 @@ def validate_config(config: Dict[str, Any], strategy_names: Iterable[str]) -> No
         "input",
         "queue",
         "output",
-        "secondary_output",
         "navigation",
         "extraction",
     ):
@@ -157,11 +140,11 @@ def validate_config(config: Dict[str, Any], strategy_names: Iterable[str]) -> No
                     f"Unknown output strategy '{strategy_name}' in output.strategies[{index}]"
                 )
     elif output:
-        strategy_name = output.get("strategy", "jsonl_file")
+        strategy_name = output.get("strategy", "postgresql_upsert")
         if strategy_name not in strategy_names:
             raise ConfigError(f"Unknown output strategy '{strategy_name}'")
 
-    for section_name in ("input", "queue", "secondary_output"):
+    for section_name in ("input", "queue"):
         section = config.get(section_name)
         if not section:
             continue
