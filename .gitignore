@@ -42,3 +42,6 @@ input/*.txt
 *~
 .DS_Store
 Thumbs.db
+backups/*.dump.zst
+backups/*.sql.gz
+backups/MANIFEST.txt

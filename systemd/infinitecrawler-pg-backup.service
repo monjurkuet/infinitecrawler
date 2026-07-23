@@ -1,0 +1,11 @@
+[Unit]
+Description=InfiniteCrawler PostgreSQL database backup
+Documentation=https://github.com/monjurkuet/infinitecrawler
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/codebase/vhd/infinitecrawler/scripts/backup-pg.sh
+WorkingDirectory=%h/codebase/vhd/infinitecrawler
+Environment=PG_HOST=127.0.0.1 PG_PORT=5432 PG_USER=postgres PG_PASSWORD=changeme PG_DB=infinitecrawler

@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily InfiniteCrawler PostgreSQL backup
+Documentation=https://github.com/monjurkuet/infinitecrawler
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=1h
+
+[Install]
+WantedBy=timers.target
