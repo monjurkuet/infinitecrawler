@@ -400,11 +400,13 @@ async def eternal_loop(state: DaemonState):
             # 7. Process the query
             success = await search_single_query(state, query)
             if success:
+                state.queue_strategy.mark_completed(query)
                 last_write_time = time.monotonic()  # update staleness timer
                 state.consecutive_errors = 0
                 state.pages_since_restart += 1
                 state.total_pages_processed += 1
             else:
+                state.queue_strategy.mark_failed(query, "Search extraction failed", state.consecutive_errors)
                 state.consecutive_errors += 1
 
             # 8. Jitter delay
