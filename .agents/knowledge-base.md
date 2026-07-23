@@ -89,11 +89,11 @@ echo "--- If any STALE, stop and update KEY FACTS + commands ---"
 
 ---
 
-> **Honest limitation:** This prompt validates static assumptions (files, ports, Redis, PG).
-> It does NOT auto-adapt. If you rename a daemon, change a Redis key prefix,
-> replace psql with a different client, or restructure the codebase, the
-> commands, red flags, and KEY FACTS go stale until YOU update them.
-> Phase 0 only detects drift. It does not fix it.
+> **Honest limitation:** This prompt validates static assumptions (files, ports, Redis, PG, configs).
+> It does NOT auto-adapt. But when Phase 0 finds drift, run `.agents/remediate.py` to discover
+> the correct values and get patch instructions — then use `patch` to update this document.
+> Phase 0 detects drift. `remediate.py` tells you what to fix. You apply the patch.
+
 
 ## META-RULES (Self-Evolving Prompt)
 
@@ -374,3 +374,18 @@ Output under these headings:
 | 2026-07-23 | `output/serve_file.py`, `output/upload_file.py` zero callers | Deleted, committed alongside ruff fix |
 | 2026-07-23 | `scripts/test_selectors.py` had combined import `import asyncio, sys` (ruff E401) | Split to two lines |
 | 2026-07-23 | AGENTS.md flagged as potential prompt injection (exfil_curl) — not loaded by Hermes | README.md rewritten with current facts as substitute |
+
+---
+
+## AUTO-REMEDIATION SCRIPT
+
+Run this when Phase 0 finds any STALE entry:
+
+```bash
+cd /root/codebase/vhd/infinitecrawler && uv run python .agents/remediate.py
+```
+
+It discovers current system state (pinchtab ports, Redis queue names, daemon units,
+config YAMLs) and prints exact `patch` instructions for each stale line in this document.
+Follow the instructions, then re-run Phase 0 to confirm.
+
