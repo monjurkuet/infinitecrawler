@@ -11,9 +11,9 @@ The framework uses YAML files to define scraper behavior.
 | `name` | string | Yes | Human-readable name |
 | `content_type` | enum | Yes | `dynamic` (GMaps search) or `listing_crawler` |
 
-### Input Section
+### Input Section (Deprecated — URLs loaded in-app)
 
-For listing crawling, URLs are loaded directly from PostgreSQL:
+For listing crawling, URLs are loaded directly from PostgreSQL via `daemons/listing_daemon.py` `fetch_uncrawled_urls()`. The historical config-based input is kept for reference:
 
 ```yaml
 input:
