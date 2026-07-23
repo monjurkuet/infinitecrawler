@@ -388,12 +388,17 @@ async def process_url(state: DaemonState, url: str) -> bool:
 
             log.info("Extracted %d fields from %s (attempt %d/%d)",
                      len(items), url[:60], attempt + 1, URL_MAX_RETRIES)
+            # Close tab to prevent buildup
+            if state.browser_manager:
+                await state.browser_manager.close_tab()
             return True
 
         except Exception as e:
             err_msg = str(e)
             if 'duplicate key' in err_msg and 'source_url' in err_msg:
                 log.debug("Already in DB (duplicate source_url): %s", url[:60])
+                if state.browser_manager:
+                    await state.browser_manager.close_tab()
                 return True
             log.warning("Attempt %d/%d failed for %s: %s",
                         attempt + 1, URL_MAX_RETRIES, url[:60], e)

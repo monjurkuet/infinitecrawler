@@ -46,6 +46,10 @@ queue:
 output:
   strategy: "postgresql_upsert"
   config:
+    host: "127.0.0.1"
+    port: 5432
+    user: postgres
+    password: changeme
     database: "infinitecrawler"
     schema: "scraper"
     table: "gmaps_search_results"

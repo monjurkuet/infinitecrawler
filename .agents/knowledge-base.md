@@ -325,7 +325,7 @@ Output under these headings:
 | `failed` Redis type | **HASH** — query with `HLEN` not `LLEN` |
 | `processing` Redis type | **LIST** — query with `LLEN` |
 | `completed` Redis type | **SET** — query with `SCARD` |
-| PG host | `100.92.181.21:5432` |
+| PG host | `127.0.0.1:5432` (was `100.92.181.21` — Docker container on stopped docker-desktop WSL) |
 | PG password | `changeme` |
 | PG database | `infinitecrawler` |
 | PG schema | `scraper` |
@@ -369,8 +369,8 @@ Output under these headings:
 | 2026-07-23 | `search_single_query()` leaked browser tab on navigation verification failure | Added `restart_browser()` call before `return False`, committed `dd8fece` |
 | 2026-07-23 | `listing_daemon.retry_stale_failures()` reached into `.client` directly | Moved into `RedisQueueStrategy.requeue_stale_failed()`, committed `2c96b6e` |
 | 2026-07-23 | `monitor_pipeline.py` PG query timeout 20s insufficient for uncrawled-count join on 72K rows | Bumped to 30s, committed `ce73144` |
-| 2026-07-23 | `strategies/input/__init__.py` still existed as dead directory | Deleted, committed `dd8fece` |
-| 2026-07-23 | `scripts/check-stuck-chrome.sh` was pinchtab-era legacy | Deleted, committed `d9939f5` |
+| 2026-07-23 | `PG_HOST` in .env pointed to `100.92.181.21` — Docker Desktop container on stopped docker-desktop WSL distro. Daemon's PG feed and output strategy fell through to env var after 17h uptime crash loop | Changed .env `PG_HOST` to `127.0.0.1`, added explicit `host` to both YAML output configs, updated `utils/pg.py` fallback default. Restored daemon connectivity |
+| 2026-07-23 | Tab leak — both daemons created a new pinchtab per query but never closed it. With maxTabs=20, old tabs evicted → /evaluate 404 on stale tab refs → extraction failed → cascading failures. Also exacerbated memory pressure (59 Chrome processes, 3.7G+ RSS) | Added `browser_manager.close_tab()` to search daemon (finally block after `search_single_query`) and listing daemon (before each `return True`). Added `close_tab()` method to BrowserManager. Reduced pinchtab `maxTabs` to 10, increased Chrome `max_old_space_size` to 4096, reduced `renderer-process-limit` to 3. Tabs stable at ~10, search velocity recovering |
 | 2026-07-23 | `output/serve_file.py`, `output/upload_file.py` zero callers | Deleted, committed alongside ruff fix |
 | 2026-07-23 | `scripts/test_selectors.py` had combined import `import asyncio, sys` (ruff E401) | Split to two lines |
 | 2026-07-23 | AGENTS.md flagged as potential prompt injection (exfil_curl) — not loaded by Hermes | README.md rewritten with current facts as substitute |

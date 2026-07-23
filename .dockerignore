@@ -1,0 +1,57 @@
+# Python and build artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.ruff_cache/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Project-specific
+.env
+.env.local
+.env.*.local
+config/*.yaml
+!config/gmaps_bd_business_search.yaml
+
+# Git
+.git
+.gitignore
+.github/
+
+# Documentation
+docs/
+README.md
+
+# Docker
+.docker/
+Dockerfile
+docker-compose*.yml
+.dockerignore
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temp
+tmp/
+temp/
+*.log

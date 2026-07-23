@@ -73,3 +73,12 @@ class BrowserManager:
         self._pinchtab = None
         self.tab = None
         self.logger.info("Pinchtab session cleaned up")
+
+    async def close_tab(self):
+        """Close the current tab to prevent tab buildup."""
+        if self._pinchtab and self.tab:
+            try:
+                await self._pinchtab.close_tab()
+            except Exception as e:
+                self.logger.warning("close_tab error: %s", e)
+        self.tab = None

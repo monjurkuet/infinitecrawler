@@ -1,0 +1,151 @@
+services:
+  # PostgreSQL database — external connection assumed by default
+  # Uncomment and configure if running locally; otherwise set PG_* env vars
+  # postgres:
+  #   image: postgres:16-alpine
+  #   environment:
+  #     POSTGRES_USER: infinitecrawler
+  #     POSTGRES_PASSWORD: ${PG_PASSWORD:-changeme}
+  #     POSTGRES_DB: infinitecrawler
+  #   ports:
+  #     - "5432:5432"
+  #   volumes:
+  #     - pg_data:/var/lib/postgresql/data
+  #   networks:
+  #     - infinitecrawler
+
+  # Redis — queue backend for search/listing daemons
+  redis:
+    image: redis:7-alpine
+    expose:
+      - "6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    networks:
+      - infinitecrawler
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # API server — REST endpoint for monitoring, task management
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      # PostgreSQL configuration (point to external VPS or local postgres service)
+      PG_HOST: ${PG_HOST:-localhost}
+      PG_PORT: ${PG_PORT:-5432}
+      PG_USER: ${PG_USER:-infinitecrawler}
+      PG_PASSWORD: ${PG_PASSWORD:-changeme}
+      PG_DB: ${PG_DB:-infinitecrawler}
+
+      # Redis configuration
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_DB: 0
+
+      # API configuration
+      INFINITECRAWLER_API_HOST: 0.0.0.0
+      INFINITECRAWLER_API_PORT: 8015
+      INFINITECRAWLER_API_TOKEN: ${INFINITECRAWLER_API_TOKEN:-changeme}
+
+      # Python logging
+      PYTHONUNBUFFERED: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+    ports:
+      - "127.0.0.1:8016:8015"
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - infinitecrawler
+    restart: unless-stopped
+    command: ["python", "-m", "api.main"]
+
+  # Search daemon — eternal 24/7 query → Google Maps search
+  # Requires: pinchtab server (host.docker.internal:9868 on Docker Desktop)
+  # Uncomment to enable or use: docker compose --profile daemons up -d
+  search-daemon:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      # PostgreSQL
+      PG_HOST: ${PG_HOST:-host.docker.internal}
+      PG_PORT: ${PG_PORT:-5432}
+      PG_USER: ${PG_USER:-infinitecrawler}
+      PG_PASSWORD: ${PG_PASSWORD:-changeme}
+      PG_DB: ${PG_DB:-infinitecrawler}
+
+      # Redis
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_DB: 0
+
+      # Pinchtab
+      PINCHTAB_HOST: ${PINCHTAB_HOST:-host.docker.internal}
+      PINCHTAB_PORT: ${PINCHTAB_PORT:-9868}
+      PINCHTAB_TOKEN: ${PINCHTAB_TOKEN:-changeme}
+
+      # Python
+      PYTHONUNBUFFERED: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - infinitecrawler
+    restart: unless-stopped
+    profiles:
+      - daemons
+    command: ["python", "-m", "daemons.search_daemon"]
+
+  # Listing daemon — eternal 24/7 queue → deep extraction
+  # Requires: pinchtab server (host.docker.internal:9868 on Docker Desktop)
+  # Uncomment to enable or use: docker compose --profile daemons up -d
+  listing-daemon:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      # PostgreSQL
+      PG_HOST: ${PG_HOST:-host.docker.internal}
+      PG_PORT: ${PG_PORT:-5432}
+      PG_USER: ${PG_USER:-infinitecrawler}
+      PG_PASSWORD: ${PG_PASSWORD:-changeme}
+      PG_DB: ${PG_DB:-infinitecrawler}
+
+      # Redis
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_DB: 0
+
+      # Pinchtab
+      PINCHTAB_HOST: ${PINCHTAB_HOST:-host.docker.internal}
+      PINCHTAB_PORT: ${PINCHTAB_PORT:-9868}
+      PINCHTAB_TOKEN: ${PINCHTAB_TOKEN:-changeme}
+
+      # Python
+      PYTHONUNBUFFERED: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - infinitecrawler
+    restart: unless-stopped
+    profiles:
+      - daemons
+    command: ["python", "-m", "daemons.listing_daemon"]
+
+networks:
+  infinitecrawler:
+    driver: bridge
+
+volumes:
+  redis_data:
+  # pg_data:  # Uncomment if using local postgres service

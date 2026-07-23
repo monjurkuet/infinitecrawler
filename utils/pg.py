@@ -11,7 +11,7 @@ import os
 def get_pg_config() -> dict:
     """Return a psycopg-compatible connection config dict from env vars."""
     return {
-        "host": os.environ.get("PG_HOST", "100.92.181.21"),
+        "host": os.environ.get("PG_HOST", "127.0.0.1"),
         "port": int(os.environ.get("PG_PORT", "5432")),
         "user": os.environ.get("PG_USER", "postgres"),
         "password": os.environ.get("PG_PASSWORD", "changeme"),
@@ -19,7 +19,7 @@ def get_pg_config() -> dict:
     }
 
 # Exported defaults so subprocess callers (monitor) don't duplicate them.
-PG_DEFAULT_HOST = os.environ.get("PG_HOST", "100.92.181.21")
+PG_DEFAULT_HOST = os.environ.get("PG_HOST", "127.0.0.1")
 PG_DEFAULT_PASSWORD = os.environ.get("PG_PASSWORD", "changeme")
 PG_DEFAULT_DB = os.environ.get("PG_DB", "infinitecrawler")
 

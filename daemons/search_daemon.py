@@ -312,6 +312,13 @@ async def search_single_query(state: DaemonState, query: str) -> bool:
     except Exception as e:
         log.error("Search failed for '%s': %s", query[:60], e)
         return False
+    finally:
+        # Close the tab after each query to prevent tab buildup (maxTabs=20 eviction)
+        if state.browser_manager and state.browser_manager.tab:
+            try:
+                await state.browser_manager.close_tab()
+            except Exception:
+                pass
 
 
 # ── Queue management ────────────────────────────────────────────────────────

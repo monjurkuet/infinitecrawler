@@ -131,6 +131,10 @@ extraction:
 output:
   strategy: postgresql_listing_upsert
   config:
+    host: 127.0.0.1
+    port: 5432
+    user: postgres
+    password: changeme
     database: infinitecrawler
     schema: scraper
     table: gmaps_listings
