@@ -65,7 +65,7 @@ def pg_query(sql: str) -> str:
                 "-t", "-A",
                 "-c", sql,
             ],
-            capture_output=True, text=True, timeout=20,
+            capture_output=True, text=True, timeout=30,
             env={**os.environ, "PGPASSWORD": PG_DEFAULT_PASSWORD},
         )
         out = result.stdout.strip()
