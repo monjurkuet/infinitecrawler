@@ -183,7 +183,6 @@ class RedisQueueStrategy(QueueStrategy):
             except ValueError:
                 continue
 
-        # Requeue stalled URLs
         for url in stalled:
             pipe = self.client.pipeline()
             pipe.lrem(self.keys["processing"], 0, url)
@@ -195,3 +194,49 @@ class RedisQueueStrategy(QueueStrategy):
             self.logger.info(f"Requeued {len(stalled)} stalled URLs")
 
         return len(stalled)
+
+    def requeue_stale_failed(self, max_age_hours: float = 6.0) -> int:
+        """Re-enqueue failed items older than max_age_hours for retry.
+
+        Failed items that hit transient errors (timeouts, rate caps, blips)
+        get a second life after cooling down.  Permanently dead items fail
+        again and re-enter the failed hash with a fresh timestamp.
+        Returns count of retried items.
+        """
+        try:
+            failed_raw = self.client.hgetall(self.keys["failed"])
+        except Exception:
+            return 0
+
+        if not failed_raw:
+            return 0
+
+        cutoff = time.time() - (max_age_hours * 3600)
+        to_retry: list[str] = []
+
+        for url, raw in failed_raw.items():
+            try:
+                info = json.loads(raw) if isinstance(raw, str) else {}
+            except Exception:
+                info = {}
+            if info.get("failed_at", 0) < cutoff:
+                to_retry.append(url)
+
+        if not to_retry:
+            return 0
+
+        import random
+        random.shuffle(to_retry)
+
+        try:
+            for url in to_retry:
+                self.client.rpush(self.keys["pending"], url)
+                self.client.hdel(self.keys["failed"], url)
+            self.logger.info(
+                "Retried %d stale failures (older than %.1fh)",
+                len(to_retry), max_age_hours,
+            )
+        except Exception as e:
+            self.logger.warning("Stale failure retry partially failed: %s", e)
+
+        return len(to_retry)

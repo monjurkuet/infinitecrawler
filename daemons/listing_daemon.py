@@ -13,7 +13,6 @@ systemd unit: ~/.config/systemd/user/infinitecrawler-listing.service
 """
 
 import asyncio
-import json
 import logging
 import sys
 import time
@@ -288,59 +287,12 @@ def refill_queue(state: DaemonState):
 
 
 def retry_stale_failures(state: DaemonState, max_age_hours: float = 6.0):
-    """Re-enqueue failed extraction URLs that are older than max_age_hours.
-
-    Failed items that hit transient errors (timeouts, rate caps, network blips)
-    get a second life after cooling down.  Permanently dead listings (removed
-    from Google Maps) will fail again and re-enter the failed hash with a fresh
-    timestamp.
-    """
+    """Re-enqueue failed extraction URLs that are older than max_age_hours."""
     if not state.queue_strategy:
         return 0
-
-    try:
-        failed_raw = state.queue_strategy.client.hgetall(state.queue_strategy.keys["failed"])
-    except Exception as e:
-        log.debug("Cannot read failed hash: %s", e)
-        return 0
-
-    if not failed_raw:
-        return 0
-
-    cutoff = time.time() - (max_age_hours * 3600)
-    to_retry: list[str] = []
-    to_remove: list[str] = []
-
-    for url, raw in failed_raw.items():
-        try:
-            info = json.loads(raw) if isinstance(raw, str) else {}
-        except Exception:
-            info = {}
-        failed_at = info.get("failed_at", 0)
-        if failed_at < cutoff:
-            to_retry.append(url)
-            to_remove.append(url)
-
-    if not to_retry:
-        return 0
-
-    import random
-
-    random.shuffle(to_retry)
-
-    try:
-        for url in to_retry:
-            state.queue_strategy.client.rpush(
-                state.queue_strategy.keys["pending"], url
-            )
-        for url in to_remove:
-            state.queue_strategy.client.hdel(state.queue_strategy.keys["failed"], url)
-        log.info("Retried %d stale failures (older than %.1fh)",
-                 len(to_retry), max_age_hours)
-    except Exception as e:
-        log.warning("Stale failure retry partially failed: %s", e)
-
-    return len(to_retry)
+    if hasattr(state.queue_strategy, "requeue_stale_failed"):
+        return state.queue_strategy.requeue_stale_failed(max_age_hours)
+    return 0
 
 
 def requeue_stalled(state: DaemonState):
