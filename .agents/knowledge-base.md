@@ -62,7 +62,7 @@ esac
 redis-cli PING > /dev/null && echo "redis: OK" || echo "STALE: Redis not responding"
 
 # 0h. Phase 3 commands — PG responds
-PGPASSWORD=changeme psql -h 100.92.181.21 -U postgres -d infinitecrawler -t -A -c "SELECT 1" > /dev/null 2>&1 \
+PGPASSWORD=changeme psql -h 127.0.0.1 -U postgres -d infinitecrawler -t -A -c "SELECT 1" > /dev/null 2>&1 \
   && echo "pg: OK" \
   || echo "STALE: PG not reachable (check .env / network)"
 
@@ -170,7 +170,7 @@ Verify data is actually being written to PostgreSQL in real-time:
 
 ```bash
 # 3a. Search + listing velocity (last hour)
-PGPASSWORD=changeme psql -h 100.92.181.21 -U postgres -d infinitecrawler -c "
+PGPASSWORD=changeme psql -h 127.0.0.1 -U postgres -d infinitecrawler -c "
 SELECT
   (SELECT COUNT(*) FROM scraper.gmaps_search_results WHERE updated_at > NOW() - INTERVAL '1 hour') as search_1h,
   (SELECT COUNT(*) FROM scraper.gmaps_listings WHERE updated_at > NOW() - INTERVAL '1 hour') as listings_1h,
@@ -179,7 +179,7 @@ SELECT
 "
 
 # 3b. Full counts
-PGPASSWORD=changeme psql -h 100.92.181.21 -U postgres -d infinitecrawler -c "
+PGPASSWORD=changeme psql -h 127.0.0.1 -U postgres -d infinitecrawler -c "
 SELECT
   (SELECT COUNT(*) FROM scraper.gmaps_search_results) as search_total,
   (SELECT COUNT(*) FROM scraper.gmaps_listings) as listings_total,
@@ -337,6 +337,10 @@ Output under these headings:
 | Staleness alert | Daemon logs WARNING if no new data written in 1h |
 | Output strategies | `PostgreSQLOutputStrategy` (insert), `PostgreSQLUpsertStrategy` (upsert by key_field), `PostgreSQLListingDetailsUpsertStrategy` (typed listing upsert by source_url) |
 | RedisQueueStrategy methods | `enqueue`, `dequeue`, `mark_completed`, `mark_failed`, `get_stats`, `requeue_stalled()`, `requeue_stale_failed(max_age_hours)` |
+| DB encoding | **UTF-8** (was SQL_ASCII — recreated 2026-07-23). Daemons write Bangla queries successfully. |
+| Pinchtab Google sign-in | **NOT signed in.** Place pages show sign-in wall. Listing daemon cannot extract phone/website/address without it. |
+| Search daemon status | **Running.** 1039 pending, 0 processing queue items. Extracting GMaps search results to UTF-8 PG. |
+| Listing daemon status | **Stopped.** Cannot extract place page data without Google sign-in in pinchtab Chrome profile. |
 | Search config | `config/gmaps_bd_business_search.yaml` — `rate_limit: 2` (int, not rate_limiting dict) |
 | Listing config | `config/gmaps_listings_working.yaml` — `ignore_completed_on_enqueue: true` |
 | Search daemon module | `daemons/search_daemon.py` — `-m daemons.search_daemon` |
@@ -374,6 +378,10 @@ Output under these headings:
 | 2026-07-23 | `output/serve_file.py`, `output/upload_file.py` zero callers | Deleted, committed alongside ruff fix |
 | 2026-07-23 | `scripts/test_selectors.py` had combined import `import asyncio, sys` (ruff E401) | Split to two lines |
 | 2026-07-23 | AGENTS.md flagged as potential prompt injection (exfil_curl) — not loaded by Hermes | README.md rewritten with current facts as substitute |
+| 2026-07-23 | **PG encoding SQL_ASCII** — daemons extracted data from GMaps but failed on write: `conversion between UTF8 and SQL_ASCII is not supported`. All 738 search results were stuck in failed queue. | Recreated DB with `ENCODING 'UTF8' TEMPLATE template0`. Requeued 738 stale failures. Search daemon now writes Bangla queries successfully. |
+| 2026-07-23 | **Listing daemon cannot extract place page data** — pinchtab Chrome has no Google sign-in. Auth cookie names exist but values empty (corrupted by Chrome crash). Place pages show sign-in wall. Search results have limited data (no phone/website). | Stopped listing daemon to free pinchtab resources. Documented fix: user must sign in to Google once via the pinchtab browser session. |
+| 2026-07-23 | **close_tab 400 errors flooding pinchtab** — tabs evicted by maxTabs policy before daemon closes them, returning 400 from pinchtab | Fixed `close_tab()` to catch RuntimeError + log at debug level instead of warning |
+| 2026-07-23 | **Skill stale PG host** — `infinitecrawler-daemon-ops` skill referenced `100.92.181.21` for PG queries | Patched skill to use configurable PG_HOST |
 
 ---
 

@@ -488,7 +488,12 @@ class PinchtabClient:
 
     async def close_tab(self):
         if self.tab:
-            await self._post("/action", {"kind": "close", "tabId": self.tab._tab_id})
+            try:
+                result = await self._post("/action", {"kind": "close", "tabId": self.tab._tab_id})
+                if result.get("code") == "error":
+                    self.logger.debug("close_tab: tab already closed (%s)", result.get("error", "")[:60])
+            except RuntimeError:
+                self.logger.debug("close_tab: tab not found (already evicted)")
             self.tab = None
 
     async def cleanup(self):
