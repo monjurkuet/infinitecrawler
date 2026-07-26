@@ -255,8 +255,8 @@ def fetch_uncrawled_urls(state: DaemonState) -> list[str]:
         return []
     try:
         with state.pg_conn.cursor() as cur:
-            sql, params = get_uncrawled_urls_sql(limit=URL_FETCH_BATCH)
-            cur.execute(sql, params)
+            sql = get_uncrawled_urls_sql(limit=URL_FETCH_BATCH)
+            cur.execute(sql)
             rows = cur.fetchall()
         urls = [r[0] for r in rows if r[0]]
         return urls
@@ -474,7 +474,8 @@ async def eternal_loop(state: DaemonState):
                 state.consecutive_errors += 1
                 state.queue_strategy.mark_failed(url, "Extraction exhausted retries",
                                                  state.consecutive_errors)
-                await restart_browser(state)
+                # Browser restart is handled by the scheduled triggers (step 3/4)
+                # or by process_url() on timeout. Do NOT restart on every failure.
 
             # 7. Jitter delay
             await state.delay_manager.apply_delay("between_requests")

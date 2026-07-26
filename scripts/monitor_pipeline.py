@@ -56,15 +56,17 @@ def redis_cmd(cmd: str) -> str:
 def pg_query(sql: str) -> str:
     """Run a PostgreSQL query, return stripped output."""
     try:
+        cmd = [
+            "psql",
+            "-U", "postgres",
+            "-d", "infinitecrawler",
+            "-t", "-A",
+            "-c", sql,
+        ]
+        if PG_DEFAULT_HOST:
+            cmd.extend(["-h", PG_DEFAULT_HOST])
         result = subprocess.run(
-            [
-                "psql",
-                "-h", PG_DEFAULT_HOST,
-                "-U", "postgres",
-                "-d", "infinitecrawler",
-                "-t", "-A",
-                "-c", sql,
-            ],
+            cmd,
             capture_output=True, text=True, timeout=30,
             env={**os.environ, "PGPASSWORD": PG_DEFAULT_PASSWORD},
         )

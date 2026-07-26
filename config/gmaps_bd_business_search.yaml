@@ -42,11 +42,12 @@ queue:
       completed: "gmaps_bd_business:completed"
       failed: "gmaps_bd_business:failed"
     visibility_timeout: 300
+    ignore_completed_on_enqueue: true
 
 output:
   strategy: "postgresql_upsert"
   config:
-    host: "127.0.0.1"
+    host: "/var/run/postgresql"
     port: 5432
     user: postgres
     password: changeme

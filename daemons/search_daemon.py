@@ -347,6 +347,15 @@ def requeue_stalled(state: DaemonState):
             log.info("Requeued %d stalled queries", requeued)
 
 
+def retry_stale_failures(state: DaemonState, max_age_hours: float = 6.0):
+    """Re-enqueue failed search queries older than max_age_hours for retry."""
+    if not state.queue_strategy:
+        return 0
+    if hasattr(state.queue_strategy, "requeue_stale_failed"):
+        return state.queue_strategy.requeue_stale_failed(max_age_hours)
+    return 0
+
+
 # ── Main loop ───────────────────────────────────────────────────────────────
 
 def _check_staleness(state: DaemonState, last_write_time: float, label: str) -> float:
@@ -373,6 +382,9 @@ async def eternal_loop(state: DaemonState):
 
             # 2. Refill queue if low
             refill_queue(state)
+
+            # 2b. Retry stale failures (older than 6h)
+            retry_stale_failures(state, max_age_hours=6.0)
 
             # 3. Check browser restart triggers
             need_restart = False

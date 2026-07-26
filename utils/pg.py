@@ -1,52 +1,37 @@
-"""Centralized PostgreSQL connection config — single source of truth.
+"""utils/pg.py — PostgreSQL helper module for infinitecrawler.
 
-All env-wrapped PG connection dicts should import ``get_pg_config()`` instead
-of re-declaring the host/password defaults. Changing the defaults here updates
-every caller at once.
+Provides connection config, SQL query constants, and upsert helpers
+for emails and LinkedIn profiles.
 """
 
+import logging
 import os
 
 
-def get_pg_config() -> dict:
-    """Return a psycopg-compatible connection config dict from env vars."""
-    return {
-        "host": os.environ.get("PG_HOST", "127.0.0.1"),
-        "port": int(os.environ.get("PG_PORT", "5432")),
-        "user": os.environ.get("PG_USER", "postgres"),
-        "password": os.environ.get("PG_PASSWORD", "changeme"),
-        "dbname": os.environ.get("PG_DB", "infinitecrawler"),
-    }
+# ---------------------------------------------------------------------------
+# Connection config
+# ---------------------------------------------------------------------------
 
-# Exported defaults so subprocess callers (monitor) don't duplicate them.
-PG_DEFAULT_HOST = os.environ.get("PG_HOST", "127.0.0.1")
-PG_DEFAULT_PASSWORD = os.environ.get("PG_PASSWORD", "changeme")
+logger = logging.getLogger(__name__)
+PG_DEFAULT_HOST = os.environ.get("PG_HOST", "")
+PG_DEFAULT_PASSWORD = os.environ.get("PG_PASSWORD", "")
 PG_DEFAULT_DB = os.environ.get("PG_DB", "infinitecrawler")
 
-# ── Queries ──────────────────────────────────────────────────────────
 
-UNCRAWLED_URLS_SQL = """
-    SELECT DISTINCT sr.payload->>'url' AS source_url
-    FROM scraper.gmaps_search_results sr
-    LEFT JOIN scraper.gmaps_listings gl
-      ON gl.source_url = sr.payload->>'url'
-    WHERE sr.payload->>'url' IS NOT NULL
-      AND gl.source_url IS NULL
-    ORDER BY source_url
-"""
+def get_pg_config() -> dict:
+    """Return postgres connection kwargs from environment."""
+    return {
+        "host": PG_DEFAULT_HOST,
+        "port": os.getenv("PG_PORT", "5432"),
+        "dbname": PG_DEFAULT_DB,
+        "user": os.getenv("PG_USER", "postgres"),
+        "password": PG_DEFAULT_PASSWORD,
+    }
 
 
-def get_uncrawled_urls_sql(limit: int | None = None) -> tuple[str, tuple]:
-    """Return parameterized SQL + params for uncrawled listing URLs.
-
-    The query finds search-result URLs that have not yet been deep-extracted
-    into ``scraper.gmaps_listings``.  Passing ``limit`` appends ``LIMIT %s``.
-    """
-    sql = UNCRAWLED_URLS_SQL
-    if limit is not None:
-        sql += "\n    LIMIT %s"
-        return sql, (limit,)
-    return sql, ()
+# ──────────────────────────────────────────────────────────────────────────
+# Queries for uncrawled / unprocessed listing rows
+# ──────────────────────────────────────────────────────────────────────────
 
 
 def get_uncrawled_count_sql() -> str:
@@ -72,17 +57,30 @@ def get_uncrawled_count(conn) -> int:
         return cur.fetchone()[0] or 0
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Email & LinkedIn enrichment helpers
-# ══════════════════════════════════════════════════════════════════════════════
+def get_uncrawled_urls_sql(limit: int = 100) -> str:
+    """Return SQL query string for listings without detail extraction."""
+    return f"""
+        SELECT sr.payload->>'url' as url, sr.id
+        FROM scraper.gmaps_search_results sr
+        LEFT JOIN scraper.gmaps_listings gl
+          ON gl.source_url = sr.payload->>'url'
+        WHERE sr.payload->>'url' IS NOT NULL
+          AND gl.source_url IS NULL
+        ORDER BY sr.updated_at DESC
+        LIMIT {limit}
+    """
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Email extraction
+# ──────────────────────────────────────────────────────────────────────────
 
 UPSERT_EMAIL_SQL = """
     INSERT INTO scraper.emails
-        (listing_id, website_url, email, email_type, extraction_method,
-         is_obfuscated, context_snippet)
-    VALUES (%s, %s, %s, %s, %s, %s, %s)
+        (listing_id, email, source_type, is_obfuscated, context_snippet)
+    VALUES (%s, %s, %s, %s, %s)
     ON CONFLICT (listing_id, email) DO UPDATE SET
-        extraction_method = EXCLUDED.extraction_method,
+        source_type       = EXCLUDED.source_type,
         context_snippet   = COALESCE(EXCLUDED.context_snippet, scraper.emails.context_snippet),
         discovered_at     = NOW()
 """
@@ -91,8 +89,8 @@ UPSERT_EMAIL_SQL = """
 def upsert_emails(conn, emails: list[dict]) -> int:
     """Upsert email records into scraper.emails.
 
-    Each dict must have keys: listing_id, website_url, email.
-    Optional: email_type, extraction_method, is_obfuscated, context_snippet.
+    Each dict must have keys: listing_id, email.
+    Optional: source_type, is_obfuscated, context_snippet.
     Returns number of rows written.
     """
     if not emails:
@@ -103,19 +101,21 @@ def upsert_emails(conn, emails: list[dict]) -> int:
             try:
                 cur.execute(UPSERT_EMAIL_SQL, (
                     e["listing_id"],
-                    e.get("website_url", ""),
                     e["email"],
-                    e.get("email_type", "general"),
-                    e.get("extraction_method", "browser"),
+                    e.get("source_type", "http"),
                     e.get("is_obfuscated", False),
                     e.get("context_snippet"),
                 ))
                 written += cur.rowcount or 1
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.error("Failed to upsert email %s for listing %s: %s", e.get("email"), e.get("listing_id"), exc)
     conn.commit()
     return written
 
+
+# ──────────────────────────────────────────────────────────────────────────
+# LinkedIn profile extraction
+# ──────────────────────────────────────────────────────────────────────────
 
 UPSERT_LINKEDIN_SQL = """
     INSERT INTO scraper.linkedin_profiles
@@ -128,36 +128,6 @@ UPSERT_LINKEDIN_SQL = """
         confidence    = GREATEST(scraper.linkedin_profiles.confidence, EXCLUDED.confidence),
         last_updated  = NOW()
 """
-
-
-def upsert_linkedin_profiles(conn, profiles: list[dict]) -> int:
-    """Upsert LinkedIn profile records into scraper.linkedin_profiles.
-
-    Each dict must have: listing_id, profile_url, company_name, search_query.
-    Optional: full_name, profile_title, confidence, snippet.
-    Returns number of rows written.
-    """
-    if not profiles:
-        return 0
-    written = 0
-    with conn.cursor() as cur:
-        for p in profiles:
-            try:
-                cur.execute(UPSERT_LINKEDIN_SQL, (
-                    p["listing_id"],
-                    p.get("full_name"),
-                    p["profile_url"],
-                    p.get("profile_title"),
-                    p["company_name"],
-                    p["search_query"],
-                    p.get("confidence", 0.5),
-                    p.get("snippet"),
-                ))
-                written += cur.rowcount or 1
-            except Exception:
-                pass
-    conn.commit()
-    return written
 
 
 FETCH_UNPROCESSED_EMAILS_SQL = """
@@ -197,3 +167,33 @@ def get_unprocessed_linkedin(conn, limit: int = 50) -> list[dict]:
         cur.execute(FETCH_UNPROCESSED_LINKEDIN_SQL + " LIMIT %s", (limit,))
         rows = cur.fetchall()
     return [{"id": r[0], "name": r[1]} for r in rows]
+
+
+def upsert_linkedin_profiles(conn, profiles: list[dict]) -> int:
+    """Upsert LinkedIn profile records into scraper.linkedin_profiles.
+
+    Each dict must have: listing_id, profile_url, company_name, search_query.
+    Optional: full_name, profile_title, confidence, snippet.
+    Returns number of rows written.
+    """
+    if not profiles:
+        return 0
+    written = 0
+    with conn.cursor() as cur:
+        for p in profiles:
+            try:
+                cur.execute(UPSERT_LINKEDIN_SQL, (
+                    p["listing_id"],
+                    p.get("full_name"),
+                    p["profile_url"],
+                    p.get("profile_title"),
+                    p["company_name"],
+                    p["search_query"],
+                    p.get("confidence", 0.5),
+                    p.get("snippet"),
+                ))
+                written += cur.rowcount or 1
+            except Exception as exc:
+                logger.error("Failed to upsert LinkedIn profile %s for listing %s: %s", p.get("profile_url"), p.get("listing_id"), exc)
+    conn.commit()
+    return written

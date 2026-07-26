@@ -88,7 +88,7 @@ async def extract_listing(client: httpx.AsyncClient, listing: dict) -> list[dict
                 "website_url": website,
                 "email": e["email"],
                 "email_type": "general",
-                "extraction_method": "http",
+                "source_type": "http",
                 "is_obfuscated": e["is_obfuscated"],
                 "context_snippet": e.get("context_snippet", "")[:200],
             })
@@ -156,8 +156,8 @@ def show_stats(conn):
         listings_with_website = cur.fetchone()[0]
 
         cur.execute("""
-            SELECT extraction_method, COUNT(*)
-            FROM scraper.emails GROUP BY extraction_method ORDER BY 2 DESC
+            SELECT source_type, COUNT(*)
+            FROM scraper.emails GROUP BY source_type ORDER BY 2 DESC
         """)
         methods = cur.fetchall()
 
