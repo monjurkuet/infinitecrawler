@@ -15,6 +15,7 @@ import asyncio
 import logging
 import sys
 import time
+from datetime import datetime, timezone  # noqa: E402
 
 from pathlib import Path
 from typing import Any, Optional
@@ -49,6 +50,7 @@ SCROLL_TIMEOUT = 15  # Seconds for scroll/load-more operations
 BROWSER_START_TIMEOUT = 30  # Seconds for browser launch
 QUERY_BATCH_SIZE = 50  # How many queries to generate per refill
 STALLED_REQUEUE_INTERVAL = 60  # Check for stalled processing items every N sec
+PG_STALENESS_INTERVAL = 900  # Check PG staleness every 15 min
 
 # PG connection (separate from output strategy — used for direct queries)
 _pg = get_pg_config()
@@ -366,10 +368,39 @@ def _check_staleness(state: DaemonState, last_write_time: float, label: str) -> 
     return now
 
 
+def _check_pg_staleness(last_pg_check: float, table: str = "scraper.gmaps_search_results") -> float:
+    """Query PG for latest updated_at. Warn if stale > 1h. Returns current time."""
+    now = time.monotonic()
+    if now - last_pg_check < PG_STALENESS_INTERVAL:
+        return last_pg_check
+    try:
+        from psycopg import connect
+        with connect(
+            f"host={PG_HOST} port={PG_PORT} user={PG_USER} password={PG_PASSWORD} dbname={PG_DB}",
+            autocommit=True,
+        ) as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"SELECT MAX(updated_at) FROM {table}")
+                row = cur.fetchone()
+                if row and row[0]:
+                    age_s = (datetime.now(timezone.utc) - row[0]).total_seconds()
+                    if age_s > 3600:
+                        log.warning(
+                            "STALENESS ALERT: %s last write was %.1fh ago (%s UTC)",
+                            table, age_s / 3600, row[0],
+                        )
+                    else:
+                        log.info("%s: last PG write %.0f min ago", table, age_s / 60)
+    except Exception as e:
+        log.error("PG staleness check failed: %s", e)
+    return now
+
+
 async def eternal_loop(state: DaemonState):
     """The forever loop: refill → dequeue → search → repeat."""
     last_stalled_check = 0.0
     last_write_time = time.monotonic()  # staleness watchdog
+    last_pg_staleness_check = 0.0  # PG-level staleness (catches silent upsert exhaustion)
 
     while not state.shutdown_requested:
         try:
@@ -408,6 +439,11 @@ async def eternal_loop(state: DaemonState):
 
             # 5. Staleness watchdog
             last_write_time = _check_staleness(state, last_write_time, "search")
+
+            # 5b. PG-level staleness — catches silent upsert exhaustion
+            # where mark_completed fires but ON CONFLICT DO UPDATE is a no-op
+            # because GMaps returns identical results for exhausted queries.
+            last_pg_staleness_check = _check_pg_staleness(last_pg_staleness_check)
 
             # 6. Dequeue next query
             query = state.queue_strategy.dequeue(timeout=10)
