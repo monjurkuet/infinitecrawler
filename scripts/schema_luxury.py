@@ -166,11 +166,12 @@ LUXURY_CONTACTS_INDEXES = """
     CREATE INDEX IF NOT EXISTS idx_luxury_contacts_company ON scraper.luxury_contacts(company_name);
 """
 
-# ── Seed luxury targets (hotels) ────────────────────────────────────
+# ── Seed luxury targets (hotels, bars, clubs, event venues, elite institutions) ──
 
 LUXURY_HOTELS_SEED = """
     INSERT INTO scraper.luxury_targets (name, alternative_names, city, target_type, tier)
     VALUES
+        -- ═══ HOTELS & RESORTS ═══
         ('Radisson Blu Dhaka Water Garden', ARRAY['Radisson Blu', 'Radisson Water Garden'], 'Dhaka', 'hotel', 'luxury'),
         ('InterContinental Dhaka', ARRAY['Hotel Intercontinental', 'Intercontinental Dhaka'], 'Dhaka', 'hotel', 'luxury'),
         ('The Westin Dhaka', ARRAY['Westin Dhaka', 'Westin Hotel'], 'Dhaka', 'hotel', 'luxury'),
@@ -182,12 +183,62 @@ LUXURY_HOTELS_SEED = """
         ('Hotel Sarina Dhaka', ARRAY['Sarina Dhaka', 'Sarina Hotel'], 'Dhaka', 'hotel', 'luxury'),
         ('Crowne Plaza Dhaka Gulshan', ARRAY['Crowne Plaza'], 'Dhaka', 'hotel', 'luxury'),
         ('Holiday Inn Dhaka City Centre', ARRAY['Holiday Inn Dhaka'], 'Dhaka', 'hotel', 'premium'),
-        ('Long Beach Hotel Dhaka', ARRAY['Long Beach'], 'Dhaka', 'hotel', 'premium'),
-        ($$Ocean Paradise Hotel & Resort Cox's Bazar$$, ARRAY['Ocean Paradise'], 'Cox''s Bazar', 'resort', 'luxury'),
-        ($$Royal Tulip Sea Pearl Beach Resort & Spa$$, ARRAY['Royal Tulip', 'Sea Pearl'], 'Cox''s Bazar', 'resort', 'luxury'),
-        ('Radisson Blu Chattogram Bay View', ARRAY['Radisson Chattogram'], 'Chattogram', 'hotel', 'luxury'),
-        ('Hotel Agrabad Chattogram', ARRAY['Agrabad Hotel'], 'Chattogram', 'hotel', 'premium')
-    ON CONFLICT DO NOTHING;
+        ('Le Meridien Dhaka', ARRAY['Le Meridien', 'Le Meridien Hotel'], 'Dhaka', 'hotel', 'luxury'),
+        ('Long Beach Hotel Dhaka', ARRAY['Long Beach', 'Long Beach Suites'], 'Dhaka', 'hotel', 'premium'),
+        ($$Ocean Paradise Hotel & Resort Cox's Bazar$$, ARRAY['Ocean Paradise', 'Ocean Paradise Resort'], 'Cox''s Bazar', 'resort', 'luxury'),
+        ($$Royal Tulip Sea Pearl Beach Resort & Spa$$, ARRAY['Royal Tulip', 'Sea Pearl Resort'], 'Cox''s Bazar', 'resort', 'luxury'),
+        ('Sayeman Heritage Hotel Sylhet', ARRAY['Sayeman Heritage'], 'Sylhet', 'hotel', 'luxury'),
+        ('Grand Sylhet Hotel & Resort', ARRAY['Grand Sylhet', 'Sylhet Grand'], 'Sylhet', 'resort', 'luxury'),
+        ('Radisson Blu Chattogram Bay View', ARRAY['Radisson Chattogram', 'Radisson Blu Chattogram'], 'Chattogram', 'hotel', 'luxury'),
+        ('Hotel Agrabad Chattogram', ARRAY['Agrabad Hotel'], 'Chattogram', 'hotel', 'premium'),
+        ($$JATRA Flagship Chattogram City Centre$$, ARRAY['JATRA City Centre', 'JATRA Chattogram'], 'Chattogram', 'hotel', 'luxury'),
+        ($$Foys Lake Resort Chattogram$$, ARRAY['Foys Lake', 'Foys Resort'], 'Chattogram', 'resort', 'luxury'),
+        ($$The Peninsula Chittagong$$, ARRAY['Peninsula Hotel', 'Peninsula Chittagong'], 'Chattogram', 'hotel', 'luxury'),
+
+        -- ═══ BARS & NIGHTCLUBS ═══
+        ('SKYe Lounge Bar Dhaka', ARRAY['SKYe Lounge', 'SKYe Bar'], 'Dhaka', 'bar', 'luxury'),
+        ('Raw Canvas Restaurant & Bar Dhaka', ARRAY['Raw Canvas', 'Raw Canvas Bar'], 'Dhaka', 'bar', 'premium'),
+        ('Loki Restaurant & Bar Dhaka', ARRAY['Loki Bar', 'Loki Restaurant'], 'Dhaka', 'bar', 'premium'),
+        ('Bluemoon Recreation Club Dhaka', ARRAY['Bluemoon Club', 'Bluemoon Recreation'], 'Dhaka', 'bar', 'premium'),
+        ('Westin 26th Floor Bar', ARRAY['Westin Bar', 'Westin Rooftop Bar'], 'Dhaka', 'bar', 'luxury'),
+
+        -- === CLUBS & EXCLUSIVE MEMBERS ===
+        ('Gulshan Club Limited', ARRAY['Gulshan Club', 'Gulshan Club Dhaka'], 'Dhaka', 'social_club', 'elite'),
+        ('Dhaka Club Limited', ARRAY['Dhaka Club', 'Shahbagh Club'], 'Dhaka', 'social_club', 'elite'),
+        ('Dutch Club Dhaka', ARRAY['Dutch Club', 'Gulshan Dutch Club'], 'Dhaka', 'social_club', 'elite'),
+        ('Baridhara Club Limited', ARRAY['Baridhara Club', 'Baridhara Diplomatic Club'], 'Dhaka', 'social_club', 'elite'),
+        ('Chittagong Club Limited', ARRAY['Chittagong Club', 'Chattogram Club'], 'Chattogram', 'social_club', 'elite'),
+        ('Sylhet Club Limited', ARRAY['Sylhet Club'], 'Sylhet', 'social_club', 'elite'),
+        ('Gulshan Youth Club', ARRAY['Gulshan Youth', 'Gulshan Youth Club Dhaka'], 'Dhaka', 'social_club', 'elite'),
+
+        -- === GOLF & COUNTRY CLUBS ===
+        ('Kurmitola Golf Club Dhaka', ARRAY['Kurmitola Golf', 'Kurmitola Golf Course'], 'Dhaka', 'golf_club', 'elite'),
+        ('Army Golf Club Dhaka', ARRAY['Army Golf', 'AGC Dhaka'],
+        'Dhaka', 'golf_club', 'elite'),
+
+        -- === EVENT & WEDDING VENUES ===
+        ('ICC Bangladesh Convention Center', ARRAY['ICC Convention', 'International Convention City'], 'Dhaka', 'event_venue', 'luxury'),
+        ('Bangabandhu International Conference Center', ARRAY['BICC', 'Bangabandhu Conference'], 'Dhaka', 'event_venue', 'luxury'),
+        ('AMM Convention Center Dhanmondi', ARRAY['AMM Convention', 'AMM Dhaka'],
+        'Dhaka', 'event_venue', 'premium'),
+        ('Bashundhara Convention Center', ARRAY['Bashundhara Convention', 'Bashundhara City'], 'Dhaka', 'event_venue', 'luxury'),
+        ('Radisson Blu Executive Ballroom', ARRAY['Radisson Ballroom', 'Radisson Event'], 'Dhaka', 'event_venue', 'luxury'),
+        ('InterContinental Dhaka Grand Ballroom', ARRAY['InterContinental Ballroom'], 'Dhaka', 'event_venue', 'luxury'),
+        ('The Westin Dhaka Ballroom', ARRAY['Westin Ballroom', 'Westin Event Venue'], 'Dhaka', 'event_venue', 'luxury'),
+
+        -- ===  FINE DINING ===
+        ('Lotus E Tang Pan Asian Restaurant', ARRAY['Lotus E Tang', 'Lotus Restaurant Dhaka'], 'Dhaka', 'fine_dining', 'luxury'),
+        ('The Garden Kitchen Sheraton Dhaka', ARRAY['Garden Kitchen', 'Garden Kitchen Sheraton'], 'Dhaka', 'fine_dining', 'luxury'),
+        ('Pan Pacific Sonargaon Cafe', ARRAY['Sonargaon Cafe', 'Pan Pacific Restaurant'], 'Dhaka', 'fine_dining', 'luxury'),
+        ('Crowne Plaza 26th Floor Dhaka', ARRAY['Crowne Plaza Restaurant', 'Crowne Plaza 26'], 'Dhaka', 'fine_dining', 'luxury'),
+        ('Renaissance R-Bar & Kitchen Dhaka', ARRAY['R-Bar Renaissance', 'Renaissance Restaurant'], 'Dhaka', 'fine_dining', 'luxury'),
+
+        -- === HNWI / BUSINESS ELITE INSTITUTIONS ===
+        ('Bangladesh Garment Manufacturers Exporters Association', ARRAY['BGMEI', 'BGMEI Dhaka'], 'Dhaka', 'business_link', 'elite'),
+        ('Federation of Bangladesh Chambers of Commerce Industry', ARRAY['FBCCI', 'Federation of Bangladesh Chamber'], 'Dhaka', 'business_link', 'elite'),
+        ('Dhaka Chamber of Commerce Industry', ARRAY['DCCI', 'Dhaka Chamber of Commerce'], 'Dhaka', 'business_link', 'elite'),
+        ('Bangladesh Association of Banks', ARRAY['BAB', 'Bangladesh Banks Association'], 'Dhaka', 'business_link', 'elite')
+    ON CONFLICT (name) DO NOTHING;
 """
 
 ALL_STATEMENTS = [

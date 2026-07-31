@@ -24,6 +24,7 @@ import psycopg
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
+from utils.linkedin_parser import parse_linkedin as _parse_linkedin
 from utils.pg import get_pg_config
 
 log = logging.getLogger("luxury")
@@ -36,11 +37,40 @@ HI_ROLES = [
     '"CEO"', '"Managing Director"', '"Chairman"',
     '"Director"', '"Founder"', '"President"',
     '"Vice President"', '"General Manager"',
+    '"Chief Executive"', '"Chief Financial Officer"',
+    '"Chief Operating Officer"', '"Partner"',
 ]
 
-# Media & event keywords for broader BD discovery
+HNWI_ROLES = [
+    '"Managing Director"', '"Chairman"', '"CEO"',
+    '"Chief Executive"', '"Executive Director"',
+    '"Group Chairman"', '"Vice Chairman"',
+    '"Senior Vice President"', '"Country Head"',
+    '"Managing Partner"', '"Owner"', '"Founder"',
+    '"Proprietor"', '"Board Member"',
+]
+
+BUSINESS_ELITE_ROLES = [
+    '"Managing Director"', '"Chairman"', '"CEO"',
+    '"Board Director"', '"Chief Financial"', '"Chief Operating"',
+    '"President Bangladesh"', '"Country Manager"',
+    '"Group Chairman"', '"Senior Executive"',
+]
+
+DIPLOMAT_ROLES = [
+    '"Ambassador"', '"High Commissioner"', '"Consul"',
+    '"Deputy Ambassador"', '"Counsellor"', '"Diplomat"',
+    '"First Secretary"', '"First Secretary"',
+]
+
+LAWYER_ROLES = [
+    '"Barrister"', '"Advocate"', '"Supreme Court"',
+    '"Senior Partner"', '"Managing Partner"', '"Law" firm"',
+]
+
 MEDIA_KW = ['"journalist"', '"media"', '"news"', '"reporter"', '"TV"', '"anchor"', '"editor"', '"broadcast"']
 EVENT_KW = ['"party"', '"event"', '"gala"', '"reception"', '"wedding"', '"celebration"']
+SOCIALIZE_KW = ['"socialite"', '"philanthropist"', '"influencer"', '"collector"', '"art collector"', '"patron"']
 
 
 def url_norm(href: str) -> str:
@@ -117,21 +147,8 @@ def confidence(target_name: str, parsed: dict, qtype: str) -> float:
     return min(score, 1.0)
 
 
-def parse_linkedin(result: dict) -> Optional[dict]:
-    href = result.get("href", "")
-    if not href.startswith("https://www.linkedin.com/in/") and not href.startswith("https://bd.linkedin.com/in/"):
-        return None
-    title = result.get("title", "")
-    body = result.get("body", "")
-    return {
-        "full_name": parse_name(title),
-        "profile_url": url_norm(href),
-        "profile_title": parse_title(title, body),
-        "company_name": parse_company(title, body),
-        "snippet": body[:500],
-        "confidence": 0.3,
-        "platform": "linkedin",
-    }
+def parse_linkedin(result):
+    return _parse_linkedin(result, parse_name, parse_title, parse_company, url_norm)
 
 
 def parse_facebook(result: dict) -> Optional[dict]:
@@ -176,24 +193,41 @@ def parse_instagram(result: dict) -> Optional[dict]:
     }
 
 
-def build_queries(name: str, alt_names: list[str], city: str) -> list[dict]:
+def build_queries(name: str, alt_names: list[str], city: str, target_type: str = "hotel") -> list[dict]:
     """Build DDGS queries for a venue — LinkedIn, Facebook, Instagram."""
     qs = []
     names = [name] + list(alt_names or [])[:2]
 
+    if target_type in ("bar", "nightclub"):
+        roles_for_venue = HI_ROLES[:3] + ['"Mixologist"', '"Bartender"', '"Head Chef"']
+    elif target_type in ("event_venue", "convention_center"):
+        roles_for_venue = HI_ROLES[:4] + ['"Event Manager"', '"Catering"', '"Wedding Planner"']
+    elif target_type in ("social_club", "golf_club", "club"):
+        roles_for_venue = HI_ROLES[:4] + ['"Club Manager"', '"Golf"', '"Tennis"', '"Recreation"']
+    elif target_type in ("fine_dining", "restaurant"):
+        roles_for_venue = HI_ROLES[:4] + ['"Chef"', '"Sommelier"', '"Restaurant Manager"']
+    elif target_type in ("business_link", "chamber"):
+        roles_for_venue = HI_ROLES[:4]
+    else:
+        roles_for_venue = HI_ROLES[:6]
+
     for n in names:
         short = n[:60]
-        for role in HI_ROLES[:5]:
+
+        # LinkedIn: targeted hi roles
+        for role in roles_for_venue[:5]:
             qs.append({"q": f'site:linkedin.com/in/ "{short}" {role}', "plat": "linkedin", "type": "li_hi"})
         qs.append({"q": f'site:linkedin.com/in/ "{short}" {city}', "plat": "linkedin", "type": "li_city"})
         qs.append({"q": f'site:linkedin.com/in/ "{short}" Bangladesh', "plat": "linkedin", "type": "li_bd"})
         qs.append({"q": f'site:linkedin.com/in/ "{short}"', "plat": "linkedin", "type": "li_gen"})
 
+        # Facebook pages + profiles
         qs.append({"q": f'site:facebook.com "{short}" {city}', "plat": "facebook", "type": "fb_page"})
         qs.append({"q": f'site:facebook.com/p/ "{short}"', "plat": "facebook", "type": "fb_page_url"})
         qs.append({"q": f'site:facebook.com/profile.php "{short}"', "plat": "facebook", "type": "fb_profile"})
         qs.append({"q": f'site:facebook.com "{short}" Bangladesh', "plat": "facebook", "type": "fb_bd"})
 
+        # Instagram: venue + customer content signals
         qs.append({"q": f'site:instagram.com "{short}" {city}', "plat": "instagram", "type": "ig_city"})
         qs.append({"q": f'site:instagram.com "{short}" Bangladesh', "plat": "instagram", "type": "ig_bd"})
 
@@ -344,13 +378,13 @@ def show_stats(conn):
 async def run(target_ids: list[int] | None, dry_run: bool) -> tuple[int, int]:
     pg = get_pg_config()
     conn = psycopg.connect(**pg)
-    conn.autocommit = True  # each execute commits immediately — no data loss on conn drop
+    conn.autocommit = True
     try:
         cur = conn.cursor()
         if target_ids:
-            cur.execute("SELECT id, name, alternative_names, city FROM scraper.luxury_targets WHERE id = ANY(%s) ORDER BY id", (target_ids,))
+            cur.execute("SELECT id, name, alternative_names, city, target_type FROM scraper.luxury_targets WHERE id = ANY(%s) ORDER BY id", (target_ids,))
         else:
-            cur.execute("SELECT id, name, alternative_names, city FROM scraper.luxury_targets WHERE linkedin_searched = FALSE OR facebook_searched = FALSE ORDER BY id")
+            cur.execute("SELECT id, name, alternative_names, city, target_type FROM scraper.luxury_targets WHERE linkedin_searched = FALSE OR facebook_searched = FALSE ORDER BY id")
         targets = cur.fetchall()
 
         if not targets:
@@ -361,11 +395,11 @@ async def run(target_ids: list[int] | None, dry_run: bool) -> tuple[int, int]:
         done, total = 0, 0
         async with httpx.AsyncClient(timeout=httpx.Timeout(20)) as client:
             for t in targets:
-                tid, tname, talts, tcity = t
+                tid, tname, talts, tcity, ttype = t
                 alt = list(talts or [])
-                log.info("[%d/%d] '%s' (%s)...", done + 1, len(targets), tname, tcity)
+                log.info("[%d/%d] '%s' (%s, %s)...", done + 1, len(targets), tname, tcity, ttype)
 
-                queries = build_queries(tname, alt, tcity)
+                queries = build_queries(tname, alt, tcity, target_type=ttype)
                 if dry_run:
                     log.info("  [DRY-RUN] %d queries", len(queries))
                     for q in queries[:4]:

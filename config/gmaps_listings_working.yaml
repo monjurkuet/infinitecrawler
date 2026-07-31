@@ -7,13 +7,12 @@ browser:
 pinchtab:
   server_url: "http://127.0.0.1:9867"
   instance_url: "http://127.0.0.1:9868"
-  token: "123456"
   navigate_timeout: 90
 queue:
   strategy: redis_queue
   config:
     host: localhost
-    port: 6379
+    port: 16379
     db: 0
     ignore_completed_on_enqueue: true
     keys:
@@ -134,7 +133,6 @@ output:
     host: "/var/run/postgresql"
     port: 5432
     user: postgres
-    password: changeme
     database: infinitecrawler
     schema: scraper
     table: gmaps_listings

@@ -21,6 +21,7 @@ import httpx, psycopg
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
+from utils.linkedin_parser import parse_linkedin as _parse_linkedin
 from utils.pg import get_pg_config
 
 log = logging.getLogger("discover")
@@ -115,14 +116,8 @@ def parse_company(title: str, body: str) -> Optional[str]:
     return m.group(1).strip() if m else None
 
 
-def parse_linkedin(result: dict) -> Optional[dict]:
-    href = result.get("href", "")
-    if not href.startswith("https://www.linkedin.com/in/") and not href.startswith("https://bd.linkedin.com/in/"):
-        return None
-    title, body = result.get("title", ""), result.get("body", "")
-    return {"full_name": parse_name(title), "profile_url": url_norm(href),
-            "profile_title": parse_title(title, body), "company_name": parse_company(title, body),
-            "snippet": body[:500], "platform": "linkedin"}
+def parse_linkedin(result):
+    return _parse_linkedin(result, parse_name, parse_title, parse_company, url_norm)
 
 
 def parse_facebook(result: dict) -> Optional[dict]:

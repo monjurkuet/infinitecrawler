@@ -90,6 +90,7 @@ class DaemonState:
         # Error tracking
         self.consecutive_errors: int = 0
         self.max_consecutive_errors: int = 10
+        self.url_retries: dict[str, int] = {}
 
         # Shutdown flag
         self.shutdown_requested: bool = False
@@ -463,7 +464,8 @@ async def eternal_loop(state: DaemonState):
                 state.pages_since_restart += 1
                 state.total_pages_processed += 1
             else:
-                state.queue_strategy.mark_failed(query, "Search extraction failed", state.consecutive_errors)
+                state.url_retries[query] = state.url_retries.get(query, 0) + 1
+                state.queue_strategy.mark_failed(query, "Search extraction failed", state.url_retries[query])
                 state.consecutive_errors += 1
 
             # 8. Jitter delay

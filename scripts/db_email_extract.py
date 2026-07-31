@@ -112,6 +112,7 @@ async def process_batch(
     Returns (listings_processed, emails_written).
     """
     semaphore = asyncio.Semaphore(concurrency)
+    counter_lock = asyncio.Lock()
     listings_processed = 0
     emails_written = 0
 
@@ -130,10 +131,12 @@ async def process_batch(
                 },
             ) as client:
                 results = await extract_listing(client, listing)
-                listings_processed += 1
+                async with counter_lock:
+                    listings_processed += 1
                 if results and not dry_run:
                     written = upsert_emails(conn, results)
-                    emails_written += written
+                    async with counter_lock:
+                        emails_written += written
 
     tasks = [process_one(lead) for lead in listings]
     await asyncio.gather(*tasks, return_exceptions=True)

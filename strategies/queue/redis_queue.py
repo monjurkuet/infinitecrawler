@@ -54,6 +54,22 @@ class RedisQueueStrategy(QueueStrategy):
         self._last_requeue_check = 0.0
         self.requeue_check_interval = self.config.get("requeue_check_interval", 30)
 
+        self._lua_enqueue = self.client.register_script("""
+            local completed_key = KEYS[1]
+            local pending_key  = KEYS[2]
+            local url          = ARGV[1]
+
+            if tonumber(ARGV[2]) == 1 and
+               redis.call('SISMEMBER', completed_key, url) == 1 then
+                return 0
+            end
+            if redis.call('LPOS', pending_key, url) then
+                return 0
+            end
+            redis.call('LPUSH', pending_key, url)
+            return 1
+        """)
+
         # Test connection
         try:
             self.client.ping()
@@ -63,34 +79,26 @@ class RedisQueueStrategy(QueueStrategy):
             raise
 
     def enqueue(self, urls: List[str]) -> int:
-        """
-        Add URLs to pending queue.
-        Skips URLs already in completed set unless ignore_completed_on_enqueue is enabled.
-        Returns count of URLs actually added.
-        """
         if not urls:
             return 0
 
         added = 0
-        pipe = self.client.pipeline()
+        skip_completed = 0 if self.ignore_completed_on_enqueue else 1
 
         for url in urls:
-            # Skip if already completed unless the caller wants PostgreSQL truth to win.
-            if not self.ignore_completed_on_enqueue and self.client.sismember(
-                self.keys["completed"], url
-            ):
-                continue
+            try:
+                result = self._lua_enqueue(
+                    keys=[self.keys["completed"], self.keys["pending"]],
+                    args=[url, skip_completed],
+                )
+                if result:
+                    added += 1
+            except Exception:
+                self.logger.exception("enqueue Lua script failed for %s", url[:80])
 
-            # Check if already in queue
-            if self.client.lpos(self.keys["pending"], url) is not None:
-                continue
-
-            pipe.lpush(self.keys["pending"], url)
-            added += 1
-
-        pipe.execute()
         self.logger.info(
-            f"Enqueued {added} new URLs (skipped {len(urls) - added} duplicates/completed)"
+            "Enqueued %d new URLs (skipped %d duplicates/completed)",
+            added, len(urls) - added,
         )
         return added
 

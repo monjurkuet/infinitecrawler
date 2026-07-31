@@ -28,8 +28,25 @@ class _PostgreSQLOutputBase(OutputStrategy):
         self.results_count = 0
         self.logger = logging.getLogger(self.__class__.__name__)
         self._connection = None
+        self._write_batch: list[tuple] = []
+        self._BATCH_SIZE = 50
         self._connect()
         self._ensure_schema_and_table()
+
+    def _flush_write_batch(self, sql_template: sql.Composed) -> None:
+        if not self._write_batch:
+            return
+        try:
+            with self._connection.cursor() as cursor:
+                cursor.executemany(sql_template, self._write_batch)
+            self.results_count += len(self._write_batch)
+        finally:
+            self._write_batch.clear()
+
+    def flush_batch(self) -> None:
+        sql = getattr(self, '_batch_sql', None)
+        if sql is not None and self._write_batch:
+            self._flush_write_batch(sql)
 
     def _resolve_setting(
         self,
@@ -281,14 +298,11 @@ class PostgreSQLOutputStrategy(_PostgreSQLOutputBase):
                 VALUES (%s, %s, %s, NOW(), NOW())
                 """
             ).format(sql.Identifier(self.schema), sql.Identifier(self.table))
+            self._batch_sql = insert_sql
 
-            with self._connection.cursor() as cursor:
-                cursor.execute(
-                    insert_sql,
-                    (key_value, source_type, Jsonb(payload)),
-                )
-
-            self.results_count += 1
+            self._write_batch.append((key_value, source_type, Jsonb(payload)))
+            if len(self._write_batch) >= self._BATCH_SIZE:
+                self._flush_write_batch(insert_sql)
         except Exception as e:
             self.logger.error(f"Failed to write to PostgreSQL: {e}")
             raise
@@ -351,14 +365,11 @@ class PostgreSQLUpsertStrategy(_PostgreSQLOutputBase):
                     updated_at = NOW()
                 """
             ).format(sql.Identifier(self.schema), sql.Identifier(self.table))
+            self._batch_sql = upsert_sql
 
-            with self._connection.cursor() as cursor:
-                cursor.execute(
-                    upsert_sql,
-                    (key_value, source_type, Jsonb(payload)),
-                )
-
-            self.results_count += 1
+            self._write_batch.append((key_value, source_type, Jsonb(payload)))
+            if len(self._write_batch) >= self._BATCH_SIZE:
+                self._flush_write_batch(upsert_sql)
         except Exception as e:
             self.logger.error(f"Failed to upsert to PostgreSQL: {e}")
             raise
@@ -599,6 +610,7 @@ class PostgreSQLListingDetailsUpsertStrategy(_PostgreSQLOutputBase):
                     updated_at = NOW()
                 """
             ).format(sql.Identifier(self.schema), sql.Identifier(self.table))
+            self._batch_sql = upsert_sql
 
             params = (
                 row["place_id"],
@@ -626,10 +638,9 @@ class PostgreSQLListingDetailsUpsertStrategy(_PostgreSQLOutputBase):
                 Jsonb(row["payload"]),
             )
 
-            with self._connection.cursor() as cursor:
-                cursor.execute(upsert_sql, params)
-
-            self.results_count += 1
+            self._write_batch.append(params)
+            if len(self._write_batch) >= self._BATCH_SIZE:
+                self._flush_write_batch(upsert_sql)
         except Exception as e:
             self.logger.error(f"Failed to upsert listing details to PostgreSQL: {e}")
             raise

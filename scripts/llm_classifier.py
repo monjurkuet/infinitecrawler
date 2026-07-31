@@ -43,56 +43,30 @@ CLASSIFICATION_DIR = INFINITECRAWLER_DIR / "_system" / "classification"
 LLM_BASE_URL = os.environ.get(
     "LLM_BASE_URL", "https://llm.datasolved.org/v1"
 )
-LLM_API_KEY = os.environ.get(
-    "LLM_API_KEY", "sk-vqxAskCoUVgzhVybz"
-)
+LLM_API_KEY = os.environ["LLM_API_KEY"]
 LLM_MODEL = os.environ.get(
     "LLM_CLASSIFIER_MODEL", "deepseek-ai/deepseek-v4-flash"
 )
+LLM_TEMPERATURE = 0.1
+LLM_MAX_TOKENS = 8192
+LLM_HTTP_TIMEOUT = 60
 
 BATCH_SIZE = 50  # leads per LLM call (DeepSeek V4 Flash has 1M context)
 MAX_FEW_SHOT = 10  # max few-shot examples per batch
 MIN_FEW_SHOT_PER_SECTOR = 2  # min examples to keep per sector
 
 # classification_method — single source of truth for the PG column enum.
-# Both listing_daemon.py (in-stream fallback) and db_classify.py (offline cron)
-# write these values; reporting queries depend on them staying stable.
-METHOD_FALLBACK_RULE = "fallback_rule"        # rule-based, in-stream (listing_daemon)
-METHOD_FALLBACK_LLM_ERROR = "fallback_llm_error"  # LLM call failed, fell back to rules
-METHOD_LLM_CACHED = "llm_cached"              # loaded from training_examples.jsonl
-METHOD_LLM_PREFIX = "llm_"                    # prefix for live LLM classifications
+from services.classification import (
+    DEFAULT_SECTOR,
+    _single_fallback,
+    load_sectors,
+)
 
-# Bengali stop words — common across both rule-based passes; module-level to dedupe.
-BN_STOP = {
-    "দোকান", "এজেন্সি", "বাংলাদেশ", "ঢাকা", "সেবা", "কেন্দ্র",
-    "কোম্পানি", "অফিস", "কনসাল্টেন্ট", "প্রশিক্ষণ", "পরিষেবা",
-    "কারখানা", "প্রতিষ্ঠান", "ভবন", "যত্ন", "সারাইয়ের",
-    "রপ্তানিকারক", "প্রস্তুতকর্তা",
-}
-
-DEFAULT_SECTOR = "high-roi-niches"  # catch-all sector when no BPT sector matches
-
-# LLM API call constants
-LLM_TEMPERATURE = 0.1
-LLM_MAX_TOKENS = 8192
-LLM_HTTP_TIMEOUT = 60
 MIN_TRAIN_CONFIDENCE = 0.7  # minimum confidence to auto-save as training example
 
 
 def ensure_dirs() -> None:
     CLASSIFICATION_DIR.mkdir(parents=True, exist_ok=True)
-
-
-def load_sectors() -> dict:
-    """Load BPT sector configs from sectors.yaml."""
-    import yaml
-
-    path = BPT_DIR / "_system" / "config" / "sectors.yaml"
-    if not path.exists():
-        log.error(f"sectors.yaml not found at {path}")
-        return {}
-    data = yaml.safe_load(path.read_text())
-    return data.get("sectors", {})
 
 
 def build_sector_definitions(sectors: dict) -> dict:
@@ -523,48 +497,6 @@ def classify_all(
         f"{len(new_examples)} new training examples this run"
     )
     return all_results
-
-
-def _single_fallback(lead: dict, index: int, sectors: dict) -> dict:
-    """Classify a single lead using rule-based fallback."""
-    category = (lead.get("category") or "").lower()
-    name = (lead.get("name") or "").lower()
-
-    for sid, sc in sorted(sectors.items()):
-        if sc.get("status") != "active":
-            continue
-        kw_dict = sc.get("keywords", {})
-        all_keywords = kw_dict.get("en", []) + kw_dict.get("bn", [])
-        subsegments = sc.get("subsegments", [])
-
-        # Pass 1
-        for kw in all_keywords:
-            kw_lower = kw.lower().strip()
-            if len(kw_lower) >= 8 and (kw_lower in category or kw_lower in name):
-                return {"index": index, "sector": sid, "confidence": 0.85, "reasoning": "rule-based pass 1"}
-
-        # Pass 2
-        for sub in subsegments:
-            if sub.lower().strip() in category:
-                return {"index": index, "sector": sid, "confidence": 0.75, "reasoning": "rule-based pass 2"}
-
-        # Pass 3
-        for kw in all_keywords:
-            parts = [p for p in kw.lower().split() if len(p) > 4]
-            if parts and any(part in name for part in parts):
-                return {"index": index, "sector": sid, "confidence": 0.65, "reasoning": "rule-based pass 3"}
-
-        # Pass 4
-        for kw in all_keywords:
-            bn_words = [
-                w for w in kw.lower().split()
-                if any("\u0980" <= c <= "\u09FF" for c in w)
-                and w not in BN_STOP
-            ]
-            if bn_words and all(w in category for w in bn_words):
-                return {"index": index, "sector": sid, "confidence": 0.60, "reasoning": "rule-based pass 4"}
-
-    return {"index": index, "sector": DEFAULT_SECTOR, "confidence": 0.3, "reasoning": "rule-based no match"}
 
 
 def main():

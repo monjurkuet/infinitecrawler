@@ -11,6 +11,8 @@ Usage:
     uv run python scripts/match_linkedin_to_gmaps.py --min-score 0.7  # stricter
 """
 
+from collections import defaultdict
+
 import argparse, logging, re, sys
 from pathlib import Path
 
@@ -137,26 +139,37 @@ def match_companies(conn, min_score: float, dry_run: bool) -> list[dict]:
         log.info("  %d of 20 matched (min_score=%.1f)", matched, min_score)
         return []
 
+    norm_listings: list[str] = [normalize(li[1]) for li in listings]
+    token_idx: dict[str, list[int]] = defaultdict(list)
+    for idx, norm_name in enumerate(norm_listings):
+        for token in set(norm_name.split()) - NOISE_WORDS:
+            token_idx[token].append(idx)
+
     matches = []
     skipped = set()
     for co in companies:
         if len(co) < 3 or co.lower() in NOISE_WORDS:
             skipped.add(co)
             continue
-        for li in listings:
-            s = score_match(co, li[1], li[5])
+        co_norm = normalize(co)
+        co_tokens = set(co_norm.split()) - NOISE_WORDS
+        candidate_ids: set[int] = set()
+        for token in co_tokens:
+            candidate_ids.update(token_idx.get(token, ()))
+        for idx in candidate_ids:
+            s = score_match(co, listings[idx][1], listings[idx][5])
             if s >= min_score:
                 matches.append({
                     "profile_url": None,
                     "full_name": None,
                     "company_name": co,
                     "profile_title": None,
-                    "gmaps_listing_id": li[0],
-                    "gmaps_name": li[1],
-                    "gmaps_website": li[2],
-                    "gmaps_phone": li[3],
-                    "gmaps_address": li[4],
-                    "gmaps_category": li[5],
+                    "gmaps_listing_id": listings[idx][0],
+                    "gmaps_name": listings[idx][1],
+                    "gmaps_website": listings[idx][2],
+                    "gmaps_phone": listings[idx][3],
+                    "gmaps_address": listings[idx][4],
+                    "gmaps_category": listings[idx][5],
                     "score": s,
                 })
 

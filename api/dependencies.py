@@ -1,5 +1,6 @@
 """FastAPI dependencies — injected services."""
 
+import logging
 import os
 
 from fastapi import HTTPException, Security
@@ -8,13 +9,14 @@ from psycopg_pool import AsyncConnectionPool
 
 from api.services import pg_service, redis_service
 
+log = logging.getLogger(__name__)
 _bearer_scheme = HTTPBearer(auto_error=False)
-_API_TOKEN = os.environ.get("INFINITECRAWLER_API_TOKEN", "changeme")
+_API_TOKEN = os.environ.get("INFINITECRAWLER_API_TOKEN", "")
 
 
 async def verify_token(credentials: HTTPAuthorizationCredentials | None = Security(_bearer_scheme)) -> str:
-    if _API_TOKEN == "changeme":
-        # Auth not configured — allow all
+    if not _API_TOKEN:
+        log.warning("INFINITECRAWLER_API_TOKEN not set — all requests allowed")
         return "anonymous"
     if credentials is None:
         raise HTTPException(status_code=401, detail="Missing bearer token")

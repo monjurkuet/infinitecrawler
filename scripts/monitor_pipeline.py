@@ -27,9 +27,11 @@ import logging
 import os
 import subprocess
 import sys
-
 from datetime import datetime, timezone
 from pathlib import Path
+
+import psycopg
+import redis as redis_lib
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 log = logging.getLogger("monitor_pipeline")
@@ -37,43 +39,48 @@ log = logging.getLogger("monitor_pipeline")
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
-from utils.pg import get_uncrawled_count_sql, PG_DEFAULT_HOST, PG_DEFAULT_PASSWORD  # noqa: E402
+from utils.pg import get_pg_config, get_uncrawled_count_sql  # noqa: E402
+
+REDIS_HOST = os.environ.get("REDIS_HOST", "localhost")
+REDIS_PORT = int(os.environ.get("REDIS_PORT", "6379"))
+REDIS_DB = int(os.environ.get("REDIS_DB", "0"))
+REDIS_DECODE = os.environ.get("REDIS_DECODE_RESPONSES", "1") == "1"
+REDIS_SOCKET_TIMEOUT_SEC = int(os.environ.get("REDIS_SOCKET_TIMEOUT_SEC", "2"))
+
+_redis: redis_lib.Redis | None = None
+
+
+def _redis_raw() -> redis_lib.Redis:
+    global _redis
+    if _redis is None:
+        _redis = redis_lib.Redis(
+            host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB,
+            decode_responses=REDIS_DECODE, socket_timeout=REDIS_SOCKET_TIMEOUT_SEC,
+        )
+    return _redis
 
 
 def redis_cmd(cmd: str) -> str:
-    """Run a redis-cli command, return stripped output."""
+    args = cmd.split()
     try:
-        result = subprocess.run(
-            ["redis-cli"] + cmd.split(),
-            capture_output=True, text=True, timeout=10
-        )
-        return result.stdout.strip()
+        r = _redis_raw()
+        result = r.execute_command(*args)
+        return str(result) if result is not None else "0"
     except Exception as e:
-        log.warning(f"Redis command failed: {cmd} — {e}")
+        log.warning("Redis command failed: %s — %s", cmd, e)
         return "0"
 
 
 def pg_query(sql: str) -> str:
-    """Run a PostgreSQL query, return stripped output."""
     try:
-        cmd = [
-            "psql",
-            "-U", "postgres",
-            "-d", "infinitecrawler",
-            "-t", "-A",
-            "-c", sql,
-        ]
-        if PG_DEFAULT_HOST:
-            cmd.extend(["-h", PG_DEFAULT_HOST])
-        result = subprocess.run(
-            cmd,
-            capture_output=True, text=True, timeout=30,
-            env={**os.environ, "PGPASSWORD": PG_DEFAULT_PASSWORD},
-        )
-        out = result.stdout.strip()
-        return out if out else "0"
+        cfg = get_pg_config()
+        with psycopg.connect(**cfg) as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql)
+                row = cur.fetchone()
+                return str(row[0]) if row and row[0] is not None else "0"
     except Exception as e:
-        log.warning(f"PG query failed: {sql[:50]} — {e}")
+        log.warning("PG query failed: %s — %s", sql[:50], e)
         return "error"
 
 
@@ -118,40 +125,22 @@ def get_crawler_pids() -> list[str]:
 
 
 def clear_stale_processing() -> int:
-    """Move items stuck in processing back to pending (up to 100)."""
-    from utils.pg import get_pg_config
-    import psycopg
-
-    config = get_pg_config()
-    try:
-        conn = psycopg.connect(**config)
-        try:
-            # Check if processing items exist
-            r = redis_cmd("LLEN gmaps:processing")
-            count = int(r) if r else 0
-            if count == 0:
-                return 0
-
-            moved = 0
-            for _ in range(min(count, 100)):
-                item = redis_cmd("RPOP gmaps:processing")
-                if item:
-                    redis_cli_push(item)
-                    moved += 1
-            return moved
-        finally:
-            conn.close()
-    except Exception:
+    r = redis_cmd("LLEN gmaps:processing")
+    count = int(r) if r else 0
+    if count == 0:
         return 0
+    moved = 0
+    for _ in range(min(count, 100)):
+        item = redis_cmd("RPOP gmaps:processing")
+        if item:
+            redis_push(item)
+            moved += 1
+    return moved
 
 
-def redis_cli_push(item: str):
-    """Push an item back to the pending queue using redis-cli."""
+def redis_push(item: str, pipe_key: str = "gmaps:pending") -> None:
     try:
-        subprocess.run(
-            ["redis-cli", "LPUSH", "gmaps:pending", item],
-            capture_output=True, timeout=5
-        )
+        _redis_raw().lpush(pipe_key, item)
     except Exception:
         pass
 
@@ -244,6 +233,20 @@ def run_checks(restart: bool = False) -> dict:
         "SELECT COUNT(DISTINCT listing_id) FROM scraper.linkedin_profiles"
     )
 
+    # 8. Data velocity (last 1h and 6h window)
+    velocity_search_1h = pg_query(
+        "SELECT COUNT(*) FROM scraper.gmaps_search_results WHERE updated_at > NOW() - INTERVAL '1 hour'"
+    )
+    velocity_listings_1h = pg_query(
+        "SELECT COUNT(*) FROM scraper.gmaps_listings WHERE updated_at > NOW() - INTERVAL '1 hour'"
+    )
+    velocity_search_6h = pg_query(
+        "SELECT COUNT(*) FROM scraper.gmaps_search_results WHERE updated_at > NOW() - INTERVAL '6 hours'"
+    )
+    velocity_listings_6h = pg_query(
+        "SELECT COUNT(*) FROM scraper.gmaps_listings WHERE updated_at > NOW() - INTERVAL '6 hours'"
+    )
+
     # Determine pipeline status
     is_healthy = True
     issues = []
@@ -256,6 +259,12 @@ def run_checks(restart: bool = False) -> dict:
         issues.append(f"{processing} items stuck in processing with no crawlers")
     if failed > 10:
         issues.append(f"High failure count: {failed}")
+
+    # Stalled search output (velocity check)
+    vs1h = int(velocity_search_1h) if velocity_search_1h != "error" else 0
+    vl1h = int(velocity_listings_1h) if velocity_listings_1h != "error" else 0
+    if vl1h > 0 and vs1h == 0:
+        issues.append("Search daemon producing zero new DB rows — likely query exhaustion (all queries produce identical GMaps results)")
 
     # Auto-heal
     healed = []
@@ -300,6 +309,12 @@ def run_checks(restart: bool = False) -> dict:
             "listings_with_phone": int(listings_with_phone) if listings_with_phone != "error" else None,
             "leads_with_website": int(leads_with_website) if leads_with_website != "error" else None,
             "uncrawled_urls": int(uncrawled) if uncrawled != "error" else None,
+            "velocity": {
+                "search_1h": int(velocity_search_1h) if velocity_search_1h != "error" else None,
+                "listings_1h": int(velocity_listings_1h) if velocity_listings_1h != "error" else None,
+                "search_6h": int(velocity_search_6h) if velocity_search_6h != "error" else None,
+                "listings_6h": int(velocity_listings_6h) if velocity_listings_6h != "error" else None,
+            },
             "enrichment": {
                 "total_emails": int(total_emails) if total_emails != "error" else None,
                 "listings_with_email": int(listings_with_email) if listings_with_email != "error" else None,
@@ -339,6 +354,9 @@ def main():
         print(f"   Redis Search:  pending={r['search']['pending']} processing={r['search']['processing']} completed={r['search']['completed']} failed={r['search']['failed']}")
         db = status["database"]
         print(f"   DB Listings: {db['total_listings']}  |  Search Results: {db['total_search_results']}")
+        vel = db.get("velocity", {})
+        if vel:
+            print(f"   Velocity (1h/6h): search {vel.get('search_1h', '?')}/{vel.get('search_6h', '?')}  |  listings {vel.get('listings_1h', '?')}/{vel.get('listings_6h', '?')}")
         print(f"   With phone: {db['listings_with_phone']}  |  With website: {db['leads_with_website']}  |  Uncrawled: {db['uncrawled_urls']}")
 
         # Enrichment stats

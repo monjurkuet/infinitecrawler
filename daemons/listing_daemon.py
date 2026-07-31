@@ -38,7 +38,7 @@ from daemons.common import (  # noqa: E402
     install_signal_handlers,
     shutdown_strategies,
 )
-from scripts.llm_classifier import _single_fallback, load_sectors, METHOD_FALLBACK_RULE  # noqa: E402
+from services.classification import _single_fallback, load_sectors, METHOD_FALLBACK_RULE  # noqa: E402
 
 # ── Config ──────────────────────────────────────────────────────────────────
 
@@ -393,13 +393,12 @@ async def process_url(state: DaemonState, url: str) -> bool:
                 await state.browser_manager.close_tab()
             return True
 
+        except psycopg.errors.UniqueViolation:
+            log.debug("Already in DB (duplicate source_url): %s", url[:60])
+            if state.browser_manager:
+                await state.browser_manager.close_tab()
+            return True
         except Exception as e:
-            err_msg = str(e)
-            if 'duplicate key' in err_msg and 'source_url' in err_msg:
-                log.debug("Already in DB (duplicate source_url): %s", url[:60])
-                if state.browser_manager:
-                    await state.browser_manager.close_tab()
-                return True
             log.warning("Attempt %d/%d failed for %s: %s",
                         attempt + 1, URL_MAX_RETRIES, url[:60], e)
             if attempt < URL_MAX_RETRIES - 1:

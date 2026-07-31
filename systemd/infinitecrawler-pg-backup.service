@@ -8,4 +8,4 @@ Wants=network-online.target
 Type=oneshot
 ExecStart=%h/codebase/vhd/infinitecrawler/scripts/backup-pg.sh
 WorkingDirectory=%h/codebase/vhd/infinitecrawler
-Environment=PG_HOST=127.0.0.1 PG_PORT=5432 PG_USER=postgres PG_PASSWORD=changeme PG_DB=infinitecrawler
+EnvironmentFile=-%h/.config/infinitecrawler/backup.env

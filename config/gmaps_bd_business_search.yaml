@@ -14,7 +14,6 @@ search_url_template: "https://www.google.com/maps/search/{query}/"
 pinchtab:
   server_url: "http://127.0.0.1:9867"
   instance_url: "http://127.0.0.1:9868"
-  token: "123456"
   navigate_timeout: 60
 
 selectors:
@@ -34,7 +33,7 @@ queue:
   strategy: "redis_queue"
   config:
     host: "localhost"
-    port: 6379
+    port: 16379
     db: 0
     keys:
       pending: "gmaps_bd_business:pending"
@@ -50,7 +49,6 @@ output:
     host: "/var/run/postgresql"
     port: 5432
     user: postgres
-    password: changeme
     database: "infinitecrawler"
     schema: "scraper"
     table: "gmaps_search_results"

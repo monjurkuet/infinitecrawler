@@ -61,8 +61,8 @@ class InfiniteScrollPaginationStrategy(PaginationStrategy):
 
             # Check if new content was loaded
             items_selector = self.config.get("items_selector", "a.hfpxzc")
-            restaurant_elements = await tab.select_all(items_selector)
-            current_count = len(restaurant_elements)
+            feed_elements = await tab.select_all(items_selector, timeout=10)
+            current_count = len(feed_elements)
 
             self.logger.info(f"Current result count: {current_count}")
 
@@ -70,8 +70,8 @@ class InfiniteScrollPaginationStrategy(PaginationStrategy):
             if current_count == self.last_result_count:
                 # Try one more time to be sure
                 await tab.wait(2)
-                restaurant_elements = await tab.select_all(items_selector)
-                current_count = len(restaurant_elements)
+                feed_elements = await tab.select_all(items_selector, timeout=10)
+                current_count = len(feed_elements)
                 if current_count == self.last_result_count:
                     self.logger.info("No new results loaded. Reached the end.")
                     return False
