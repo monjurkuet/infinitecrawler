@@ -6,15 +6,16 @@ lines of duplicated code per file.
 
 import asyncio
 import logging
+import os
 import signal
 
 log = logging.getLogger("daemon.common")
 
 # ── Browser lifecycle ────────────────────────────────────────────────────────
 
-BROWSER_RESTART_INTERVAL_SEC = 3600  # 1 hour — restart browser regardless
-BROWSER_RESTART_PAGES = 100         # also restart after this many pages
-QUEUE_LOW_THRESHOLD = 20            # pull more items from source when pending < this
+BROWSER_RESTART_INTERVAL_SEC = int(os.environ.get("BROWSER_RESTART_INTERVAL_SEC", "3600"))
+BROWSER_RESTART_PAGES = int(os.environ.get("BROWSER_RESTART_PAGES", "100"))
+QUEUE_LOW_THRESHOLD = int(os.environ.get("QUEUE_LOW_THRESHOLD", "20"))
 
 # ── Signal handling ──────────────────────────────────────────────────────────
 
@@ -31,6 +32,12 @@ async def shutdown_strategies(state):
         cleanup = state.output_strategy.cleanup()
         if asyncio.iscoroutine(cleanup):
             await cleanup
+    if state.output_strategy and hasattr(state.output_strategy, "flush_batch"):
+        flush_fn = state.output_strategy.flush_batch
+        if callable(flush_fn):
+            result = flush_fn()
+            if asyncio.iscoroutine(result):
+                await result
     if state.queue_strategy and hasattr(state.queue_strategy, "cleanup"):
         cleanup = state.queue_strategy.cleanup()
         if asyncio.iscoroutine(cleanup):

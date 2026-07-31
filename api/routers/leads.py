@@ -57,7 +57,6 @@ async def get_stats(_user: str = Depends(verify_token)):
 
 @router.get("/export")
 async def export_leads(
-    format: str = Query("csv"),
     limit: int = Query(0, ge=0, le=50000),
     category: str | None = Query(None),
     city: str | None = Query(None),

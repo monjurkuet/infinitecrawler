@@ -15,6 +15,7 @@ Global eligibility heuristic: keyword or sector suggests exportable services.
 """
 
 import random
+import os
 import re
 from pathlib import Path
 from typing import Optional
@@ -40,17 +41,20 @@ BD_CITIES = [
     ("Narsingdi", "নরসিংদী"),
 ]
 
-INTERNATIONAL_MARKETS = ["USA", "UK", "Australia", "Canada", "UAE", "Saudi Arabia"]
+INTERNATIONAL_MARKETS = [
+    "USA", "UK", "Australia", "Canada", "UAE", "Saudi Arabia",
+    "Germany", "France", "Italy", "Netherlands", "Belgium", "Sweden",
+    "Switzerland", "Austria", "Denmark", "Norway",
+    "Singapore", "Malaysia", "Japan", "South Korea", "Hong Kong",
+    "Qatar", "Oman", "Kuwait", "Bahrain",
+    "India", "South Africa", "Brazil",
+]
 
 MIX_RATIO = {"bd_local": 0.70, "bd_national": 0.10, "global": 0.20}
 
-SECTORS_YAML_PATH = (
-    Path(__file__).resolve().parent.parent.parent
-    / "business-plan-template"
-    / "_system"
-    / "config"
-    / "software_sectors.yaml"
-)
+REPO_ROOT = Path(__file__).resolve().parents[1]
+_SECTORS_YAML_DEFAULT = REPO_ROOT.parent / "business-plan-template" / "_system" / "config" / "software_sectors.yaml"
+SECTORS_YAML_PATH = Path(os.environ["SECTORS_YAML_PATH"]) if os.environ.get("SECTORS_YAML_PATH") else _SECTORS_YAML_DEFAULT
 
 
 # ── Global eligibility heuristic ────────────────────────────────────────────

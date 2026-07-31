@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -9,6 +10,20 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CONFIG_DIR = REPO_ROOT / "config"
+
+_VALID_NAME_RE = re.compile(r"^[-_a-zA-Z0-9]+\.yaml$")
+
+
+def _validate_name(name: str) -> None:
+    if not _VALID_NAME_RE.match(name) or ".." in name:
+        raise ValueError(f"Invalid config name: {name!r}")
+
+
+def _validate_content(content: dict) -> None:
+    dumped = yaml.dump(content, default_flow_style=False, allow_unicode=True)
+    reloaded = yaml.safe_load(dumped)
+    if not isinstance(reloaded, dict):
+        raise ValueError("Config must be a YAML mapping")
 
 
 def list_configs() -> list[dict]:
@@ -24,6 +39,7 @@ def list_configs() -> list[dict]:
 
 
 def get_config(name: str) -> Optional[dict]:
+    _validate_name(name)
     path = CONFIG_DIR / name
     if not path.exists() or not path.is_file():
         return None
@@ -31,6 +47,8 @@ def get_config(name: str) -> Optional[dict]:
 
 
 def write_config(name: str, content: dict) -> bool:
+    _validate_name(name)
+    _validate_content(content)
     path = CONFIG_DIR / name
     if path.exists():
         return False  # use update for existing
@@ -39,6 +57,8 @@ def write_config(name: str, content: dict) -> bool:
 
 
 def update_config(name: str, content: dict) -> bool:
+    _validate_name(name)
+    _validate_content(content)
     path = CONFIG_DIR / name
     if not path.exists():
         return False
@@ -47,6 +67,7 @@ def update_config(name: str, content: dict) -> bool:
 
 
 def delete_config(name: str) -> bool:
+    _validate_name(name)
     path = CONFIG_DIR / name
     if not path.exists():
         return False

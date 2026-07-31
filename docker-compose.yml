@@ -146,6 +146,26 @@ networks:
   infinitecrawler:
     driver: bridge
 
+# ── HTTPS Termination (production) ──────────────────────────────────────────
+# In production, place a TLS-terminating reverse proxy in front of the API:
+#
+#   caddy:
+#     image: caddy:2-alpine
+#     ports: ["443:443"]
+#     volumes:
+#       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+#       - caddy_data:/data
+#       - caddy_config:/config
+#     networks: [infinitecrawler]
+#
+# Example Caddyfile (auto-TLS via Let's Encrypt):
+#   api.infinitecrawler.example.com {
+#     reverse_proxy api:8015
+#   }
+#
+# For local-only deployments (LAN/VPN), the API at 127.0.0.1:8016 is fine
+# and does not need TLS.
+
 volumes:
   redis_data:
   # pg_data:  # Uncomment if using local postgres service
