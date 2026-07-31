@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import os
 from typing import Optional
 
 import redis as redis_lib
@@ -16,12 +18,12 @@ _client: Optional[redis_lib.Redis] = None
 async def create_client() -> redis_lib.Redis:
     global _client
     client = redis_lib.Redis(
-        host="localhost",
-        port=6379,
-        db=0,
+        host=os.environ.get("REDIS_HOST", "localhost"),
+        port=int(os.environ.get("REDIS_PORT", "6379")),
+        db=int(os.environ.get("REDIS_DB", "0")),
         decode_responses=True,
     )
-    client.ping()
+    await asyncio.to_thread(client.ping)
     _client = client
     log.info("Redis connected")
     return client
@@ -43,7 +45,7 @@ async def close_client():
 async def check_health() -> str:
     try:
         client = get_client()
-        client.ping()
+        await asyncio.to_thread(client.ping)
         return "ok"
     except Exception as e:
         log.warning(f"Redis health check failed: {e}")

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import logging
+import io
+import csv
 from typing import Any, Optional
 
 from psycopg_pool import AsyncConnectionPool
@@ -556,8 +558,6 @@ async def get_uncrawled_count() -> int:
 
 async def export_leads_csv(filters: dict, limit: int = 0) -> str:
     """Return CSV content for matching leads. Optional limit for quick preview."""
-    import io
-    import csv
 
     where_sql, where_params = _build_leads_where(filters)
     pool = await get_pool()
@@ -583,3 +583,790 @@ async def export_leads_csv(filters: dict, limit: int = 0) -> str:
             for r in rows:
                 writer.writerow(r)
             return buf.getvalue()
+
+
+# ─── Emails ──────────────────────────────────────────────────────────────────
+
+async def query_emails(
+    listing_id: Optional[int] = None,
+    source_type: Optional[str] = None,
+    is_obfuscated: Optional[bool] = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> tuple[list[dict], int]:
+    pool = await get_pool()
+    where_parts = []
+    params: list[Any] = []
+
+    if listing_id is not None:
+        where_parts.append("e.listing_id = %s")
+        params.append(listing_id)
+    if source_type is not None:
+        where_parts.append("e.extraction_method = %s")
+        params.append(source_type)
+    if is_obfuscated is not None:
+        where_parts.append("e.is_obfuscated = %s")
+        params.append(is_obfuscated)
+
+    where_sql = " AND ".join(where_parts) if where_parts else "TRUE"
+
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"SELECT count(*) FROM scraper.emails e WHERE {where_sql}",
+                params,
+            )
+            total = (await cur.fetchone())[0]
+
+            await cur.execute(
+                f"SELECT e.id, e.listing_id, e.website_url, e.email, e.email_type, "
+                f"e.extraction_method, e.is_obfuscated, e.context_snippet, "
+                f"e.discovered_at, e.last_verified, e.is_active "
+                f"FROM scraper.emails e WHERE {where_sql} "
+                f"ORDER BY e.discovered_at DESC NULLS LAST "
+                f"LIMIT %s OFFSET %s",
+                [*params, limit, offset],
+            )
+            rows = await cur.fetchall()
+            emails = []
+            for r in rows:
+                d = {}
+                for i, col in enumerate(cur.description):
+                    val = r[i]
+                    if hasattr(val, "isoformat"):
+                        val = val.isoformat()
+                    d[col.name] = val
+                emails.append(d)
+            return emails, total
+
+
+async def get_email_stats() -> dict:
+    pool = await get_pool()
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT count(*) FROM scraper.emails")
+            total_emails = (await cur.fetchone())[0]
+
+            await cur.execute("SELECT count(DISTINCT listing_id) FROM scraper.emails WHERE listing_id IS NOT NULL")
+            unique_listings = (await cur.fetchone())[0]
+
+            await cur.execute("""
+                SELECT extraction_method, count(*) as cnt
+                FROM scraper.emails
+                WHERE extraction_method IS NOT NULL
+                GROUP BY extraction_method
+            """)
+            by_extraction = {r[0]: r[1] for r in await cur.fetchall()}
+
+            await cur.execute("""
+                SELECT email_type, count(*) as cnt
+                FROM scraper.emails
+                WHERE email_type IS NOT NULL
+                GROUP BY email_type
+            """)
+            by_source_type = {r[0]: r[1] for r in await cur.fetchall()}
+
+            await cur.execute("SELECT count(*) FROM scraper.emails WHERE is_obfuscated = true")
+            obfuscated = (await cur.fetchone())[0]
+
+            obf_rate = round(obfuscated / total_emails, 4) if total_emails > 0 else 0.0
+
+            return {
+                "total_emails": total_emails,
+                "unique_listings": unique_listings,
+                "by_source_type": by_source_type,
+                "by_extraction_method": by_extraction,
+                "obfuscated_count": obfuscated,
+                "obfuscation_rate": obf_rate,
+            }
+
+
+async def get_emails_by_listing(listing_id: int) -> list[dict]:
+    pool = await get_pool()
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT id, listing_id, website_url, email, email_type, "
+                "extraction_method, is_obfuscated, context_snippet, "
+                "discovered_at, last_verified, is_active "
+                "FROM scraper.emails WHERE listing_id = %s "
+                "ORDER BY discovered_at DESC",
+                (listing_id,),
+            )
+            rows = await cur.fetchall()
+            emails = []
+            for r in rows:
+                d = {}
+                for i, col in enumerate(cur.description):
+                    val = r[i]
+                    if hasattr(val, "isoformat"):
+                        val = val.isoformat()
+                    d[col.name] = val
+                emails.append(d)
+            return emails
+
+
+# ─── LinkedIn Profiles ───────────────────────────────────────────────────────
+
+async def query_linkedin_profiles(
+    sector_id: Optional[str] = None,
+    min_confidence: Optional[float] = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> tuple[list[dict], int]:
+    pool = await get_pool()
+    joins = []
+    where_parts = []
+    params: list[Any] = []
+
+    if sector_id is not None:
+        joins.append("LEFT JOIN scraper.gmaps_listings g ON lp.listing_id = g.id")
+        where_parts.append("g.sector_id = %s")
+        params.append(sector_id)
+    if min_confidence is not None:
+        where_parts.append("lp.confidence >= %s")
+        params.append(min_confidence)
+
+    join_sql = " ".join(joins)
+    where_sql = " AND ".join(where_parts) if where_parts else "TRUE"
+
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"SELECT COUNT(*) FROM scraper.linkedin_profiles lp {join_sql} WHERE {where_sql}",
+                params,
+            )
+            total = (await cur.fetchone())[0]
+
+            await cur.execute(
+                f"SELECT lp.id, lp.listing_id, lp.full_name, lp.profile_url, "
+                f"lp.profile_title, lp.company_name, lp.search_query, lp.confidence, "
+                f"lp.snippet, lp.checked_at, lp.last_updated, lp.notes "
+                f"FROM scraper.linkedin_profiles lp {join_sql} WHERE {where_sql} "
+                f"ORDER BY lp.checked_at DESC NULLS LAST "
+                f"LIMIT %s OFFSET %s",
+                [*params, limit, offset],
+            )
+            rows = await cur.fetchall()
+            profiles = []
+            for r in rows:
+                d = {}
+                for i, col in enumerate(cur.description):
+                    val = r[i]
+                    if hasattr(val, "isoformat"):
+                        val = val.isoformat()
+                    d[col.name] = val
+                profiles.append(d)
+            return profiles, total
+
+
+async def get_linkedin_stats() -> dict:
+    pool = await get_pool()
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT count(*) FROM scraper.linkedin_profiles")
+            total_profiles = (await cur.fetchone())[0]
+
+            await cur.execute("SELECT count(DISTINCT listing_id) FROM scraper.linkedin_profiles WHERE listing_id IS NOT NULL")
+            unique_listings = (await cur.fetchone())[0]
+
+            await cur.execute("SELECT avg(confidence) FROM scraper.linkedin_profiles WHERE confidence IS NOT NULL")
+            avg_conf = (await cur.fetchone())[0]
+
+            await cur.execute("""
+                SELECT company_name, count(*) as cnt
+                FROM scraper.linkedin_profiles
+                WHERE company_name IS NOT NULL
+                GROUP BY company_name
+                ORDER BY cnt DESC
+                LIMIT 20
+            """)
+            by_company = [{"company": r[0], "count": r[1]} for r in await cur.fetchall()]
+
+            await cur.execute("SELECT count(*) FROM scraper.linkedin_profiles WHERE full_name IS NOT NULL")
+            matched = (await cur.fetchone())[0]
+            unmatched = total_profiles - matched
+
+            return {
+                "total_profiles": total_profiles,
+                "unique_listings": unique_listings,
+                "by_company": by_company,
+                "avg_confidence": float(avg_conf) if avg_conf else None,
+                "matched_count": matched,
+                "unmatched_count": unmatched,
+            }
+
+
+async def get_linkedin_by_listing(listing_id: int) -> list[dict]:
+    pool = await get_pool()
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT id, listing_id, full_name, profile_url, profile_title, "
+                "company_name, search_query, confidence, snippet, "
+                "checked_at, last_updated, notes "
+                "FROM scraper.linkedin_profiles WHERE listing_id = %s "
+                "ORDER BY checked_at DESC",
+                (listing_id,),
+            )
+            rows = await cur.fetchall()
+            profiles = []
+            for r in rows:
+                d = {}
+                for i, col in enumerate(cur.description):
+                    val = r[i]
+                    if hasattr(val, "isoformat"):
+                        val = val.isoformat()
+                    d[col.name] = val
+                profiles.append(d)
+            return profiles
+
+
+# ─── Classification Stats ────────────────────────────────────────────────────
+
+async def get_classification_stats() -> dict:
+    pool = await get_pool()
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT count(*) FROM scraper.gmaps_listings")
+            total = (await cur.fetchone())[0]
+
+            await cur.execute("SELECT count(*) FROM scraper.gmaps_listings WHERE sector_id IS NOT NULL")
+            classified = (await cur.fetchone())[0]
+            unclassified = total - classified
+
+            await cur.execute("""
+                SELECT classification_method, count(*) as cnt
+                FROM scraper.gmaps_listings
+                WHERE classification_method IS NOT NULL
+                GROUP BY classification_method
+            """)
+            by_method = {r[0]: r[1] for r in await cur.fetchall()}
+
+            await cur.execute("""
+                SELECT CASE
+                    WHEN classification_confidence >= 0.9 THEN '0.9-1.0'
+                    WHEN classification_confidence >= 0.7 THEN '0.7-0.9'
+                    WHEN classification_confidence >= 0.5 THEN '0.5-0.7'
+                    WHEN classification_confidence >= 0.3 THEN '0.3-0.5'
+                    ELSE '0.0-0.3'
+                END as bucket, count(*) as cnt
+                FROM scraper.gmaps_listings
+                WHERE classification_confidence IS NOT NULL
+                GROUP BY bucket
+                ORDER BY bucket DESC
+            """)
+            conf_dist = [{"bucket": r[0], "count": r[1]} for r in await cur.fetchall()]
+
+            await cur.execute("""
+                SELECT DATE(classified_at) as date, count(*) as cnt
+                FROM scraper.gmaps_listings
+                WHERE classified_at IS NOT NULL
+                GROUP BY DATE(classified_at)
+                ORDER BY date DESC
+                LIMIT 30
+            """)
+            classified_by_date = [{"date": str(r[0]), "count": r[1]} for r in await cur.fetchall()]
+
+            return {
+                "total_listings": total,
+                "classified_count": classified,
+                "unclassified_count": unclassified,
+                "by_method": by_method,
+                "confidence_distribution": conf_dist,
+                "classified_by_date": classified_by_date,
+            }
+
+
+async def query_unclassified(
+    min_reviews: int = 0,
+    limit: int = 50,
+    offset: int = 0,
+) -> tuple[list[dict], int]:
+    pool = await get_pool()
+    extra = "AND review_count >= %s" if min_reviews > 0 else ""
+    extra_params: list[Any] = [min_reviews] if min_reviews > 0 else []
+
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"SELECT count(*) FROM scraper.gmaps_listings "
+                f"WHERE sector_id IS NULL AND classification_method IS NULL {extra}",
+                extra_params,
+            )
+            total = (await cur.fetchone())[0]
+
+            await cur.execute(
+                f"SELECT id, name, category, rating, review_count, phone, website, "
+                f"address, classification_method, classified_at "
+                f"FROM scraper.gmaps_listings "
+                f"WHERE sector_id IS NULL AND classification_method IS NULL {extra} "
+                f"ORDER BY review_count DESC NULLS LAST "
+                f"LIMIT %s OFFSET %s",
+                [*extra_params, limit, offset],
+            )
+            rows = await cur.fetchall()
+            leads = []
+            for r in rows:
+                d = {}
+                for i, col in enumerate(cur.description):
+                    val = r[i]
+                    if hasattr(val, "isoformat"):
+                        val = val.isoformat()
+                    d[col.name] = val
+                leads.append(d)
+            return leads, total
+
+
+# ─── Dashboard Queries ───────────────────────────────────────────────────────
+
+async def get_dashboard_overview() -> dict:
+    pool = await get_pool()
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT count(*) FROM scraper.gmaps_listings")
+            total_listings = (await cur.fetchone())[0]
+
+            await cur.execute("SELECT count(*) FROM scraper.gmaps_search_results")
+            total_search_results = (await cur.fetchone())[0]
+
+            from utils.pg import get_uncrawled_count_sql  # noqa: F811
+            await cur.execute(get_uncrawled_count_sql())
+            uncrawled = (await cur.fetchone())[0] or 0
+
+            await cur.execute("SELECT count(*) FROM scraper.emails")
+            emails = (await cur.fetchone())[0]
+
+            await cur.execute("SELECT count(*) FROM scraper.linkedin_profiles")
+            linkedin = (await cur.fetchone())[0]
+
+            await cur.execute("SELECT count(*) FROM scraper.gmaps_listings WHERE sector_id IS NOT NULL")
+            classified = (await cur.fetchone())[0]
+            classified_pct = round(classified / total_listings * 100, 1) if total_listings > 0 else 0.0
+
+            await cur.execute("SELECT max(created_at) FROM scraper.gmaps_listings")
+            last_listing = (await cur.fetchone())[0]
+            await cur.execute("SELECT max(created_at) FROM scraper.gmaps_search_results")
+            last_search = (await cur.fetchone())[0]
+
+            return {
+                "total_listings": total_listings,
+                "total_search_results": total_search_results,
+                "uncrawled_urls": uncrawled,
+                "emails_extracted": emails,
+                "linkedin_profiles": linkedin,
+                "classified_pct": classified_pct,
+                "last_listing_activity": last_listing.isoformat() if hasattr(last_listing, "isoformat") else (str(last_listing) if last_listing else None),
+                "last_search_activity": last_search.isoformat() if hasattr(last_search, "isoformat") else (str(last_search) if last_search else None),
+            }
+
+
+async def get_throughput(period_hours: int = 24) -> dict:
+    pool = await get_pool()
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            interval = f"{period_hours} hours"
+
+            await cur.execute(
+                "SELECT date_trunc('hour', created_at) as bucket, count(*) as cnt "
+                "FROM scraper.gmaps_search_results "
+                f"WHERE created_at >= NOW() - INTERVAL '{interval}' "
+                "GROUP BY bucket ORDER BY bucket",
+            )
+            search_buckets = {str(r[0]): r[1] for r in await cur.fetchall()}
+
+            await cur.execute(
+                "SELECT date_trunc('hour', created_at) as bucket, count(*) as cnt "
+                "FROM scraper.gmaps_listings "
+                f"WHERE created_at >= NOW() - INTERVAL '{interval}' "
+                "GROUP BY bucket ORDER BY bucket",
+            )
+            listing_buckets = {str(r[0]): r[1] for r in await cur.fetchall()}
+
+            await cur.execute(
+                "SELECT date_trunc('hour', classified_at) as bucket, count(*) as cnt "
+                "FROM scraper.gmaps_listings "
+                f"WHERE classified_at >= NOW() - INTERVAL '{interval}' "
+                "GROUP BY bucket ORDER BY bucket",
+            )
+            classified_buckets = {str(r[0]): r[1] for r in await cur.fetchall()}
+
+            import datetime as _dt
+            now = _dt.datetime.now(_dt.timezone.utc)
+            buckets = []
+            cursor_time = now - _dt.timedelta(hours=period_hours)
+            while cursor_time <= now:
+                key = cursor_time.replace(minute=0, second=0, microsecond=0).isoformat()
+                buckets.append({
+                    "time": key,
+                    "search_results": search_buckets.get(key, 0),
+                    "listings_extracted": listing_buckets.get(key, 0),
+                    "listings_classified": classified_buckets.get(key, 0),
+                })
+                cursor_time += _dt.timedelta(hours=1)
+
+            return {"period": f"{period_hours}h", "buckets": buckets}
+
+
+async def get_recent_activity(limit: int = 50) -> dict:
+    pool = await get_pool()
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT id, name, category, phone, website, created_at "
+                "FROM scraper.gmaps_listings "
+                f"ORDER BY created_at DESC NULLS LAST LIMIT {limit}"
+            )
+            recent_listings = []
+            for r in await cur.fetchall():
+                d = {}
+                for i, col in enumerate(cur.description):
+                    val = r[i]
+                    if hasattr(val, "isoformat"):
+                        val = val.isoformat()
+                    d[col.name] = val
+                recent_listings.append(d)
+
+            await cur.execute(
+                "SELECT id, key_value, source_type, payload, created_at "
+                "FROM scraper.gmaps_search_results "
+                f"ORDER BY created_at DESC NULLS LAST LIMIT {limit}"
+            )
+            recent_search = []
+            for r in await cur.fetchall():
+                d = {}
+                for i, col in enumerate(cur.description):
+                    val = r[i]
+                    if hasattr(val, "isoformat"):
+                        val = val.isoformat()
+                    d[col.name] = val
+                recent_search.append(d)
+
+            await cur.execute(
+                "SELECT id, listing_id, email, email_type, extraction_method, discovered_at "
+                "FROM scraper.emails "
+                f"ORDER BY discovered_at DESC NULLS LAST LIMIT {limit}"
+            )
+            recent_emails = []
+            for r in await cur.fetchall():
+                d = {}
+                for i, col in enumerate(cur.description):
+                    val = r[i]
+                    if hasattr(val, "isoformat"):
+                        val = val.isoformat()
+                    d[col.name] = val
+                recent_emails.append(d)
+
+            return {
+                "recent_listings": recent_listings,
+                "recent_search_results": recent_search,
+                "recent_emails": recent_emails,
+            }
+
+
+async def get_coverage(dimension: str = "sector") -> dict:
+    pool = await get_pool()
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            if dimension == "sector":
+                await cur.execute("""
+                    SELECT
+                        COALESCE(g.sector_id, 'unclassified') as sector,
+                        count(*) as total,
+                        count(CASE WHEN g.sector_id IS NOT NULL THEN 1 END) as classified,
+                        count(CASE WHEN g.phone IS NOT NULL THEN 1 END) as with_phone,
+                        count(CASE WHEN e.email IS NOT NULL THEN 1 END) as with_email
+                    FROM scraper.gmaps_listings g
+                    LEFT JOIN (
+                        SELECT listing_id, string_agg(email, ',') as email
+                        FROM scraper.emails WHERE is_active = true
+                        GROUP BY listing_id
+                    ) e ON e.listing_id = g.id
+                    GROUP BY g.sector_id
+                    ORDER BY total DESC
+                """)
+            else:
+                await cur.execute("""
+                    SELECT
+                        split_part(g.address, ',', array_length(string_to_array(g.address, ','), 1)) as city,
+                        count(*) as total,
+                        count(CASE WHEN g.sector_id IS NOT NULL THEN 1 END) as classified,
+                        count(CASE WHEN g.phone IS NOT NULL THEN 1 END) as with_phone,
+                        count(CASE WHEN e.email IS NOT NULL THEN 1 END) as with_email
+                    FROM scraper.gmaps_listings g
+                    LEFT JOIN scraper.emails e ON e.listing_id = g.id AND e.is_active = true
+                    WHERE g.address IS NOT NULL
+                    GROUP BY city
+                    ORDER BY total DESC
+                """)
+
+            rows = await cur.fetchall()
+            result = []
+            for r in rows:
+                result.append({
+                    "key": r[0] or "unknown",
+                    "total": r[1],
+                    "classified": r[2],
+                    "with_phone": r[3],
+                    "with_email": r[4],
+                })
+            return {"dimension": dimension, "rows": result}
+
+
+async def get_total_throughput_24h() -> int:
+    pool = await get_pool()
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("""
+                SELECT
+                    (SELECT count(*) FROM scraper.gmaps_search_results WHERE created_at >= NOW() - INTERVAL '24 hours') +
+                    (SELECT count(*) FROM scraper.gmaps_listings WHERE created_at >= NOW() - INTERVAL '24 hours')
+                    as total
+            """)
+            return (await cur.fetchone())[0] or 0
+
+
+# ─── Pipeline Tasks ──────────────────────────────────────────────────────────
+
+async def create_pipeline_task(task: dict) -> dict:
+    return await save_task(task)
+
+
+async def update_task_status(task_id: str, status: str) -> Optional[dict]:
+    pool = await get_pool()
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"UPDATE {TASKS_SCHEMA}.{TASKS_TABLE} SET status = %s, "
+                "completed_at = CASE WHEN %s IN ('completed','failed','cancelled') THEN NOW() ELSE completed_at END "
+                "WHERE id = %s",
+                (status, status, task_id),
+            )
+    return await get_task(task_id)
+
+
+async def list_pipeline_tasks(
+    task_type: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> tuple[list[dict], int]:
+    where_parts = []
+    params: list[Any] = []
+    if task_type:
+        where_parts.append("type = %s")
+        params.append(task_type)
+    if status:
+        where_parts.append("status = %s")
+        params.append(status)
+    where_sql = " AND ".join(where_parts) if where_parts else "TRUE"
+
+    pool = await get_pool()
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"SELECT count(*) FROM scraper.api_tasks WHERE {where_sql}",
+                params,
+            )
+            total = (await cur.fetchone())[0]
+
+            await cur.execute(
+                f"SELECT * FROM scraper.api_tasks WHERE {where_sql} "
+                f"ORDER BY created_at DESC LIMIT %s OFFSET %s",
+                [*params, limit, offset],
+            )
+            rows = await cur.fetchall()
+            tasks = [_row_to_task(r, cur) for r in rows]
+            return tasks, total
+
+
+async def get_active_pipeline_tasks() -> list[dict]:
+    pool = await get_pool()
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT * FROM scraper.api_tasks WHERE status IN ('pending', 'running') "
+                "ORDER BY created_at DESC"
+            )
+            rows = await cur.fetchall()
+            return [_row_to_task(r, cur) for r in rows]
+
+
+async def cancel_pipeline_task(task_id: str) -> Optional[dict]:
+    pool = await get_pool()
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT status FROM scraper.api_tasks WHERE id = %s",
+                (task_id,),
+            )
+            row = await cur.fetchone()
+            if not row:
+                return None
+            if row[0] not in ("pending",):
+                return None
+            await cur.execute(
+                "UPDATE scraper.api_tasks SET status = 'cancelled', completed_at = NOW() "
+                "WHERE id = %s",
+                (task_id,),
+            )
+    return await get_task(task_id)
+
+
+# ─── Luxury Leads ─────────────────────────────────────────────────────────────
+
+async def query_luxury_targets(
+    target_type: Optional[str] = None,
+    tier: Optional[str] = None,
+    city: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> tuple[list[dict], int]:
+    pool = await get_pool()
+    where = []
+    params: list[Any] = []
+    if target_type:
+        where.append("lt.target_type = %s")
+        params.append(target_type)
+    if tier:
+        where.append("lt.tier = %s")
+        params.append(tier)
+    if city:
+        where.append("lt.city = %s")
+        params.append(city)
+    where_clause = " AND ".join(where) if where else "TRUE"
+
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"SELECT COUNT(*) FROM scraper.luxury_targets lt WHERE {where_clause}",
+                params,
+            )
+            total = (await cur.fetchone())[0]
+
+            await cur.execute(
+                f"""
+                SELECT lt.*, COUNT(lc.id) as contact_count
+                FROM scraper.luxury_targets lt
+                LEFT JOIN scraper.luxury_contacts lc ON lc.target_id = lt.id
+                WHERE {where_clause}
+                GROUP BY lt.id
+                ORDER BY lt.id
+                LIMIT %s OFFSET %s
+                """,
+                params + [limit, offset],
+            )
+            rows = await cur.fetchall()
+            targets = []
+            for r in rows:
+                d = {}
+                for i, col in enumerate(cur.description):
+                    val = r[i]
+                    if hasattr(val, "isoformat"):
+                        val = val.isoformat()
+                    d[col.name] = val
+                targets.append(d)
+            return targets, total
+
+
+async def query_luxury_contacts(
+    target_id: Optional[int] = None,
+    platform: Optional[str] = None,
+    min_confidence: Optional[float] = None,
+    is_employee: Optional[bool] = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> tuple[list[dict], int]:
+    pool = await get_pool()
+    where = []
+    params: list[Any] = []
+    if target_id:
+        where.append("lc.target_id = %s")
+        params.append(target_id)
+    if platform:
+        where.append("lc.platform = %s")
+        params.append(platform)
+    if min_confidence is not None:
+        where.append("lc.confidence >= %s")
+        params.append(min_confidence)
+    if is_employee is not None:
+        where.append("lc.is_employee = %s")
+        params.append(is_employee)
+    where_clause = " AND ".join(where) if where else "TRUE"
+
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"SELECT COUNT(*) FROM scraper.luxury_contacts lc WHERE {where_clause}",
+                params,
+            )
+            total = (await cur.fetchone())[0]
+
+            await cur.execute(
+                f"""
+                SELECT lc.*, lt.name as target_name
+                FROM scraper.luxury_contacts lc
+                LEFT JOIN scraper.luxury_targets lt ON lt.id = lc.target_id
+                WHERE {where_clause}
+                ORDER BY lc.confidence DESC, lc.discovered_at DESC
+                LIMIT %s OFFSET %s
+                """,
+                params + [limit, offset],
+            )
+            rows = await cur.fetchall()
+            contacts = []
+            for r in rows:
+                d = {}
+                for i, col in enumerate(cur.description):
+                    val = r[i]
+                    if hasattr(val, "isoformat"):
+                        val = val.isoformat()
+                    d[col.name] = val
+                contacts.append(d)
+            return contacts, total
+
+
+async def get_luxury_stats() -> dict:
+    pool = await get_pool()
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT COUNT(*) FROM scraper.luxury_targets")
+            total_targets = (await cur.fetchone())[0]
+
+            await cur.execute("SELECT COUNT(*) FROM scraper.luxury_contacts")
+            total_contacts = (await cur.fetchone())[0]
+
+            await cur.execute("SELECT COUNT(DISTINCT target_id) FROM scraper.luxury_contacts")
+            targets_with = (await cur.fetchone())[0]
+
+            await cur.execute("""
+                SELECT lt.target_type, lt.tier, COUNT(*) as cnt
+                FROM scraper.luxury_targets lt
+                GROUP BY lt.target_type, lt.tier
+                ORDER BY cnt DESC
+            """)
+            by_type = [{"target_type": r[0], "tier": r[1], "count": r[2]} for r in await cur.fetchall()]
+
+            await cur.execute("""
+                SELECT platform, COUNT(*) as cnt
+                FROM scraper.luxury_contacts
+                GROUP BY platform
+                ORDER BY cnt DESC
+            """)
+            by_platform = [{"platform": r[0], "count": r[1]} for r in await cur.fetchall()]
+
+            await cur.execute("SELECT ROUND(AVG(confidence)::numeric, 3) FROM scraper.luxury_contacts WHERE confidence > 0")
+            avg_conf = float((await cur.fetchone())[0] or 0)
+
+            await cur.execute("SELECT COUNT(*) FROM scraper.luxury_targets WHERE linkedin_searched = FALSE OR facebook_searched = FALSE")
+            pending = (await cur.fetchone())[0]
+
+            return {
+                "total_targets": total_targets,
+                "total_contacts": total_contacts,
+                "targets_with_contacts": targets_with,
+                "by_type": by_type,
+                "by_platform": by_platform,
+                "avg_confidence": avg_conf,
+                "pending_targets": pending,
+            }

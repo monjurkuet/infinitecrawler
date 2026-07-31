@@ -1,5 +1,6 @@
 """Monitoring router — crawler process status, queue health, system snapshot."""
 
+import shutil
 import subprocess
 import time
 from datetime import datetime, timezone
@@ -10,6 +11,7 @@ from fastapi import APIRouter, Depends, Query
 from api.dependencies import verify_token
 from api.models.models import (
     CrawlerProcess,
+    DaemonUnit,
     FailedItem,
     QueueStats,
     SystemStatus,
@@ -21,6 +23,10 @@ _start_time = time.time()
 
 # ----- systemd daemon detection (replaces legacy main.py pgrep) -----
 _LISTING_UNIT = "infinitecrawler-listing"
+_DAEMON_ALLOWLIST = {
+    "infinitecrawler-listing",
+    "infinitecrawler-search",
+}
 
 
 def _systemd_active(unit: str) -> bool:
@@ -60,7 +66,6 @@ def _listing_pids() -> list[int]:
 async def health():
     pg_status = await pg_service.check_health()
     redis_status = await redis_service.check_health()
-    import shutil
     usage = shutil.disk_usage("/")
     
     return {
@@ -93,9 +98,6 @@ async def system_status(_user: str = Depends(verify_token)):
         "uncrawled_urls": uncrawled,
     }
 
-    # Tasks running (deprecated — task_runner removed)
-    running_tasks = 0
-
     # Issues
     issues = []
     if crawlers_running == 0 and uncrawled > 0:
@@ -110,7 +112,7 @@ async def system_status(_user: str = Depends(verify_token)):
         queues=queue_models,
         database=db_snapshot,
         last_pipeline_run=None,
-        tasks_running=running_tasks,
+        tasks_running=None,
         uptime_seconds=time.time() - _start_time,
         healthy=len(issues) == 0,
         issues=issues,
@@ -179,3 +181,123 @@ async def clear_failed(
 ):
     await redis_service.clear_queue(prefix, "failed")
     return {"prefix": prefix, "status": "cleared"}
+
+
+# ─── Daemon Control ──────────────────────────────────────────────────────────
+
+def _daemon_info(unit: str) -> dict:
+    try:
+        r = subprocess.run(
+            ["systemctl", "--user", "show", "-p", "ActiveState,SubState,MainPID", "--value", unit],
+            capture_output=True, text=True, timeout=5,
+        )
+        lines = r.stdout.strip().split("\n")
+        active = lines[0] if len(lines) > 0 else "unknown"
+        sub_state = lines[1] if len(lines) > 1 else "unknown"
+        pid = None
+        try:
+            pid = int(lines[2]) if len(lines) > 2 and lines[2] and lines[2] != "0" else None
+        except ValueError:
+            pid = None
+
+        mem = None
+        uptime_s = None
+        if pid:
+            try:
+                proc = psutil.Process(pid)
+                mem = round(proc.memory_info().rss / (1024 ** 2), 2)
+                uptime_s = time.time() - proc.create_time()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+
+        return {
+            "unit": unit,
+            "active": active,
+            "sub": sub_state,
+            "pid": pid,
+            "uptime_seconds": uptime_s,
+            "memory_mb": mem,
+        }
+    except Exception:
+        return {
+            "unit": unit,
+            "active": "unknown",
+            "sub": "unknown",
+            "pid": None,
+            "uptime_seconds": None,
+            "memory_mb": None,
+        }
+
+
+@router.get("/daemons", response_model=list[DaemonUnit])
+async def list_daemons(_user: str = Depends(verify_token)):
+    result = []
+    for unit in sorted(_DAEMON_ALLOWLIST):
+        info = _daemon_info(unit)
+        result.append(DaemonUnit(**info))
+    return result
+
+
+@router.get("/daemons/{unit}/logs")
+async def daemon_logs(
+    unit: str,
+    tail: int = Query(100, ge=1, le=1000),
+    filter: str | None = Query(None),
+    _user: str = Depends(verify_token),
+):
+    if unit not in _DAEMON_ALLOWLIST:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=403, detail=f"Unknown daemon unit: {unit}")
+    cmd = ["journalctl", "--user", "-u", unit, "--no-pager", "-n", str(tail)]
+    if filter:
+        cmd.extend(["--grep", filter])
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+    except subprocess.TimeoutExpired:
+        return {"logs": "", "error": "journalctl timed out"}
+    return {"unit": unit, "lines": tail, "logs": r.stdout.strip()}
+
+
+def _systemctl_action(unit: str, action: str) -> dict:
+    try:
+        r = subprocess.run(
+            ["systemctl", "--user", action, unit],
+            capture_output=True, text=True, timeout=10,
+        )
+        success = r.returncode == 0
+        return {"status": "ok" if success else "error", "message": r.stdout.strip() or r.stderr.strip(), "pid": None}
+    except subprocess.TimeoutExpired:
+        return {"status": "error", "message": "systemctl timed out", "pid": None}
+    except Exception as e:
+        return {"status": "error", "message": str(e), "pid": None}
+
+
+@router.post("/daemons/{unit}/restart")
+async def restart_daemon(unit: str, _user: str = Depends(verify_token)):
+    if unit not in _DAEMON_ALLOWLIST:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=403, detail=f"Unknown daemon unit: {unit}")
+    result = _systemctl_action(unit, "restart")
+    info = _daemon_info(unit)
+    result["pid"] = info["pid"]
+    return result
+
+
+@router.post("/daemons/{unit}/stop")
+async def stop_daemon(unit: str, _user: str = Depends(verify_token)):
+    if unit not in _DAEMON_ALLOWLIST:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=403, detail=f"Unknown daemon unit: {unit}")
+    result = _systemctl_action(unit, "stop")
+    return result
+
+
+@router.post("/daemons/{unit}/start")
+async def start_daemon(unit: str, _user: str = Depends(verify_token)):
+    if unit not in _DAEMON_ALLOWLIST:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=403, detail=f"Unknown daemon unit: {unit}")
+    result = _systemctl_action(unit, "start")
+    info = _daemon_info(unit)
+    result["pid"] = info["pid"]
+    return result
