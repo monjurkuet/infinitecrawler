@@ -20,13 +20,21 @@
 | Chrome CDP debug port | `9869` | Do NOT use for daemons — daemons talk to pinchtab on `9868` |
 | Repository root | `/root/codebase/vhd/infinitecrawler` | All commands relative to this |
 | Emails table missing cols | `is_obfuscated`, `context_snippet` | Added 2026-07-25; upsert was silently failing |
+| Emails table migration | `source_type` → `extraction_method`; added `website_url`, `email_type`, `last_verified`, `is_active` | Applied 2026-08-02 via `scripts/schema_migration.py` (idempotent `UPGRADE_EMAILS_TABLE` DO block). Code + DDL + live DB now aligned; API stats queries (`extraction_method`, `email_type`) work. |
+| Email regex ReDoS | Old `OBFUSCATED_PATTERNS[0]` had optional-bracket groups → O(n²) backtracking (30KB = 23s). Replaced with 2 linear-time patterns 2026-08-02 | New patterns: `[at]`/`(at)`/`[at]`/`AT DOT` all covered; 300KB = 0.42s. Never add optional nested groups after greedy captures in these patterns. |
+| Email scan offloaded to thread | `scan_text_for_emails` + `extract_mailto_links` run via `loop.run_in_executor` in `db_email_extract.py` | 2026-08-02. Event loop no longer blocks on 25-concurrent HTTP fetches. |
+| Orphaned Redis namespaces | `gmaps_bd_business_pt:*`, `gmaps_search:*` auto-deleted at search daemon startup | `_cleanup_orphaned_queues()` in `daemons/search_daemon.py`. Only `gmaps_bd_business:*` (search) and `gmaps:*` (listing) are live. |
+| Email extract schedule | Every 2h (`00,02,...,22:15` + randomized 5min), `--max 2000 --concurrency 25`, `FETCH_TIMEOUT=12s` | `~/.config/systemd/user/infinitecrawler-email-extract.{service,timer}` |
+| LinkedIn search schedule | Every 4h (`00,04,...,20:30` + randomized 5min) | `~/.config/systemd/user/infinitecrawler-linkedin-search.timer` |
+| Search queue retry | `visibility_timeout: 300` (5 min stalled requeue), failed retried after 6h | `config/gmaps_bd_business_search.yaml`; verified correct 2026-08-02 |
+| systemctl --value trap | `systemctl show -p A,B,C --value` output is sorted ALPHABETICALLY (MainPID, ActiveState, SubState) | Never positionally parse `--value` with multiple props. Parse `key=value` lines instead. Fixed in `api/routers/dashboard.py` + `monitor.py` 2026-08-02 (daemon PID/uptime/mem were null in API). |
 | Emails unique key | `(listing_id, email)` | Added 2026-07-25 |
 | LinkedIn unique key | `profile_url` | Added 2026-07-25 |
 | Search config needs | `ignore_completed_on_enqueue: true` | Prevents query exhaustion when all queries are in completed set |
 | Listing daemon bug | `await restart_browser()` in eternal loop | Removed 2026-07-25; was restarting browser on EVERY failed URL |
 | Postgres config drift | `listen_addresses` may revert to `localhost` | If cluster restarts externally, socket path breaks. Set to `''` for unix-socket-only. |
 | Postgres config drift | `port` may revert to `5433` | Same restart issue. Keep `port = 5432`. |
-| Enrichment services | `email-extract`, `linkedin-search` | Run as systemd timers (every 6h), not daemons. Monitor via `systemctl --user list-timers`. |
+| Enrichment services | `email-extract`, `linkedin-search` | Run as systemd timers (email every 2h, linkedin every 4h), not daemons. Monitor via `systemctl --user list-timers`. |
 | Phase 3a drift trap | `-h 127.0.0.1` silently fails | 2026-07-29 audit: caused false-positive `search_1h=0`. Always use `-h /var/run/postgresql`. |
 | Phase 2.5 drift trap | `--no-clean` invalid psql flag | Use `-t` (tuples-only). |
 | infinite_scroll probe JS quote bug | `json.dumps(['div[role="feed"]',...])` injected into JS source produced `["div[role="feed"]",...]` with unbalanced quotes → `SyntaxError` every probe → 0 scroll, hits `max_scroll_attempts=500`. Fixed 2026-08-01: wrap in `JSON.parse(json.dumps(...))`. |
@@ -150,7 +158,7 @@ systemctl --user status infinitecrawler-search infinitecrawler-listing \
 
 # 1b. Scheduled enrichment timers (email/linkedin/pg-backup run periodically)
 systemctl --user list-timers --no-pager | grep infinitecrawler
-# Expected: email-extract ~6h, linkedin-search ~6h, pg-backup daily
+# Expected: email-extract every 2h, linkedin-search every 4h, pg-backup daily
 
 # 1c. Pinchtab health (the Chrome provider both daemons depend on)
 PINCHTAB_TOKEN=$(python3 -c "import json; print(json.load(open('/root/.pinchtab/config.json'))['server']['token'])")
