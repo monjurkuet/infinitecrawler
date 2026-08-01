@@ -26,6 +26,41 @@
 | Listing daemon bug | `await restart_browser()` in eternal loop | Removed 2026-07-25; was restarting browser on EVERY failed URL |
 | Postgres config drift | `listen_addresses` may revert to `localhost` | If cluster restarts externally, socket path breaks. Set to `''` for unix-socket-only. |
 | Postgres config drift | `port` may revert to `5433` | Same restart issue. Keep `port = 5432`. |
+| Enrichment services | `email-extract`, `linkedin-search` | Run as systemd timers (every 6h), not daemons. Monitor via `systemctl --user list-timers`. |
+| Phase 3a drift trap | `-h 127.0.0.1` silently fails | 2026-07-29 audit: caused false-positive `search_1h=0`. Always use `-h /var/run/postgresql`. |
+| Phase 2.5 drift trap | `--no-clean` invalid psql flag | Use `-t` (tuples-only). |
+
+# PHASE 0 — REPOSITORY DRIFT DISCOVERY (BLOCK)
+
+Before trusting ANY knowledge in this document, verify that the repository still matches it.
+
+Discover automatically:
+
+- services
+- daemons
+- queues
+- config files
+- scripts
+- migrations
+- cron jobs
+- timers
+- systemd units
+- CLI entrypoints
+- database schemas
+- output strategies
+- browser providers
+- infrastructure
+
+Compare discoveries against this document.
+
+For every mismatch:
+
+1. Verify which version is correct.
+2. Update this document.
+3. Remove obsolete knowledge.
+4. Record the change in the Knowledge Updates section.
+
+Never continue using stale assumptions.
 
 ---
 
@@ -51,21 +86,48 @@ curl -s --connect-timeout 5 -H "Authorization: Bearer $PINCHTAB_TOKEN" http://12
 
 ---
 
-## Usage Protocol
+## REPOSITORY EVOLUTION PROTOCOL
 
-**This document is the living source of truth for the pipeline.** After every audit session where you discover something new — a broken path, a config mismatch, a removed file, a changed port, a new queue namespace — you MUST update this document:
+This document is part of the repository.
 
-1. **Add newly discovered red flags** to the red-flags list under the relevant phase
-2. **Update KEY FACTS table** when ports, tokens, paths, or connection strings change
-3. **Add new repair actions** under Phase 6 when you discover a novel recovery pattern
-4. **Remove obsolete checks** when files/directories/services are permanently deleted
-5. **Update expected values** when DB schemas, queue names, or timer schedules change
-6. **Record new bugs you fixed** in the KEY FACTS table so future you recognizes regressions
-7. **If a command fails**, replace it with the corrected version immediately — never leave broken commands in this document
-8. **If a check phase returns unexpected results that you verify are now normal**, update the "Expected:" notes
+Treat it exactly like production code.
 
-**Correction protocol:** If you execute a command from this document and it fails, fix the command in-place via `patch` before moving on. If the underlying config/port/path changed, update both the command AND the KEY FACTS row.
+Whenever you execute this audit you MUST review BOTH:
 
+- the repository
+- this document
+
+If either can be improved, improve it.
+
+After every audit:
+
+• update discovered facts
+• remove obsolete facts
+• rewrite outdated sections
+• simplify duplicated sections
+• merge overlapping checks
+• improve diagnostics
+• improve repair actions
+• improve command reliability
+• improve readability
+• improve organization
+• improve maintainability
+
+Never preserve obsolete information.
+
+If a command fails,
+replace it with a working command.
+
+If a better diagnostic exists,
+replace the old one.
+
+If a better repair exists,
+replace the old one.
+
+If a better organization exists,
+rewrite the document.
+
+The goal is that this document becomes more accurate after every execution.
 ---
 
 ## PHASE 1: SERVICE & DAEMON LIFECYCLE CHECK — BLOCK
@@ -74,10 +136,13 @@ Run these commands in order. If any service is dead, restart it:
 
 ```bash
 # 1a. All service statuses (with recent logs)
-systemctl --user status infinitecrawler-search infinitecrawler-listing pinchtab --no-pager -l --lines=20
+systemctl --user status infinitecrawler-search infinitecrawler-listing \
+  infinitecrawler-email-extract infinitecrawler-linkedin-search \
+  pinchtab --no-pager -l --lines=20
 
-# 1b. Scheduled enrichment timers
+# 1b. Scheduled enrichment timers (email/linkedin/pg-backup run periodically)
 systemctl --user list-timers --no-pager | grep infinitecrawler
+# Expected: email-extract ~6h, linkedin-search ~6h, pg-backup daily
 
 # 1c. Pinchtab health (the Chrome provider both daemons depend on)
 PINCHTAB_TOKEN=$(python3 -c "import json; print(json.load(open('/root/.pinchtab/config.json'))['server']['token'])")
@@ -121,6 +186,9 @@ cd /root/codebase/vhd/infinitecrawler && uv run python scripts/monitor_pipeline.
 - `pending` dropping but `completed` flat → output strategy PG connection dropped (fixed in `dd8fece` — but verify)
 - Search enqueued 0 new queries when pending is low → all generated queries are already in `completed` set; set `ignore_completed_on_enqueue: true` in search config
 - Daemon logs `Reconnecting to pinchtab (pages=1, uptime=<2min)` every few seconds → **REGRESSION: listing daemon restarts browser on every URL failure** (fixed 2026-07-25 by removing `await restart_browser()` from eternal loop)
+- search_1h = 0 while daemon navigates every 6s and reconnects every 100 pages → **all queries generate identical GMaps results; mapping static → ON CONFLICT DO UPDATE yields no new `updated_at`**. Query diversity exhaustion. Expand query pool or add new markets.
+- Daemon navigates 100 pages in 15min → each page produces zero new DB writes → output_strategy `ON CONFLICT` matched; probably same queries/same results.
+- **New drift trap (2026-07-29/30): `Phase 3a` using `-h 127.0.0.1` silently returns 0 for all queries.** Always use `-h /var/run/postgresql`. If `search_1h=0` while pages are being processed, switching to Unix socket is the first diagnostic.
 
 **EXIT_CODE: REPORT** — anomalies logged; continue audit.
 
@@ -137,9 +205,10 @@ df -h / | tail -1
 free -h | awk 'NR==1||NR==2'
 # Expected: available > 500M
 
-# 2.5c. PG connection count (spikes indicate leak)
-PGPASSWORD=$PG_PASSWORD psql -h /var/run/postgresql -U postgres -d infinitecrawler --no-clean --tuples -c \
-  "SELECT count(*) AS active_connections FROM pg_stat_activity WHERE datname='infinitecrawler'"
+# 2.5c. PG connection count (spikes indicate leak) — use unix socket, -t for tuples-only
+# Note: --no-clean is NOT a valid psql flag. Use -t (--tuples-only).
+PGPASSWORD=$PG_PASSWORD psql -h /var/run/postgresql -U postgres -d infinitecrawler -t -c \
+  "SELECT count(*) FROM pg_stat_activity WHERE datname='infinitecrawler'"
 # Expected: < 20 (high count with low daemon activity → connection leak)
 ```
 
@@ -152,8 +221,10 @@ PGPASSWORD=$PG_PASSWORD psql -h /var/run/postgresql -U postgres -d infinitecrawl
 Verify data is actually being written to PostgreSQL in real-time:
 
 ```bash
-# 3a. Search + listing velocity (last hour)
-PGPASSWORD="$PG_PASSWORD" psql -h 127.0.0.1 -U postgres -d infinitecrawler -c "
+# 3a. Search + listing velocity (last hour) — MUST use unix socket
+# TCP to 127.0.0.1:5432 silently fails on this WSL host (PG listen_addresses='').
+# Using -h 127.0.0.1 here caused a false-positive "search_1h = 0" alert on 2026-07-29.
+PGPASSWORD="$PG_PASSWORD" psql -h /var/run/postgresql -U postgres -d infinitecrawler -c "
 SELECT
   (SELECT COUNT(*) FROM scraper.gmaps_search_results WHERE updated_at > NOW() - INTERVAL '1 hour') as search_1h,
   (SELECT COUNT(*) FROM scraper.gmaps_listings WHERE updated_at > NOW() - INTERVAL '1 hour') as listings_1h,
@@ -161,8 +232,8 @@ SELECT
   (SELECT COUNT(*) FROM scraper.linkedin_profiles WHERE checked_at > NOW() - INTERVAL '4 hours') as linkedin_4h;
 "
 
-# 3b. Full counts
-PGPASSWORD="$PG_PASSWORD" psql -h 127.0.0.1 -U postgres -d infinitecrawler -c "
+# 3b. Full counts (unix socket — same reason)
+PGPASSWORD="$PG_PASSWORD" psql -h /var/run/postgresql -U postgres -d infinitecrawler -c "
 SELECT
   (SELECT COUNT(*) FROM scraper.gmaps_search_results) as search_total,
   (SELECT COUNT(*) FROM scraper.gmaps_listings) as listings_total,
@@ -173,6 +244,7 @@ SELECT
 ```
 
 **Expected:** search_1h > 0, listings_1h > 0. If zero for >1 hour, daemon is stalled.
+**Drift trap:** If you see `search_1h = 0` while daemon is processing, you probably used `-h 127.0.0.1`. Always use `-h /var/run/postgresql`. Verify with `SELECT MAX(updated_at) FROM scraper.gmaps_search_results`.
 **EXIT_CODE: REPORT**
 
 ---
@@ -280,6 +352,31 @@ SELECT conname FROM pg_constraint WHERE conrelid='scraper.linkedin_profiles'::re
 
 ## PHASE 6: REPAIR ACTIONS (run only if phases 1-5 detect issues)
 
+After every successful repair:
+
+Determine
+
+Why it happened.
+
+How it could have been detected earlier.
+
+How to prevent recurrence.
+
+Update:
+
+Red Flags
+
+Diagnostics
+
+Repair section
+
+Knowledge Base
+
+Playbook
+
+If prevention is possible,
+add it.
+
 > **WARNING:** This section is destructive. Run phases 1-5 first, then apply ONLY the repairs needed.
 
 ```bash
@@ -373,7 +470,7 @@ curl -s --connect-timeout 5 -H "Authorization: Bearer $(python3 -c 'import json;
 redis-cli LLEN gmaps_bd_business:pending && redis-cli LLEN gmaps_bd_business:processing && redis-cli SCARD gmaps_bd_business:completed && redis-cli HLEN gmaps_bd_business:failed
 redis-cli LLEN gmaps:pending && redis-cli LLEN gmaps:processing && redis-cli SCARD gmaps:completed && redis-cli HLEN gmaps:failed
 
-# DB velocity (1h window)
+# DB velocity (1h window) — must use unix socket (TCP 127.0.0.1 fails on WSL)
 PGPASSWORD="$PG_PASSWORD" psql -h /var/run/postgresql -U postgres -d infinitecrawler -c "SELECT 'search_1h', count(*) FROM scraper.gmaps_search_results WHERE updated_at > NOW() - INTERVAL '1 hour' UNION ALL SELECT 'listings_1h', count(*) FROM scraper.gmaps_listings WHERE updated_at > NOW() - INTERVAL '1 hour'"
 
 # Restart all daemons
@@ -382,3 +479,136 @@ systemctl --user restart infinitecrawler-search infinitecrawler-listing
 # Full monitor
 cd /root/codebase/vhd/infinitecrawler && uv run python scripts/monitor_pipeline.py --json
 ```
+---
+## REPOSITORY MEMORY
+
+Stable Architecture
+
+Known Bugs
+
+Known Design Decisions
+
+Historical Migrations
+
+Known Performance Issues
+
+Known Operational Risks
+
+Known False Positives
+
+Known Temporary Workarounds
+
+Deprecated Components
+
+---
+
+## UNKNOWNS
+
+The following could not be verified.
+
+- Backup strategy
+
+- Failover
+
+- Metrics retention
+
+- Secret rotation
+
+- Queue TTL
+
+- Browser pool sizing
+
+Unknowns must never become assumptions.
+
+If later discovered,
+move them into Repository Memory.
+
+Whenever a new subsystem is discovered that is not covered by an existing audit phase:
+
+Automatically create a new phase.
+
+Each new phase must include:
+
+Purpose
+
+Checks
+
+Expected state
+
+Red flags
+
+Repair actions
+
+Knowledge updates
+
+Quick-reference commands
+
+Never require manual additions.
+
+## PHASE X — PLAYBOOK REVIEW
+
+Review THIS document.
+
+Detect:
+
+obsolete checks
+
+duplicate checks
+
+missing diagnostics
+
+missing repairs
+
+incorrect assumptions
+
+commands that could be automated
+
+sections that became too large
+
+sections that should be split
+
+commands that repeatedly fail
+
+Then rewrite the affected sections.
+
+If no improvements exist,
+explicitly report:
+
+"No playbook improvements discovered."
+
+## CONTINUOUS SELF-EVOLUTION
+
+This playbook is a living operational specification.
+
+It must evolve together with the repository.
+
+Whenever executing this playbook, also audit the playbook itself.
+
+You MUST continuously improve:
+
+- accuracy
+- completeness
+- maintainability
+- diagnostics
+- repair procedures
+- organization
+- command reliability
+- readability
+- automation
+- self-healing capability
+
+Repository reality always overrides documented assumptions.
+
+Whenever reality differs from this playbook:
+
+1. Verify the change.
+2. Update the playbook.
+3. Remove obsolete knowledge.
+4. Record the change.
+5. Improve future diagnostics so the same drift is detected automatically.
+
+Do not merely append new information.
+
+Continuously refactor this document exactly as you would refactor production code.
+
+The objective is that every execution leaves the playbook smarter, shorter where possible, more accurate, more maintainable, and better able to detect, repair, and prevent future failures.
