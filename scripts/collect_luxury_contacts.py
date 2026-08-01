@@ -24,8 +24,8 @@ import psycopg
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
-from utils.linkedin_parser import parse_linkedin as _parse_linkedin
-from utils.pg import get_pg_config
+from utils.linkedin_parser import parse_linkedin as _parse_linkedin  # noqa: E402
+from utils.pg import get_pg_config  # noqa: E402
 
 log = logging.getLogger("luxury")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - luxury - %(levelname)s - %(message)s")
@@ -360,7 +360,7 @@ def show_stats(conn):
         FROM scraper.luxury_contacts c JOIN scraper.luxury_targets t ON t.id = c.target_id
         ORDER BY c.confidence DESC LIMIT 15
     """)
-    print(f"\n  Top contacts:")
+    print("\n  Top contacts:")
     for r in cur.fetchall():
         print(f"    {str(r[0] or '?'):30s} {r[1]:8s} {str(r[2] or ''):25s} {str(r[3] or ''):20s} {r[4]:.2f} [{str(r[5] or '')[:30]}]")
     cur.execute("SELECT COUNT(*) FROM scraper.luxury_targets WHERE linkedin_searched = FALSE")

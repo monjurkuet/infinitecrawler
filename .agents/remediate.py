@@ -12,6 +12,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+import glob
 
 KB = Path(__file__).resolve().parent.parent / '.agents' / 'knowledge-base.md'
 if not KB.exists():
@@ -68,7 +69,6 @@ if reappeared:
     changes.append(('REAPPEARED', ' '.join(reappeared)))
 
 # 5. Discover config YAML files
-import glob
 configs = sorted(glob.glob(str(repo_root / 'config' / 'gmaps_*.yaml')))
 if configs:
     changes.append(('CONFIG_FILES', ' '.join(os.path.basename(c) for c in configs)))
@@ -98,11 +98,11 @@ need_patch = False
 if bridge_port and bridge_port != '9868':
     need_patch = True
     print(f'  - pinchtab bridge port: 9868 -> {bridge_port}')
-    print(f'    (in Phase 1 curl command AND KEY FACTS table: pinchtab bridge)')
+    print('    (in Phase 1 curl command AND KEY FACTS table: pinchtab bridge)')
 if token and token != '123456':
     need_patch = True
     print(f'  - pinchtab token: 123456 -> {token}')
-    print(f'    (in KEY FACTS table: pinchtab config token)')
+    print('    (in KEY FACTS table: pinchtab config token)')
 if reappeared:
     need_patch = True
     for f in reappeared:
@@ -111,7 +111,7 @@ if reappeared:
 if ns_found and ns_found != KNOWN_NS:
     need_patch = True
     print(f'  - Redis prefixes: {" ".join(KNOWN_NS)} -> {" ".join(ns_found)}')
-    print(f'    (in Phase 2 commands AND KEY FACTS table)')
+    print('    (in Phase 2 commands AND KEY FACTS table)')
 
 if not need_patch:
     print('  No drift detected. Nothing to patch.')

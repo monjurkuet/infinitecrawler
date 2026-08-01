@@ -20,8 +20,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
-import psycopg
-from utils.pg import get_pg_config
+import psycopg  # noqa: E402
+from utils.pg import get_pg_config  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 log = logging.getLogger("schema_luxury")

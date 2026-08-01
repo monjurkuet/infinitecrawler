@@ -13,14 +13,17 @@ Usage:
 
 from collections import defaultdict
 
-import argparse, logging, re, sys
+import argparse
+import logging
+import re
+import sys
 from pathlib import Path
 
 import psycopg
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
-from utils.pg import get_pg_config
+from utils.pg import get_pg_config  # noqa: E402
 
 log = logging.getLogger("match_li_gmaps")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - match - %(levelname)s - %(message)s")
@@ -67,23 +70,23 @@ def normalize(text: str) -> str:
 def score_match(company: str, listing_name: str, listing_category: str | None) -> float:
     """Quality score 0-1. Noise words filtered before comparison."""
     c = normalize(company)
-    l = normalize(listing_name)
-    if not c or not l:
+    ln = normalize(listing_name)
+    if not c or not ln:
         return 0.0
-    if c == l:
+    if c == ln:
         return 1.0
 
     c_words = set(c.split())
-    l_words = set(l.split())
+    l_words = set(ln.split())
     c_clean = c_words - NOISE_WORDS
     l_clean = l_words - NOISE_WORDS
 
     if not c_clean or not l_clean:
         return 0.0
 
-    if c in l and len(c_clean) >= 2:
+    if c in ln and len(c_clean) >= 2:
         return 0.85
-    if l in c and len(l_clean) >= 1:
+    if ln in c and len(l_clean) >= 1:
         return 0.75
 
     inter = c_clean & l_clean

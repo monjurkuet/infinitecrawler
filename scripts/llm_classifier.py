@@ -55,8 +55,10 @@ BATCH_SIZE = 50  # leads per LLM call (DeepSeek V4 Flash has 1M context)
 MAX_FEW_SHOT = 10  # max few-shot examples per batch
 MIN_FEW_SHOT_PER_SECTOR = 2  # min examples to keep per sector
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT))
 # classification_method — single source of truth for the PG column enum.
-from services.classification import (
+from services.classification import (  # noqa: E402
     DEFAULT_SECTOR,
     _single_fallback,
     load_sectors,

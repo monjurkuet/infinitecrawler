@@ -13,16 +13,21 @@ Usage:
     uv run python scripts/ddgs_profile_discovery.py --stats
 """
 
-import argparse, asyncio, logging, re, sys
+import argparse
+import asyncio
+import logging
+import re
+import sys
 from pathlib import Path
 from typing import Optional
 
-import httpx, psycopg
+import httpx
+import psycopg
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
-from utils.linkedin_parser import parse_linkedin as _parse_linkedin
-from utils.pg import get_pg_config
+from utils.linkedin_parser import parse_linkedin as _parse_linkedin  # noqa: E402
+from utils.pg import get_pg_config  # noqa: E402
 
 log = logging.getLogger("discover")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - discover - %(levelname)s - %(message)s")
@@ -151,9 +156,12 @@ PARSERS = {"linkedin": parse_linkedin, "facebook": parse_facebook, "instagram": 
 
 def detect_plat(query: str) -> str:
     q = query.lower()
-    if "site:linkedin" in q: return "linkedin"
-    if "site:facebook" in q: return "facebook"
-    if "site:instagram" in q: return "instagram"
+    if "site:linkedin" in q:
+        return "linkedin"
+    if "site:facebook" in q:
+        return "facebook"
+    if "site:instagram" in q:
+        return "instagram"
     return "linkedin"
 
 
@@ -166,23 +174,33 @@ async def search_batch(client: httpx.AsyncClient, queries: list[str], mode: str)
             resp = await client.get(DDGS, params={"query": q, "max_results": 8, "region": "bd-bn"},
                                     timeout=httpx.Timeout(20))
             if resp.status_code != 200:
-                await asyncio.sleep(DELAY); continue
+                await asyncio.sleep(DELAY)
+                continue
             for r in resp.json().get("results", []):
                 href = r.get("href", "")
                 if use_site:
-                    if plat == "linkedin" and "linkedin.com" not in href: continue
-                    if plat == "facebook" and "facebook.com" not in href: continue
-                    if plat == "instagram" and "instagram.com" not in href: continue
+                    if plat == "linkedin" and "linkedin.com" not in href:
+                        continue
+                    if plat == "facebook" and "facebook.com" not in href:
+                        continue
+                    if plat == "instagram" and "instagram.com" not in href:
+                        continue
                 else:
-                    if "linkedin.com" in href: plat = "linkedin"
-                    elif "facebook.com" in href: plat = "facebook"
-                    elif "instagram.com" in href: plat = "instagram"
-                    else: continue
+                    if "linkedin.com" in href:
+                        plat = "linkedin"
+                    elif "facebook.com" in href:
+                        plat = "facebook"
+                    elif "instagram.com" in href:
+                        plat = "instagram"
+                    else:
+                        continue
                 norm = href.split("?")[0]
-                if norm in seen: continue
+                if norm in seen:
+                    continue
                 seen.add(norm)
                 parsed = (PARSERS.get(plat) or (lambda _: None))(r)
-                if not parsed: continue
+                if not parsed:
+                    continue
                 parsed["search_query"] = q
                 parsed["query_type"] = mode
                 all_c.append(parsed)
@@ -216,7 +234,8 @@ CREATE_DISCOVERED_TABLE = """
 
 
 def save_profiles(conn, profiles: list[dict]) -> int:
-    if not profiles: return 0
+    if not profiles:
+        return 0
     written = 0
     with conn.cursor() as cur:
         for p in profiles:
@@ -260,10 +279,12 @@ def show_stats(conn):
     td = cur.fetchone()[0]
     print(f"\n{'='*55}\n  DDGS Profile Discovery\n{'='*55}\n  Total: {td:>6}")
     cur.execute("SELECT platform,COUNT(*) FROM scraper.discovered_profiles GROUP BY platform")
-    for p, c in cur.fetchall(): print(f"    {p:12s} {c:>6}")
+    for p, c in cur.fetchall():
+        print(f"    {p:12s} {c:>6}")
     cur.execute("SELECT full_name,platform,profile_title,company_name FROM scraper.discovered_profiles ORDER BY discovered_at DESC LIMIT 10")
     print("\n  Latest:")
-    for r in cur.fetchall(): print(f"    {str(r[0]or'?'):30s} {r[1]:8s} {str(r[2]or''):30s} {str(r[3]or'')[:20]}")
+    for r in cur.fetchall():
+        print(f"    {str(r[0]or'?'):30s} {r[1]:8s} {str(r[2]or''):30s} {str(r[3]or'')[:20]}")
     cur.execute("SELECT COUNT(*) FROM scraper.luxury_contacts")
     print(f"  Luxury contacts: {cur.fetchone()[0]}")
     print(f"{'='*55}")
@@ -280,11 +301,14 @@ async def run(mode: str, dry_run: bool) -> int:
         async with httpx.AsyncClient(timeout=httpx.Timeout(20)) as client:
             for m in modes:
                 queries = STRATEGIES.get(m)
-                if not queries: continue
+                if not queries:
+                    continue
                 log.info("Mode '%s' — %d queries", m, len(queries))
                 if dry_run:
-                    for q in queries[:3]: log.info("    %s", q[:70])
-                    if len(queries) > 3: log.info("    ... %d more", len(queries) - 3)
+                    for q in queries[:3]:
+                        log.info("    %s", q[:70])
+                    if len(queries) > 3:
+                        log.info("    ... %d more", len(queries) - 3)
                     continue
                 profiles = await search_batch(client, queries, m)
                 if profiles:
@@ -306,8 +330,10 @@ def main():
     args = p.parse_args()
     if args.stats:
         conn = psycopg.connect(**get_pg_config())
-        try: show_stats(conn)
-        finally: conn.close()
+        try:
+            show_stats(conn)
+        finally:
+            conn.close()
         return
     found = asyncio.run(run(args.mode, args.dry_run))
     log.info("Done — %d profiles%s", found, " [DRY RUN]" if args.dry_run else "")
