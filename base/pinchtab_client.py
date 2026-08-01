@@ -487,14 +487,23 @@ class PinchtabClient:
         raise RuntimeError("pinchtab navigate: exhausted retries")
 
     async def close_tab(self):
+        """Reset the current tab to about:blank.
+
+        Pinchtab 0.15 has no tab-close action (`/action kind=close` returns
+        400 "unknown action kind: close") and `/tabs/:id DELETE` is also
+        rejected (404 page not found), so per-query cleanup was spamming
+        pinchtab with 400s.  Reusing the tab via `navigate("about:blank")`
+        is the documented pinchtab path: the same tabId comes back, the next
+        `navigate()` reuses it, and we never leak tabs beyond pinchtab's own
+        `maxTabs` eviction.
+        """
         if self.tab:
             try:
-                result = await self._post("/action", {"kind": "close", "tabId": self.tab._tab_id})
-                if result.get("code") == "error":
-                    self.logger.debug("close_tab: tab already closed (%s)", result.get("error", "")[:60])
+                await self.navigate("about:blank")
             except RuntimeError:
-                self.logger.debug("close_tab: tab not found (already evicted)")
-            self.tab = None
+                # If the tab already died, just drop the reference.
+                self.logger.debug("close_tab: tab already gone")
+                self.tab = None
 
     async def cleanup(self):
         """Close the aiohttp HTTP session and underlying TCPConnector.

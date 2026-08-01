@@ -29,6 +29,14 @@
 | Enrichment services | `email-extract`, `linkedin-search` | Run as systemd timers (every 6h), not daemons. Monitor via `systemctl --user list-timers`. |
 | Phase 3a drift trap | `-h 127.0.0.1` silently fails | 2026-07-29 audit: caused false-positive `search_1h=0`. Always use `-h /var/run/postgresql`. |
 | Phase 2.5 drift trap | `--no-clean` invalid psql flag | Use `-t` (tuples-only). |
+| infinite_scroll probe JS quote bug | `json.dumps(['div[role="feed"]',...])` injected into JS source produced `["div[role="feed"]",...]` with unbalanced quotes → `SyntaxError` every probe → 0 scroll, hits `max_scroll_attempts=500`. Fixed 2026-08-01: wrap in `JSON.parse(json.dumps(...))`. |
+| GMaps scroll needs event dispatch | `el.scrollTop = el.scrollHeight` alone does NOT trigger GMaps IntersectionObserver. Must also `el.dispatchEvent(new Event('scroll', {bubbles: true}))`. Without it, cards stay at 10 forever. Verified 2026-08-01. |
+| pinchtab 0.15 `/action kind:close` | Returns 400 `unknown action kind: close`. Same for `DELETE /tabs/:id` (404). Pinchtab has no tab-close endpoint — use `navigate("about:blank")` to reuse the tab. Verified 2026-08-01. |
+| Region-anchored search yield | `/search/KEYWORD/@lat,lng,13z` yields ~5x more results than unanchored `/search/KEYWORD in City/` (120 vs 22 for 'manufacturing company' Rajshahi). City text in query narrows results (26) — keyword-only + coords is optimal. Verified 2026-08-01. |
+| Query format `KEYWORD\|LAT\|LNG` | `query_generator._build_bd_local` emits `keyword|lat|lng`; `search_daemon.search_single_query` splits on `|` and builds the anchored URL. National/global queries keep plain text. |
+| sectors yaml fallback | `software_sectors.yaml` lives in sibling repo `business-plan-template` (not always present). `_load_sectors` falls back to built-in `DEFAULT_KEYWORDS_EN/BN` — keeps daemon productive instead of crash-looping on empty pools. |
+| Hotel seed queries | `scripts/seed_hotel_queries.py` — uses same `KEYWORD\|LAT\|LNG` format as query_generator. 408 unique hotel/resort queries across 16 BD cities + national. |
+| Fixes verified stable | All 4 fixes (scroll JS quote, dispatchEvent, close_tab about:blank, scroll reset()) verified 2026-08-02. Daemons running 6h+ with 0 `/action` 400 errors. DB: 37K+ rows, ~1,500 writes/hr. |
 
 # PHASE 0 — REPOSITORY DRIFT DISCOVERY (BLOCK)
 
