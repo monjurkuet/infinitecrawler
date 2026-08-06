@@ -12,7 +12,7 @@ queue:
   strategy: redis_queue
   config:
     host: localhost
-    port: 16379
+    port: 6379
     db: 0
     ignore_completed_on_enqueue: true
     keys:

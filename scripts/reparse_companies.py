@@ -59,11 +59,17 @@ def extract_company(title):
             break
     return None
 
-def update_companies(conn, dry_run):
+def update_companies(conn, dry_run, limit=500):
     cur = conn.cursor()
-    cur.execute("SELECT id, profile_title FROM scraper.luxury_contacts WHERE platform = 'linkedin' AND (company_name IS NULL OR company_name = '')")
+    cur.execute(
+        "SELECT id, profile_title FROM scraper.luxury_contacts "
+        "WHERE platform = 'linkedin' AND (company_name IS NULL OR company_name = '') "
+        "ORDER BY id LIMIT %s", (limit,))
     luxury = cur.fetchall()
-    cur.execute("SELECT id, profile_title FROM scraper.discovered_profiles WHERE platform = 'linkedin' AND (company_name IS NULL OR company_name = '')")
+    cur.execute(
+        "SELECT id, profile_title FROM scraper.discovered_profiles "
+        "WHERE platform = 'linkedin' AND (company_name IS NULL OR company_name = '') "
+        "ORDER BY id LIMIT %s", (limit,))
     discovered = cur.fetchall()
     total = len(luxury) + len(discovered)
     log.info("Profiles: %d (luxury=%d, discovered=%d)", total, len(luxury), len(discovered))

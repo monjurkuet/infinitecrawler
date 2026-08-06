@@ -1,0 +1,179 @@
+# linkedin_firehose.yaml — Query matrix for global LinkedIn profile discovery.
+# Drives scripts/db_linkedin_firehose.py — Cartesian product of roles × locations × industries.
+
+# Execution controls (overridable via CLI --max-queries, --delay-seconds, --concurrency)
+execution:
+  # Search engine: ddgs (https://github.com/deedy5/ddgs) — metasearch aggregator.
+  # Library resolves 'auto' to best available backend each query.
+  engine: ddgs
+  max_queries: 8000
+  delay_seconds: 0.5
+  concurrency: 8
+  max_results_per_query: 10
+  batch_commit: 20
+  search_timeout: 20
+  # 'auto' selects best backend per-query; fallbacks tried only on exceptions
+  backend: auto
+  backend_fallbacks:
+    - yahoo
+    - yandex
+
+# DDGS region codes (ddgs lib format: {country}-{lang})
+regions:
+  bangladesh: "bd-bn"
+  global: "wt-wt"
+
+# Query matrix dimensions
+roles:
+  # C-level (12)
+  - CEO
+  - CTO
+  - CFO
+  - COO
+  - CMO
+  - CPO
+  - CRO
+  - CDO
+  - CIO
+  - CHRO
+  - CSO
+  - CISO
+
+  # Board / Founders (7)
+  - Founder
+  - Co-Founder
+  - Chairman
+  - Vice Chairman
+  - Board Member
+  - Board Director
+  - Chairperson
+
+  # VP / Director (8)
+  - Vice President
+  - EVP
+  - SVP
+  - Managing Director
+  - Executive Director
+  - Non-Executive Director
+  - Country Head
+  - Country Manager
+
+  # General / Senior (10)
+  - General Manager
+  - Senior Vice President
+  - Regional Director
+  - Managing Partner
+  - Partner
+  - Principal
+  - Head of Engineering
+  - Head of Product
+  - Head of Data
+  - Head of AI
+
+  # Government / Elected (9)
+  - Minister
+  - Deputy Minister
+  - State Minister
+  - Cabinet Secretary
+  - Permanent Secretary
+  - Secretary
+  - Joint Secretary
+  - Divisional Commissioner
+  - Deputy Commissioner
+
+  # Judicial (7)
+  - Chief Justice
+  - Supreme Court Judge
+  - Judge
+  - District Judge
+  - Attorney General
+  - Deputy Attorney General
+  - Chief Metropolitan Magistrate
+
+  # Wealth / Family (3)
+  - Chairman MD
+  - Managing Director BD
+  - CEO BD
+
+locations:
+  # Bangladesh (queries with region=bd-bn)
+  bangladesh:
+    - Dhaka
+    - Gulshan
+    - Banani
+    - Baridhara
+    - Motijheel
+    - Boshundhara
+    - Dhanmondi
+    - Uttara
+    - Savar
+    - Gazipur
+    - Chattogram
+    - Rajshahi
+    - Khulna
+    - Sylhet
+    - Barisal
+    - Rangpur
+    - Rupganj
+    - Tongi
+    - Narayanganj
+    - Mirpur
+
+  # Global hub cities (no region param → worldwide DDGS index)
+  global:
+    - London
+    - New York
+    - Singapore
+    - Dubai
+    - Cebu City
+    - Manila
+    - Bangkok
+    - Jakarta
+    - Kuala Lumpur
+    - Mumbai
+    - Delhi
+    - Bangalore
+    - Toronto
+    - Sydney
+    - Hong Kong
+
+industries:
+  - Technology
+  - Fintech
+  - Entrepreneur
+  - Startup
+  - Family Office
+  - Venture Capital
+  - Family Wealth
+  - Investment Banking
+  - Takaful
+  - Insurance
+  - Energy
+  - Telecom
+  - Media
+  - Retail
+  - E-commerce
+  - Logistics
+  - Agriculture
+  - Pharma
+  - Healthcare
+  - Education
+
+# Controls which query dimensions to use
+# Set enabled: false to skip an entire query family
+query_families:
+  role_city:
+    enabled: true
+    description: "role + bangladesh city (region=bd-bn)"
+    template: 'site:linkedin.com/in/ "{role}" {city} Bangladesh'
+    region: bangladesh
+  role_city_industry:
+    enabled: true
+    description: "role + global city + industry (region=global)"
+    template: 'site:linkedin.com/in/ "{role}" {city} {industry}'
+    region: global
+  role_only:
+    enabled: true
+    description: "role-only no-location queries (region=global)"
+    template: 'site:linkedin.com/in/ "{role}"'
+    region: global

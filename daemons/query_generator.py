@@ -24,22 +24,29 @@ from typing import Optional
 # ── Configuration ──────────────────────────────────────────────────────────
 
 BD_CITIES = [
-    ("Chattogram", "চট্টগ্রাম"),
-    ("Sylhet", "সিলেট"),
-    ("Khulna", "খুলনা"),
-    ("Rajshahi", "রাজশাহী"),
-    ("Barishal", "বরিশাল"),
-    ("Rangpur", "রংপুর"),
-    ("Mymensingh", "ময়মনসিংহ"),
-    ("Cumilla", "কুমিল্লা"),
-    ("Bogura", "বগুড়া"),
-    ("Jashore", "যশোর"),
-    ("Cox's Bazar", "কক্সবাজার"),
-    ("Narayanganj", "নারায়ণগঞ্জ"),
-    ("Gazipur", "গাজীপুর"),
-    ("Feni", "ফেনী"),
-    ("Narsingdi", "নরসিংদী"),
+    # (english, bangla, lat, lng)
+    ("Chattogram",  "চট্টগ্রাম",   22.3569,  91.7832),
+    ("Sylhet",      "সিলেট",       24.8949,   91.8687),
+    ("Khulna",      "খুলনা",       22.8456,   89.5403),
+    ("Rajshahi",    "রাজশাহী",     24.3636,   88.6241),
+    ("Barishal",    "বরিশাল",      22.7010,   90.3535),
+    ("Rangpur",     "রংপুর",       25.7439,   89.2752),
+    ("Mymensingh",  "ময়মনসিংহ",  24.7471,   90.4203),
+    ("Cumilla",     "কুমিল্লা",    23.4607,   91.1809),
+    ("Bogura",      "বগুড়া",      24.8484,   89.3733),
+    ("Jashore",     "যশোর",        23.1684,   89.2123),
+    ("Cox's Bazar", "কক্সবাজার",   21.4272,   92.0058),
+    ("Narayanganj", "নারায়ণগঞ্জ", 23.6238,   90.5000),
+    ("Gazipur",     "গাজীপুর",     23.9919,   90.4203),
+    ("Feni",        "ফেনী",        23.0149,   91.3953),
+    ("Narsingdi",   "নরসিংদী",    23.9889,   90.4650),
 ]
+
+# GMaps search zoom level. 13z covers a city + suburbs (≈15 km radius).
+# We use lat,lng from city center; higher zoom (14) is too narrow, lower (11)
+# produces regional results.  Verified 2026-08-01: 11z–13z all yield 5x more
+# results than the unanchored text-only search.
+CITY_SEARCH_ZOOM = 13
 
 INTERNATIONAL_MARKETS = [
     "USA", "UK", "Australia", "Canada", "UAE", "Saudi Arabia",
@@ -148,11 +155,18 @@ def _extract_keywords(sector_config: dict) -> list[str]:
 
 # ── Query builder ───────────────────────────────────────────────────────────
 
-def _build_bd_local(keyword: str, city_en: str, city_bn: str) -> list[str]:
-    """City-level queries."""
+def _build_bd_local(keyword: str, city_en: str, city_bn: str,
+                     lat: float = 0.0, lng: float = 0.0) -> list[str]:
+    """City-level queries. Encodes lat/lng for region-anchored GMaps search.
+    
+    Format: `query|lat|lng` — the daemon splits on `|` to extract the
+    optional coordinates and appends `@lat,lng,ZOOMz` to the search URL.
+    When lat/lng are 0.0 (national/global), only the text portion is used.
+    """
+    coord = f"{lat:.4f}|{lng:.4f}"
     queries = []
-    queries.append(f"{keyword} in {city_en}")
-    queries.append(f"{keyword} {city_bn}")
+    queries.append(f"{keyword} in {city_en}|{coord}")
+    queries.append(f"{keyword} {city_bn}|{coord}")
     return queries
 
 
@@ -193,8 +207,9 @@ def _build_full_cycle(sectors: dict) -> dict[str, list[str]]:
 
             # BD-local: city-level queries (skip global-only keywords)
             if not is_global_only:
-                for city_en, city_bn in BD_CITIES:
-                    pools["bd_local"].extend(_build_bd_local(kw_norm, city_en, city_bn))
+                for city_en, city_bn, lat, lng in BD_CITIES:
+                    pools["bd_local"].extend(
+                        _build_bd_local(kw_norm, city_en, city_bn, lat, lng))
 
                 # BD-national
                 pools["bd_national"].extend(_build_bd_national(kw_norm))

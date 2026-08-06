@@ -33,7 +33,7 @@ queue:
   strategy: "redis_queue"
   config:
     host: "localhost"
-    port: 16379
+    port: 6379
     db: 0
     keys:
       pending: "gmaps_bd_business:pending"

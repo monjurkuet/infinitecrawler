@@ -68,8 +68,11 @@ reappeared = [f for f in DEAD_FILES if (repo_root / f).exists()]
 if reappeared:
     changes.append(('REAPPEARED', ' '.join(reappeared)))
 
-# 5. Discover config YAML files
-configs = sorted(glob.glob(str(repo_root / 'config' / 'gmaps_*.yaml')))
+# 5. Discover config YAML files (both gmaps and linkedin enrichment configs)
+configs = sorted(
+    glob.glob(str(repo_root / 'config' / 'gmaps_*.yaml'))
+    + glob.glob(str(repo_root / 'config' / 'linkedin_*.yaml'))
+)
 if configs:
     changes.append(('CONFIG_FILES', ' '.join(os.path.basename(c) for c in configs)))
 

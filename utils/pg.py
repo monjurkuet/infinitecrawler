@@ -77,12 +77,12 @@ def get_uncrawled_urls_sql(limit: int = 100) -> str:
 
 UPSERT_EMAIL_SQL = """
     INSERT INTO scraper.emails
-        (listing_id, email, source_type, is_obfuscated, context_snippet)
+        (listing_id, email, extraction_method, is_obfuscated, context_snippet)
     VALUES (%s, %s, %s, %s, %s)
     ON CONFLICT (listing_id, email) DO UPDATE SET
-        source_type       = EXCLUDED.source_type,
-        context_snippet   = COALESCE(EXCLUDED.context_snippet, scraper.emails.context_snippet),
-        discovered_at     = NOW()
+        extraction_method   = EXCLUDED.extraction_method,
+        context_snippet     = COALESCE(EXCLUDED.context_snippet, scraper.emails.context_snippet),
+        discovered_at       = NOW()
 """
 
 
@@ -90,7 +90,7 @@ def upsert_emails(conn, emails: list[dict]) -> int:
     """Upsert email records into scraper.emails.
 
     Each dict must have keys: listing_id, email.
-    Optional: source_type, is_obfuscated, context_snippet.
+    Optional: extraction_method, is_obfuscated, context_snippet.
     Returns number of rows written.
     """
     if not emails:
@@ -102,15 +102,26 @@ def upsert_emails(conn, emails: list[dict]) -> int:
                 cur.execute(UPSERT_EMAIL_SQL, (
                     e["listing_id"],
                     e["email"],
-                    e.get("source_type", "http"),
+                    e.get("extraction_method", "http"),
                     e.get("is_obfuscated", False),
                     e.get("context_snippet"),
                 ))
                 written += cur.rowcount or 1
             except Exception as exc:
+                # Skip failed row; do NOT rollback — earlier rows in this
+                # txn remain valid and commit below.
                 logger.error("Failed to upsert email %s for listing %s: %s", e.get("email"), e.get("listing_id"), exc)
-    conn.commit()
-    return written
+    for attempt in range(3):
+        try:
+            conn.commit()
+            return written
+        except Exception:
+            if attempt < 2:
+                import time
+                time.sleep(0.5 * (attempt + 1))
+                continue
+            logger.error("upsert_emails: commit failed after 3 attempts")
+            return 0
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -120,8 +131,8 @@ def upsert_emails(conn, emails: list[dict]) -> int:
 UPSERT_LINKEDIN_SQL = """
     INSERT INTO scraper.linkedin_profiles
         (listing_id, full_name, profile_url, profile_title, company_name,
-         search_query, confidence, snippet)
-    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+         search_query, confidence, snippet, source)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
     ON CONFLICT (profile_url) DO UPDATE SET
         listing_id    = EXCLUDED.listing_id,
         profile_title = COALESCE(EXCLUDED.profile_title, scraper.linkedin_profiles.profile_title),
@@ -130,12 +141,12 @@ UPSERT_LINKEDIN_SQL = """
 """
 
 
-FETCH_UNPROCESSED_EMAILS_SQL = """
+FETCH_UNPROCESSED_EMAILS_SQL = r"""
     SELECT l.id, l.website
     FROM scraper.gmaps_listings l
     WHERE l.website IS NOT NULL
       AND l.website != ''
-      AND l.id NOT IN (SELECT listing_id FROM scraper.emails)
+      AND NOT EXISTS (SELECT 1 FROM scraper.emails e WHERE e.listing_id = l.id)
     ORDER BY l.updated_at DESC
 """
 
@@ -153,9 +164,10 @@ FETCH_UNPROCESSED_LINKEDIN_SQL = """
     FROM scraper.gmaps_listings l
     WHERE l.name IS NOT NULL
       AND l.name != ''
-      AND l.id NOT IN (
-          SELECT listing_id FROM scraper.linkedin_profiles
-          WHERE checked_at > NOW() - INTERVAL '7 days'
+      AND NOT EXISTS (
+          SELECT 1 FROM scraper.linkedin_profiles p
+          WHERE p.listing_id = l.id
+            AND p.checked_at > NOW() - INTERVAL '7 days'
       )
     ORDER BY l.updated_at DESC
 """
@@ -169,11 +181,13 @@ def get_unprocessed_linkedin(conn, limit: int = 50) -> list[dict]:
     return [{"id": r[0], "name": r[1]} for r in rows]
 
 
-def upsert_linkedin_profiles(conn, profiles: list[dict]) -> int:
+def upsert_linkedin_profiles(conn, profiles: list[dict], source: str = "linkedin_search") -> int:
     """Upsert LinkedIn profile records into scraper.linkedin_profiles.
 
     Each dict must have: listing_id, profile_url, company_name, search_query.
     Optional: full_name, profile_title, confidence, snippet.
+    source: value for the source column (default 'linkedin_search' for
+            backward compatibility with db_linkedin_search.py).
     Returns number of rows written.
     """
     if not profiles:
@@ -191,6 +205,7 @@ def upsert_linkedin_profiles(conn, profiles: list[dict]) -> int:
                     p["search_query"],
                     p.get("confidence", 0.5),
                     p.get("snippet"),
+                    source,
                 ))
                 written += cur.rowcount or 1
             except Exception as exc:

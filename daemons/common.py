@@ -25,6 +25,12 @@ async def shutdown_strategies(state):
     Each daemon adds its own extras (PG close, stats logging, etc.) after calling
     this function.
     """
+    if state.output_strategy and hasattr(state.output_strategy, "flush_batch"):
+        flush_fn = state.output_strategy.flush_batch
+        if callable(flush_fn):
+            result = flush_fn()
+            if asyncio.iscoroutine(result):
+                await result
     if state.browser_manager:
         await state.browser_manager.cleanup()
         state.browser_manager = None
@@ -32,12 +38,6 @@ async def shutdown_strategies(state):
         cleanup = state.output_strategy.cleanup()
         if asyncio.iscoroutine(cleanup):
             await cleanup
-    if state.output_strategy and hasattr(state.output_strategy, "flush_batch"):
-        flush_fn = state.output_strategy.flush_batch
-        if callable(flush_fn):
-            result = flush_fn()
-            if asyncio.iscoroutine(result):
-                await result
     if state.queue_strategy and hasattr(state.queue_strategy, "cleanup"):
         cleanup = state.queue_strategy.cleanup()
         if asyncio.iscoroutine(cleanup):

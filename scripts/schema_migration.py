@@ -74,11 +74,37 @@ CREATE INDEX IF NOT EXISTS idx_linkedin_listing ON scraper.linkedin_profiles(lis
 CREATE INDEX IF NOT EXISTS idx_linkedin_company ON scraper.linkedin_profiles(company_name);
 """
 
+# Social links separation: extract Facebook/Instagram/LinkedIn/Twitter/YouTube/TikTok
+# URLs from the website column into a new social_links JSONB column. Idempotent —
+# safe to re-run; the UPDATE is a no-op once migrated (no rows match the WHERE).
+MIGRATE_SOCIAL_LINKS = """
+ALTER TABLE scraper.gmaps_listings ADD COLUMN IF NOT EXISTS social_links JSONB DEFAULT NULL;
+
+UPDATE scraper.gmaps_listings SET social_links = (
+  SELECT jsonb_object_agg(platform, url) FROM (
+    VALUES
+      ('facebook', CASE WHEN website ~* 'facebook\\.com|fb\\.com' THEN website END),
+      ('instagram', CASE WHEN website ~* 'instagram\\.com' THEN website END),
+      ('linkedin', CASE WHEN website ~* 'linkedin\\.com' THEN website END),
+      ('twitter', CASE WHEN website ~* 'twitter\\.com|x\\.com' THEN website END),
+      ('youtube', CASE WHEN website ~* 'youtube\\.com' THEN website END),
+      ('tiktok', CASE WHEN website ~* 'tiktok\\.com' THEN website END)
+  ) AS _(platform, url)
+  WHERE url IS NOT NULL
+)
+WHERE website ~* 'facebook|instagram|linkedin|twitter|youtube|tiktok';
+
+UPDATE scraper.gmaps_listings SET website = NULL
+WHERE website IS NOT NULL AND website != ''
+  AND website ~* 'facebook\\.com|instagram\\.com|linkedin\\.com|twitter\\.com|youtube\\.com|tiktok\\.com';
+"""
+
 ALL_STATEMENTS = [
     CREATE_EMAILS_TABLE,
     CREATE_LINKEDIN_TABLE,
     CREATE_EMAILS_INDEXES,
     CREATE_LINKEDIN_INDEXES,
+    MIGRATE_SOCIAL_LINKS,
 ]
 
 

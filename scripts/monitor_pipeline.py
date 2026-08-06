@@ -27,6 +27,7 @@ import logging
 import os
 import subprocess
 import sys
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -92,6 +93,15 @@ def _systemd_daemon_active(unit: str) -> bool:
             capture_output=True, text=True, timeout=10,
         )
         return r.stdout.strip() == "active"
+    except Exception:
+        return False
+
+
+def _http_ok(url: str, timeout: int = 5) -> bool:
+    """Check an HTTP endpoint responds (used for API health)."""
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            return resp.status < 500
     except Exception:
         return False
 
@@ -178,6 +188,22 @@ def restart_crawlers() -> bool:
         return False
 
 
+def restart_unit(unit: str) -> bool:
+    """Restart a systemd user unit (oneshot or simple)."""
+    try:
+        r = subprocess.run(
+            ["systemctl", "--user", "restart", unit],
+            capture_output=True, text=True, timeout=60,
+        )
+        if r.returncode != 0:
+            log.error("Failed to restart %s: %s", unit, r.stderr)
+            return False
+        return True
+    except Exception as e:
+        log.error("Restart %s failed: %s", unit, e)
+        return False
+
+
 def run_checks(restart: bool = False) -> dict:
     """Run all health checks. Returns status dict."""
     now = datetime.now(timezone.utc).isoformat()
@@ -224,7 +250,7 @@ def run_checks(restart: bool = False) -> dict:
     unprocessed_emails = pg_query(
         "SELECT COUNT(*) FROM scraper.gmaps_listings "
         "WHERE website IS NOT NULL AND website != '' "
-        "AND id NOT IN (SELECT listing_id FROM scraper.emails)"
+        "AND NOT EXISTS (SELECT 1 FROM scraper.emails e WHERE e.listing_id = scraper.gmaps_listings.id)"
     )
 
     # 7. LinkedIn enrichment stats
@@ -247,6 +273,16 @@ def run_checks(restart: bool = False) -> dict:
         "SELECT COUNT(*) FROM scraper.gmaps_listings WHERE updated_at > NOW() - INTERVAL '6 hours'"
     )
 
+    # 9. Service-level checks (email-extract freshness, firehose, API)
+    email_stale_min = pg_query(
+        "SELECT CASE WHEN COUNT(*) = 0 THEN 9999 "
+        "  ELSE EXTRACT(EPOCH FROM (NOW() - MAX(discovered_at)))::int / 60 END "
+        "FROM scraper.emails"
+    )
+    email_service_active = _systemd_daemon_active("infinitecrawler-email-extract.service")
+    firehose_active = _systemd_daemon_active("infinitecrawler-linkedin-firehose-loop.service")
+    api_ok = _http_ok("http://127.0.0.1:8015/")
+
     # Determine pipeline status
     is_healthy = True
     issues = []
@@ -266,6 +302,24 @@ def run_checks(restart: bool = False) -> dict:
     if vl1h > 0 and vs1h == 0:
         issues.append("Search daemon producing zero new DB rows — likely query exhaustion (all queries produce identical GMaps results)")
 
+    # Service freshness checks
+    if email_stale_min != "error":
+        stale = int(email_stale_min)
+        if stale > 45:
+            is_healthy = False
+            state = "active" if email_service_active else "inactive"
+            issues.append(f"Email extraction stale: no emails written for {stale} min (service {state})")
+    else:
+        is_healthy = False
+        issues.append("PG unreachable — cannot verify pipeline state")
+
+    if not firehose_active:
+        is_healthy = False
+        issues.append("LinkedIn firehose-loop service not active")
+    if not api_ok:
+        is_healthy = False
+        issues.append("API not responding on port 8015")
+
     # Auto-heal
     healed = []
     if processing > 0 and procs == 0:
@@ -280,6 +334,18 @@ def run_checks(restart: bool = False) -> dict:
         else:
             issues.append("Crawler restart failed")
 
+    if restart and not firehose_active:
+        if restart_unit("infinitecrawler-linkedin-firehose-loop"):
+            healed.append("Restarted linkedin firehose-loop service")
+        else:
+            issues.append("Firehose restart failed")
+
+    if restart and email_stale_min not in ("error", "") and int(email_stale_min) > 45:
+        if restart_unit("infinitecrawler-email-extract"):
+            healed.append("Restarted email-extract service (stale)")
+        else:
+            issues.append("Email-extract restart failed")
+
     status = {
         "timestamp": now,
         "healthy": is_healthy,
@@ -288,6 +354,19 @@ def run_checks(restart: bool = False) -> dict:
         "crawlers": {
             "running": procs,
             "pids": pids[:10],
+        },
+        "services": {
+            "email_extract": {
+                "active": email_service_active,
+                "stale_minutes": int(email_stale_min) if email_stale_min not in ("error", "") else None,
+            },
+            "linkedin_firehose": {
+                "active": firehose_active,
+            },
+            "api": {
+                "port": 8015,
+                "responding": api_ok,
+            },
         },
         "redis": {
             "listing": {
@@ -365,6 +444,13 @@ def main():
             print(f"   Emails: {enrich['total_emails']} total ({enrich['listings_with_email']} listings, {enrich['unprocessed_emails']} pending)")
         if enrich.get("total_linkedin_profiles") is not None:
             print(f"   LinkedIn profiles: {enrich['total_linkedin_profiles']} ({enrich['listings_with_linkedin']} listings)")
+
+        svc = status.get("services", {})
+        if svc:
+            ee = svc.get("email_extract", {})
+            fh = svc.get("linkedin_firehose", {})
+            api = svc.get("api", {})
+            print(f"   Services: email-stale={ee.get('stale_minutes', '?')}min/{'active' if ee.get('active') else 'inactive'}  firehose={'up' if fh.get('active') else 'DOWN'}  api={'up' if api.get('responding') else 'DOWN'}")
 
         if status["issues"]:
             print(f"\n⚠️ Issues: {'; '.join(status['issues'])}")

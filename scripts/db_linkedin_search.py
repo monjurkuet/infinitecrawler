@@ -200,8 +200,13 @@ async def search_linkedin(
                 await asyncio.sleep(REQUEST_DELAY)
                 continue
 
-            data = resp.json()
-            results = data.get("results", [])
+            try:
+                data = resp.json()
+            except ValueError:
+                log.debug("DDGS returned non-JSON for query: %s", query[:50])
+                await asyncio.sleep(REQUEST_DELAY)
+                continue
+            results = data.get("results", []) if isinstance(data, dict) else []
 
             for r in results:
                 href = r.get("href", "")
@@ -340,8 +345,9 @@ def main():
                     "SELECT id, name FROM scraper.gmaps_listings "
                     "WHERE name IS NOT NULL AND name != '' "
                     "AND sector_id = (SELECT id FROM scraper.sectors WHERE name = %s) "
-                    "AND id NOT IN (SELECT listing_id FROM scraper.linkedin_profiles "
-                    "  WHERE checked_at > NOW() - INTERVAL '7 days') "
+                    "AND NOT EXISTS (SELECT 1 FROM scraper.linkedin_profiles p "
+                    "  WHERE p.listing_id = scraper.gmaps_listings.id "
+                    "  AND p.checked_at > NOW() - INTERVAL '7 days') "
                     "ORDER BY updated_at DESC LIMIT %s",
                     (sector_filter, args.max),
                 )

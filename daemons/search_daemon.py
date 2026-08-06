@@ -13,8 +13,10 @@ systemd unit: ~/.config/systemd/user/infinitecrawler-search.service
 
 import asyncio
 import logging
+import re
 import sys
 import time
+import urllib.parse
 from datetime import datetime, timezone  # noqa: E402
 
 from pathlib import Path
@@ -216,10 +218,33 @@ async def search_single_query(state: DaemonState, query: str) -> bool:
     Returns True on success, False on failure.
     """
     try:
-        # Build search URL and navigate
+        # Build search URL and navigate.
+        # If the query carries `|lat|lng` coords, use a region-anchored search
+        # (e.g. `keyword+city/@lat,lng,zoomz`). Verified 2026-08-01: this yields
+        # 5x more results than the unanchored text-only form.
+        search_text = query
+        coord_suffix = ""
+        if "|" in query:
+            parts = query.rsplit("|", 2)
+            if len(parts) == 3:
+                try:
+                    lat, lng = float(parts[1]), float(parts[2])
+                    search_text = parts[0]
+                    coord_suffix = f"/@{lat:.4f},{lng:.4f},13z?entry=ttu"
+                except (ValueError, IndexError):
+                    pass  # malformed, just use full query as text
+
         url_template = state.config.get("search_url_template",
                                         "https://www.google.com/maps/search/{query}/")
-        search_url = url_template.format(query=query)
+        if coord_suffix:
+            # Region-anchored: strip the /{query}/ placeholder, append coords.
+            url_base = re.sub(r"/\{[^}]*\}/?$", "", url_template).rstrip("/")
+            search_url = (
+                f"{url_base}/{urllib.parse.quote(search_text, safe='')}{coord_suffix}"
+            )
+        else:
+            # Fallback (national/global queries): keep the old behavior.
+            search_url = url_template.format(query=search_text)
         try:
             tab = await asyncio.wait_for(
                 state.browser_manager.navigate(search_url),
@@ -250,6 +275,12 @@ async def search_single_query(state: DaemonState, query: str) -> bool:
         # Scroll and extract
         seen_items: set[str] = set()
         state.extraction_strategy.seen_items = set()  # reset
+        # Reset per-query scroll state (seen URLs, stall streak) — the strategy
+        # instance is reused across queries, so without this the second query
+        # would treat the first query's URLs as "already seen" and skip them.
+        reset = getattr(state.pagination_strategy, "reset", None)
+        if reset is not None:
+            await reset()
 
         scroll_attempts = 0
         max_scroll = state.config.get("pagination", {}).get("max_scroll_attempts", 200)
@@ -376,10 +407,10 @@ def _check_pg_staleness(last_pg_check: float, table: str = "scraper.gmaps_search
         return last_pg_check
     try:
         from psycopg import connect
-        with connect(
-            f"host={PG_HOST} port={PG_PORT} user={PG_USER} password={PG_PASSWORD} dbname={PG_DB}",
-            autocommit=True,
-        ) as conn:
+        dsn = f"host={PG_HOST} user={PG_USER} password={PG_PASSWORD} dbname={PG_DB}"
+        if "/" not in str(PG_HOST):  # omit port for unix-socket hosts
+            dsn += f" port={PG_PORT}"
+        with connect(dsn, autocommit=True) as conn:
             with conn.cursor() as cur:
                 cur.execute(f"SELECT MAX(updated_at) FROM {table}")
                 row = cur.fetchone()

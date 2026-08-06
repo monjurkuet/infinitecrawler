@@ -58,6 +58,15 @@ _pg = get_pg_config()
 PG_HOST, PG_PORT = _pg["host"], _pg["port"]
 PG_USER, PG_PASSWORD, PG_DB = _pg["user"], _pg["password"], _pg["dbname"]
 
+
+def _connect_pg() -> psycopg.Connection:
+    """Open a PG connection. Omit port for unix-socket hosts (psycopg3 parse bug)."""
+    kwargs = dict(host=PG_HOST, user=PG_USER, password=PG_PASSWORD,
+                  dbname=PG_DB, connect_timeout=10)
+    if "/" not in str(PG_HOST):
+        kwargs["port"] = PG_PORT
+    return psycopg.connect(**kwargs)
+
 # ── Logging ─────────────────────────────────────────────────────────────────
 
 logging.basicConfig(
@@ -185,11 +194,7 @@ async def init_infrastructure(state: DaemonState):
 
     # PG connection (for live uncrawled URL feed)
     try:
-        state.pg_conn = psycopg.connect(
-            host=PG_HOST, port=PG_PORT, user=PG_USER,
-            password=PG_PASSWORD, dbname=PG_DB,
-            connect_timeout=10,
-        )
+        state.pg_conn = _connect_pg()
         state.pg_conn.autocommit = True
         log.info("PG connected: %s:%s/%s", PG_HOST, PG_PORT, PG_DB)
     except Exception as e:
@@ -228,11 +233,7 @@ def _pg_reconnect(state: DaemonState) -> None:
                 pass
             state.pg_conn = None
     try:
-        state.pg_conn = psycopg.connect(
-            host=PG_HOST, port=PG_PORT, user=PG_USER,
-            password=PG_PASSWORD, dbname=PG_DB,
-            connect_timeout=10,
-        )
+        state.pg_conn = _connect_pg()
         state.pg_conn.autocommit = True
         log.info("PG reconnected: %s:%s/%s", PG_HOST, PG_PORT, PG_DB)
     except Exception as e:

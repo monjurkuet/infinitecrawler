@@ -27,6 +27,7 @@ from pathlib import Path
 
 
 import httpx
+from dotenv import load_dotenv
 
 logging.basicConfig(
     level=logging.INFO,
@@ -34,16 +35,22 @@ logging.basicConfig(
 )
 log = logging.getLogger("llm_classifier")
 
-REPO_ROOT = Path(__file__).resolve().parent.parent.parent  # ~/codebase/vhd
-INFINITECRAWLER_DIR = REPO_ROOT / "infinitecrawler"
-BPT_DIR = REPO_ROOT / "business-plan-template"
-CLASSIFICATION_DIR = INFINITECRAWLER_DIR / "_system" / "classification"
+# REPO_ROOT = this project root (scripts/..)
+REPO_ROOT = Path(__file__).resolve().parent.parent
+# Load .env so interactive runs get LLM_API_KEY etc. Systemd EnvironmentFile
+# vars already in os.environ take precedence (load_dotenv does not override).
+load_dotenv(REPO_ROOT / ".env")
+# BPT_DIR points to business-plan-template sibling repo at ../business-plan-template
+BPT_DIR = REPO_ROOT.parent / "business-plan-template"
+CLASSIFICATION_DIR = REPO_ROOT / "_system" / "classification"
 
 # LLM settings
 LLM_BASE_URL = os.environ.get(
     "LLM_BASE_URL", "https://llm.datasolved.org/v1"
 )
-LLM_API_KEY = os.environ["LLM_API_KEY"]
+LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
+if not LLM_API_KEY:
+    log.warning("LLM_API_KEY is not set — classification will use fallback only")
 LLM_MODEL = os.environ.get(
     "LLM_CLASSIFIER_MODEL", "deepseek-ai/deepseek-v4-flash"
 )
@@ -55,8 +62,7 @@ BATCH_SIZE = 50  # leads per LLM call (DeepSeek V4 Flash has 1M context)
 MAX_FEW_SHOT = 10  # max few-shot examples per batch
 MIN_FEW_SHOT_PER_SECTOR = 2  # min examples to keep per sector
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO_ROOT))
+sys.path.insert(0, str(REPO_ROOT))  # REPO_ROOT defined above (line ~37)
 # classification_method — single source of truth for the PG column enum.
 from services.classification import (  # noqa: E402
     DEFAULT_SECTOR,

@@ -13,6 +13,10 @@ log = logging.getLogger(__name__)
 
 # ── Compiled patterns ────────────────────────────────────────────────────────
 
+# Safety: cap input to prevent ReDoS from catastrophic backtracking on
+# adversarial/large pages. 2 MB is well above any real email section.
+MAX_SCAN_BYTES = 2_000_000
+
 # Standard email: user@domain.tld
 EMAIL_REGEX = re.compile(
     r"[a-zA-Z0-9][a-zA-Z0-9._%+-]{0,63}@[a-zA-Z0-9][a-zA-Z0-9.-]+\.[a-zA-Z]{2,}",
@@ -21,33 +25,39 @@ EMAIL_REGEX = re.compile(
 
 # Obfuscated patterns used in Bangladesh business websites
 # e.g. "info [at] company [dot] com", "info(at)company(dot)com"
+# Patterns are bounded with {1,64} to prevent catastrophic backtracking on
+# large pages. The email local-part max is 64, domain max is 253.
 OBFUSCATED_PATTERNS = [
-    # Pattern 1: word [at] word [dot] tld
+    # Pattern 1: word+space+[at]+space+domain+space+[dot]+space+tld
+    # Must match at least one "[at]" or "(at)" or "_at_" marker.
     re.compile(
-        r"([a-zA-Z0-9._%+-]+)\s*\[?@?\]?\s*\[?at\]?\s*"
-        r"([a-zA-Z0-9.-]+)\s*\[?\.?\]?\s*\[?dot\]?\s*"
-        r"([a-zA-Z]{2,})",
+        r"([a-zA-Z0-9._%+-]{1,64})\s*\[?at\]?\s+"
+        r"([a-zA-Z0-9.\-]{1,64})\s+"
+        r"(?:\[?dot\]?|\(dot\))\s*"
+        r"([a-zA-Z]{2,16})",
         re.IGNORECASE,
     ),
     # Pattern 2: word(at)word(dot)tld
     re.compile(
-        r"([a-zA-Z0-9._%+-]+)\s*\(at\)\s*"
-        r"([a-zA-Z0-9.-]+)\s*\(dot\)\s*"
-        r"([a-zA-Z]{2,})",
+        r"([a-zA-Z0-9._%+-]{1,64})\s*"
+        r"\(at\)\s*"
+        r"([a-zA-Z0-9.\-]{1,64})\s*"
+        r"\(dot\)\s*"
+        r"([a-zA-Z]{2,16})",
         re.IGNORECASE,
     ),
     # Pattern 3: word[at]word[dot]tld
     re.compile(
-        r"([a-zA-Z0-9._%+-]+)\[at\]"
-        r"([a-zA-Z0-9.-]+)\[dot\]"
-        r"([a-zA-Z]{2,})",
+        r"([a-zA-Z0-9._%+-]{1,64})\[at\]"
+        r"([a-zA-Z0-9.\-]{1,64})\[dot\]"
+        r"([a-zA-Z]{2,16})",
         re.IGNORECASE,
     ),
     # Pattern 4: word AT word DOT tld
     re.compile(
-        r"([a-zA-Z0-9._%+-]+)\s+AT\s+"
-        r"([a-zA-Z0-9.-]+)\s+DOT\s+"
-        r"([a-zA-Z]{2,})",
+        r"([a-zA-Z0-9._%+-]{1,64})\s+AT\s+"
+        r"([a-zA-Z0-9.\-]{1,64})\s+DOT\s+"
+        r"([a-zA-Z]{2,16})",
         re.IGNORECASE,
     ),
 ]
@@ -67,6 +77,16 @@ NOISE_DOMAINS = {
     "example.com", "example.net", "example.org", "test.com",
     "localhost.localdomain", "domain.com",
 }
+
+SPAM_DOMAINS = {
+    "wixpress.com", "sentry.io",
+}
+
+SPAM_DOMAIN_PATTERNS = [
+    re.compile(r'sentry(?:\.|-next\.)wixpress\.com$', re.IGNORECASE),
+    re.compile(r'^sentry\.io$', re.IGNORECASE),
+    re.compile(r'^[a-f0-9]{32}@', re.IGNORECASE),
+]
 
 MIN_EMAIL_LENGTH = 8
 
@@ -88,6 +108,8 @@ def scan_text_for_emails(text: str) -> list[dict]:
 
     if not text:
         return results
+
+    text = text[:MAX_SCAN_BYTES]  # ReDoS guard: cap input
 
     # 1. Standard emails
     for match in EMAIL_REGEX.finditer(text):
@@ -206,6 +228,13 @@ def normalize_email(raw: str) -> Optional[str]:
 
     if domain in NOISE_DOMAINS:
         return None
+
+    # Reject spam/tracking emails (Wix Sentry crash-report IDs, hashed emails)
+    if domain in SPAM_DOMAINS:
+        return None
+    for pattern in SPAM_DOMAIN_PATTERNS:
+        if pattern.search(email):
+            return None
 
     return email
 

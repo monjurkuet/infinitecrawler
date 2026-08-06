@@ -18,7 +18,9 @@ Usage:
 import argparse
 import asyncio
 import logging
+import os
 import sys
+import time
 
 from pathlib import Path
 
@@ -37,14 +39,45 @@ from utils.email_extractor import (  # noqa: E402
 from utils.pg import get_pg_config, get_unprocessed_emails, upsert_emails  # noqa: E402
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.WARNING,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 log = logging.getLogger("db_email_extract")
+log.setLevel(logging.INFO)
+_h = logging.StreamHandler()
+_h.setLevel(logging.INFO)
+_h.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
+log.handlers.clear()
+log.addHandler(_h)
+log.propagate = False
 
 DEFAULT_MAX_LISTINGS = 500
 DEFAULT_CONCURRENCY = 10  # parallel httpx fetches
 FETCH_TIMEOUT = 12  # seconds per website fetch
+MAX_HTML_BYTES = 2 * 1024 * 1024  # cap page size for regex safety
+HEARTBEAT_INTERVAL = 30  # seconds between progress logs
+PIDFILE = REPO_ROOT / "_system" / "email_extract.pid"
+
+
+def acquire_lock() -> bool:
+    """Prevent overlapping runs: exit early if a previous instance is alive."""
+    if not PIDFILE.exists():
+        return True
+    try:
+        pid = int(PIDFILE.read_text().strip())
+        os.kill(pid, 0)  # signal 0 = existence check only
+        log.warning("Another email-extract instance is running (pid %d) — exiting.", pid)
+        return False
+    except (ValueError, ProcessLookupError, PermissionError):
+        # Stale pidfile (dead process or unreadable) — safe to proceed
+        return True
+
+
+def release_lock() -> None:
+    try:
+        PIDFILE.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 async def extract_listing(client: httpx.AsyncClient, listing: dict) -> list[dict]:
@@ -58,45 +91,46 @@ async def extract_listing(client: httpx.AsyncClient, listing: dict) -> list[dict
     results: list[dict] = []
 
     try:
-        resp = await client.get(website)
-        if resp.status_code != 200:
-            log.debug("HTTP %d for listing %d: %s", resp.status_code, listing_id, website[:50])
-            return results
+        async with asyncio.timeout(FETCH_TIMEOUT + 5):
+            resp = await client.get(website)
+            if resp.status_code != 200:
+                log.debug("HTTP %d for listing %d: %s", resp.status_code, listing_id, website[:50])
+                return results
 
-        html = resp.text
+            html = resp.text[:MAX_HTML_BYTES]
 
-        # 1. Standard + obfuscated
-        found = scan_text_for_emails(html)
+            # 1. Standard + obfuscated
+            found = scan_text_for_emails(html)
 
-        # 2. mailto: links
-        mailto_emails = extract_mailto_links(html)
-        for email in mailto_emails:
-            if not any(e["email"] == email for e in found):
-                found.append({
-                    "email": email,
-                    "is_obfuscated": False,
-                    "context_snippet": f"mailto:{email}",
+            # 2. mailto: links
+            mailto_emails = extract_mailto_links(html)
+            for email in mailto_emails:
+                if not any(e["email"] == email for e in found):
+                    found.append({
+                        "email": email,
+                        "is_obfuscated": False,
+                        "context_snippet": f"mailto:{email}",
+                    })
+
+            # 3. Filter + dedup
+            found = filter_noise(found)
+            found = deduplicate_emails(found)
+
+            for e in found:
+                results.append({
+                    "listing_id": listing_id,
+                    "website_url": website,
+                    "email": e["email"],
+                    "email_type": "general",
+                    "extraction_method": "http",
+                    "is_obfuscated": e["is_obfuscated"],
+                    "context_snippet": e.get("context_snippet", "")[:200],
                 })
 
-        # 3. Filter + dedup
-        found = filter_noise(found)
-        found = deduplicate_emails(found)
+            if results:
+                log.debug("Found %d email(s) for listing %d", len(results), listing_id)
 
-        for e in found:
-            results.append({
-                "listing_id": listing_id,
-                "website_url": website,
-                "email": e["email"],
-                "email_type": "general",
-                "source_type": "http",
-                "is_obfuscated": e["is_obfuscated"],
-                "context_snippet": e.get("context_snippet", "")[:200],
-            })
-
-        if results:
-            log.debug("Found %d email(s) for listing %d", len(results), listing_id)
-
-    except httpx.TimeoutException:
+    except (httpx.TimeoutException, TimeoutError):
         log.debug("Timeout listing %d: %s", listing_id, website[:50])
     except Exception as e:
         log.debug("Error listing %d: %s — %s", listing_id, website[:50], e)
@@ -107,7 +141,7 @@ async def extract_listing(client: httpx.AsyncClient, listing: dict) -> list[dict
 async def process_batch(
     conn, listings: list[dict], concurrency: int, dry_run: bool
 ) -> tuple[int, int]:
-    """Process a batch of listings concurrently.
+    """Process a batch of listings concurrently with one shared httpx client.
 
     Returns (listings_processed, emails_written).
     """
@@ -115,31 +149,55 @@ async def process_batch(
     counter_lock = asyncio.Lock()
     listings_processed = 0
     emails_written = 0
+    start = time.monotonic()
 
     async def process_one(listing: dict):
         nonlocal listings_processed, emails_written
         async with semaphore:
-            async with httpx.AsyncClient(
-                timeout=httpx.Timeout(FETCH_TIMEOUT),
-                follow_redirects=True,
-                headers={
-                    "User-Agent": (
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/125.0.0.0 Safari/537.36"
-                    ),
-                },
-            ) as client:
-                results = await extract_listing(client, listing)
+            results = await extract_listing(client, listing)
+            async with counter_lock:
+                listings_processed += 1
+            if results and not dry_run:
+                written = upsert_emails(conn, results)
                 async with counter_lock:
-                    listings_processed += 1
-                if results and not dry_run:
-                    written = upsert_emails(conn, results)
-                    async with counter_lock:
-                        emails_written += written
+                    emails_written += written
 
-    tasks = [process_one(lead) for lead in listings]
-    await asyncio.gather(*tasks, return_exceptions=True)
+    client = httpx.AsyncClient(
+        timeout=httpx.Timeout(connect=10, read=FETCH_TIMEOUT, write=10, pool=10),
+        follow_redirects=True,
+        limits=httpx.Limits(
+            max_connections=concurrency,
+            max_keepalive_connections=concurrency,
+        ),
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/125.0.0.0 Safari/537.36"
+            ),
+        },
+    )
+
+    tasks = [asyncio.create_task(process_one(lead)) for lead in listings]
+
+    async def heartbeat():
+        while True:
+            await asyncio.sleep(HEARTBEAT_INTERVAL)
+            async with counter_lock:
+                done, found = listings_processed, emails_written
+            elapsed = time.monotonic() - start
+            rate = done / max(elapsed / 60, 0.01)
+            log.info(
+                "heartbeat: processed %d/%d, %d emails, %.0fs elapsed, %.1f listings/min",
+                done, len(listings), found, elapsed, rate,
+            )
+
+    hb = asyncio.create_task(heartbeat())
+    try:
+        await asyncio.gather(*tasks, return_exceptions=True)
+    finally:
+        hb.cancel()
+        await client.aclose()
     return listings_processed, emails_written
 
 
@@ -159,8 +217,8 @@ def show_stats(conn):
         listings_with_website = cur.fetchone()[0]
 
         cur.execute("""
-            SELECT source_type, COUNT(*)
-            FROM scraper.emails GROUP BY source_type ORDER BY 2 DESC
+            SELECT extraction_method, COUNT(*)
+            FROM scraper.emails GROUP BY extraction_method ORDER BY 2 DESC
         """)
         methods = cur.fetchall()
 
@@ -187,6 +245,9 @@ def main():
                         help=f"Parallel fetches (default: {DEFAULT_CONCURRENCY})")
     args = parser.parse_args()
 
+    if not args.stats and not acquire_lock():
+        sys.exit(0)
+
     pg_config = get_pg_config()
     conn = psycopg.connect(**pg_config)
     conn.autocommit = False
@@ -195,6 +256,12 @@ def main():
         if args.stats:
             show_stats(conn)
             return
+
+        try:
+            PIDFILE.parent.mkdir(parents=True, exist_ok=True)
+            PIDFILE.write_text(str(os.getpid()))
+        except OSError as e:
+            log.warning("Could not write pidfile %s: %s", PIDFILE, e)
 
         listings = get_unprocessed_emails(conn, limit=args.max)
         if not listings:
@@ -220,6 +287,7 @@ def main():
                  processed, len(listings), written)
 
     finally:
+        release_lock()
         conn.close()
 
 

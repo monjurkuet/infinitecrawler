@@ -144,6 +144,19 @@ def is_facebook_url(url: str) -> bool:
         return False
 
 
+def row_has_facebook(row: dict) -> bool:
+    """Check if listing has a Facebook page (website column or social_links JSONB)."""
+    if is_facebook_url(row.get("website", "")):
+        return True
+    sl = row.get("social_links")
+    if isinstance(sl, str):
+        try:
+            sl = json.loads(sl)
+        except (ValueError, TypeError):
+            sl = None
+    return bool((sl or {}).get("facebook"))
+
+
 def compute_lead_score(row: dict) -> float:
     """Compute lead quality score 0.0–1.0.
 
@@ -157,12 +170,13 @@ def compute_lead_score(row: dict) -> float:
     """
     score = 0.0
 
-    # Base: has phone + website
-    if row.get("phone") and row.get("website"):
+    # Base: has phone + (website or social_links)
+    has_digital = bool(row.get("website")) or bool(row.get("social_links"))
+    if row.get("phone") and has_digital:
         score += 0.2
 
     # Facebook page → actively running FB presence
-    if is_facebook_url(row.get("website", "")):
+    if row_has_facebook(row):
         score += 0.25
 
     # Category fit
@@ -198,12 +212,12 @@ def fetch_leads(conn, min_score: float = 0.2, limit: int | None = None) -> list[
     query = """
         SELECT
             id, name, category, rating, review_count,
-            address, phone, website, latitude, longitude,
+            address, phone, website, social_links, latitude, longitude,
             place_id, source_url, created_at
         FROM scraper.gmaps_listings
         WHERE phone IS NOT NULL
-          AND website IS NOT NULL
           AND name IS NOT NULL
+          AND (website IS NOT NULL OR social_links IS NOT NULL)
         ORDER BY
           CASE WHEN latitude IS NOT NULL AND longitude IS NOT NULL
                AND (latitude < 23.66 OR latitude > 23.95
@@ -226,7 +240,7 @@ def fetch_leads(conn, min_score: float = 0.2, limit: int | None = None) -> list[
         score = compute_lead_score(row)
         if score >= min_score:
             row["lead_score"] = score
-            row["has_fb"] = is_facebook_url(row.get("website", ""))
+            row["has_fb"] = row_has_facebook(row)
             row["city"] = detect_city(row.get("address", ""))
             row["outside_dhaka"] = is_outside_dhaka(row)
             scored.append(row)
@@ -245,7 +259,7 @@ def write_csv(leads: list[dict], path: Path):
     path.parent.mkdir(parents=True, exist_ok=True)
     fields = [
         "lead_score", "name", "category", "phone", "website",
-        "has_fb", "address", "city", "outside_dhaka",
+        "has_fb", "social_links", "address", "city", "outside_dhaka",
         "rating", "review_count", "latitude", "longitude",
         "place_id", "source_url",
     ]

@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import re
 from datetime import datetime
 from typing import Any, Dict, Optional
 
@@ -11,6 +12,15 @@ from psycopg.types.json import Jsonb
 from psycopg import sql
 
 from base.strategies import OutputStrategy
+
+SOCIAL_PLATFORM_PATTERNS = [
+    ("facebook", re.compile(r'facebook\.com|fb\.com', re.I)),
+    ("instagram", re.compile(r'instagram\.com', re.I)),
+    ("linkedin", re.compile(r'linkedin\.com', re.I)),
+    ("twitter", re.compile(r'twitter\.com|x\.com', re.I)),
+    ("youtube", re.compile(r'youtube\.com', re.I)),
+    ("tiktok", re.compile(r'tiktok\.com', re.I)),
+]
 
 
 class _PostgreSQLOutputBase(OutputStrategy):
@@ -415,6 +425,7 @@ class PostgreSQLListingDetailsUpsertStrategy(_PostgreSQLOutputBase):
                 phone TEXT,
                 website TEXT,
                 booking_url TEXT,
+                social_links JSONB DEFAULT NULL,
                 plus_code TEXT,
                 is_claimed BOOLEAN,
                 latitude DOUBLE PRECISION,
@@ -486,6 +497,7 @@ class PostgreSQLListingDetailsUpsertStrategy(_PostgreSQLOutputBase):
                 ("classification_confidence", "NUMERIC(3,2)"),
                 ("classification_method", "TEXT"),
                 ("classified_at", "TIMESTAMPTZ"),
+                ("social_links", "JSONB DEFAULT NULL"),
             ):
                 cursor.execute(
                         sql.SQL("ALTER TABLE {}.{} ADD COLUMN IF NOT EXISTS {} {}").format(
@@ -523,6 +535,24 @@ class PostgreSQLListingDetailsUpsertStrategy(_PostgreSQLOutputBase):
         if not key_value:
             return None
 
+        website_val = self._clean_text(item.get("website"))
+        social_links = {}
+        if website_val and website_val != "":
+            classified = False
+            for platform, pattern in SOCIAL_PLATFORM_PATTERNS:
+                if pattern.search(website_val):
+                    social_links[platform] = website_val
+                    classified = True
+            if classified:
+                row_website = None
+                row_social_links = json.dumps(social_links)
+            else:
+                row_website = website_val
+                row_social_links = None
+        else:
+            row_website = website_val
+            row_social_links = None
+
         return {
             "place_id": self._clean_text(item.get("place_id")),
             "source_url": source_url,
@@ -534,8 +564,9 @@ class PostgreSQLListingDetailsUpsertStrategy(_PostgreSQLOutputBase):
             "review_count": self._parse_int(item.get("review_count")),
             "address": self._clean_text(item.get("address")),
             "phone": self._clean_text(item.get("phone")),
-            "website": self._clean_text(item.get("website")),
+            "website": row_website,
             "booking_url": self._clean_text(item.get("booking_url")),
+            "social_links": row_social_links,
             "plus_code": self._clean_text(item.get("plus_code")),
             "is_claimed": self._parse_bool(item.get("is_claimed")),
             "latitude": self._parse_float(item.get("latitude")),
@@ -573,14 +604,15 @@ class PostgreSQLListingDetailsUpsertStrategy(_PostgreSQLOutputBase):
                 INSERT INTO {}.{} (
                     place_id, source_url, key_value, source_type, name, category,
                     rating, review_count, address, phone, website, booking_url,
-                    plus_code, is_claimed, latitude, longitude, crawl_retry_count,
-                    crawl_pages_processed, sector_id, classification_confidence,
-                    classification_method, classified_at, payload, created_at, updated_at
+                    social_links, plus_code, is_claimed, latitude, longitude,
+                    crawl_retry_count, crawl_pages_processed, sector_id,
+                    classification_confidence, classification_method, classified_at,
+                    payload, created_at, updated_at
                 )
                 VALUES (
                     %s, %s, %s, %s, %s, %s,
                     %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s,
                     %s, %s, %s, %s, %s, %s, NOW(), NOW()
                 )
                 ON CONFLICT (source_url) DO UPDATE SET
@@ -596,6 +628,7 @@ class PostgreSQLListingDetailsUpsertStrategy(_PostgreSQLOutputBase):
                     phone = EXCLUDED.phone,
                     website = EXCLUDED.website,
                     booking_url = EXCLUDED.booking_url,
+                    social_links = COALESCE(EXCLUDED.social_links, gmaps_listings.social_links),
                     plus_code = EXCLUDED.plus_code,
                     is_claimed = EXCLUDED.is_claimed,
                     latitude = EXCLUDED.latitude,
@@ -625,6 +658,7 @@ class PostgreSQLListingDetailsUpsertStrategy(_PostgreSQLOutputBase):
                 row["phone"],
                 row["website"],
                 row["booking_url"],
+                row["social_links"],
                 row["plus_code"],
                 row["is_claimed"],
                 row["latitude"],

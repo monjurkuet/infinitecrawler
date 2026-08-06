@@ -27,8 +27,15 @@ async def create_pool() -> AsyncConnectionPool:
     password = _pg["password"]
     dbname = _pg["dbname"]
 
+    # Build DSN: when host is a unix socket path (contains '/'), omit port
+    # to prevent psycopg3 async pool from parsing "port=5432" as a hostname.
+    if "/" in host:
+        dsn = f"host={host} user={user} password={password} dbname={dbname}"
+    else:
+        dsn = f"host={host} port={port} user={user} password={password} dbname={dbname}"
+
     pool = AsyncConnectionPool(
-        f"host={host} port={port} user={user} password={password} dbname={dbname}",
+        dsn,
         min_size=1,
         max_size=5,
         open=True,
@@ -242,7 +249,7 @@ async def query_leads(
 
             await cur.execute(
                 f"SELECT id, place_id, source_url, name, category, rating, "
-                f"review_count, address, phone, website, "
+                f"review_count, address, phone, website, social_links, "
                 f"latitude, longitude, "
                 f"sector_id, classification_confidence, classification_method, classified_at, "
                 f"created_at, updated_at "
@@ -565,7 +572,7 @@ async def export_leads_csv(filters: dict, limit: int = 0) -> str:
     async with pool.connection() as conn:
         async with conn.cursor() as cur:
             sql = (
-                f"SELECT name, category, phone, website, address, rating, "
+                f"SELECT name, category, phone, website, social_links, address, rating, "
                 f"review_count, latitude, longitude, place_id, source_url, sector_id "
                 f"FROM scraper.gmaps_listings WHERE {where_sql} "
                 f"ORDER BY review_count DESC NULLS LAST"
@@ -574,7 +581,7 @@ async def export_leads_csv(filters: dict, limit: int = 0) -> str:
                 sql += f" LIMIT {limit}"
             await cur.execute(sql, where_params)
             rows = await cur.fetchall()
-            cols = ["Name", "Category", "Phone", "Website", "Address",
+            cols = ["Name", "Category", "Phone", "Website", "Social", "Address",
                     "Rating", "Reviews", "Lat", "Lng", "Place ID", "Source URL", "Sector"]
 
             buf = io.StringIO()
@@ -898,7 +905,7 @@ async def query_unclassified(
 
             await cur.execute(
                 f"SELECT id, name, category, rating, review_count, phone, website, "
-                f"address, classification_method, classified_at "
+                f"social_links, address, classification_method, classified_at "
                 f"FROM scraper.gmaps_listings "
                 f"WHERE sector_id IS NULL AND classification_method IS NULL {extra} "
                 f"ORDER BY review_count DESC NULLS LAST "
@@ -1013,7 +1020,7 @@ async def get_recent_activity(limit: int = 50) -> dict:
     async with pool.connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
-                "SELECT id, name, category, phone, website, created_at "
+                "SELECT id, name, category, phone, website, social_links, created_at "
                 "FROM scraper.gmaps_listings "
                 f"ORDER BY created_at DESC NULLS LAST LIMIT {limit}"
             )
