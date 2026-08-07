@@ -489,13 +489,13 @@ class PinchtabClient:
     async def close_tab(self):
         """Reset the current tab to about:blank.
 
-        Pinchtab 0.15 has no tab-close action (`/action kind=close` returns 400
-        "unknown action kind: close") and `/tabs/:id DELETE` is also rejected
-        (404 page not found), so the daemon's per-query cleanup was spamming
-        pinchtab with 400s. Reusing the tab via `navigate("about:blank")` is
-        the documented pinchtab path: the same tabId comes back, the new
-        `search_single_query` navigate reuses it, and we never leak tabs
-        beyond pinchtab's own `maxTabs` eviction.
+        Pinchtab 0.15 has no tab-close action (`/action kind=close` returns
+        400 "unknown action kind: close") and `/tabs/:id DELETE` is also
+        rejected (404 page not found), so per-query cleanup was spamming
+        pinchtab with 400s.  Reusing the tab via `navigate("about:blank")`
+        is the documented pinchtab path: the same tabId comes back, the next
+        `navigate()` reuses it, and we never leak tabs beyond pinchtab's own
+        `maxTabs` eviction.
         """
         if self.tab:
             try:

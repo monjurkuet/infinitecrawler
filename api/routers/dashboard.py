@@ -68,15 +68,21 @@ async def health(_user: str = Depends(verify_token)):
     for unit in sorted(_DAEMON_ALLOWLIST):
         try:
             r = subprocess.run(
-                ["systemctl", "--user", "show", "-p", "ActiveState,SubState,MainPID", "--value", unit],
+                ["systemctl", "--user", "show", unit],
                 capture_output=True, text=True, timeout=5,
             )
-            lines = r.stdout.strip().split("\n")
-            active = lines[0] if len(lines) > 0 else "unknown"
-            sub_state = lines[1] if len(lines) > 1 else "unknown"
+            # Parse key=value output — no --value because systemctl sorts props alphabetically
+            props = {}
+            for line in r.stdout.strip().split("\n"):
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                    props[k] = v
+            active = props.get("ActiveState", "unknown")
+            sub_state = props.get("SubState", "unknown")
             pid = None
             try:
-                pid = int(lines[2]) if len(lines) > 2 and lines[2] and lines[2] != "0" else None
+                v = props.get("MainPID", "0")
+                pid = int(v) if v and v != "0" else None
             except ValueError:
                 pid = None
 

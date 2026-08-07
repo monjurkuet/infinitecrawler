@@ -56,7 +56,7 @@ LLM_MODEL = os.environ.get(
 )
 LLM_TEMPERATURE = 0.1
 LLM_MAX_TOKENS = 8192
-LLM_HTTP_TIMEOUT = 60
+LLM_HTTP_TIMEOUT = 180
 
 BATCH_SIZE = 50  # leads per LLM call (DeepSeek V4 Flash has 1M context)
 MAX_FEW_SHOT = 10  # max few-shot examples per batch

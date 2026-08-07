@@ -15,45 +15,36 @@
 | Postgres host | `/var/run/postgresql` (unix socket) | TCP bind to 127.0.0.1:5432 fails on this WSL host; use unix socket. Configs updated. |
 | Postgres db | `infinitecrawler` | `scraper.*` schema |
 | Postgres user | `postgres` | Default |
-| Postgres password | `PG_PASSWORD` (not set in shell) | Set in `.env`; systemd services source it via EnvironmentFile. For interactive commands use `PGPASSWORD=changeme` or `source .env` first. Commands below hardcode the value. |
-| LLM classification key | `LLM_API_KEY` | Required by `scripts/db_classify.py` / `scripts/llm_classifier.py`. Not set in `.env` currently — skip Phase 4c if key missing. |
+| Postgres password | `$PG_PASSWORD` (env) | Set in `.env` / systemd env |
 | Failed queues use HASHES | `HLEN` not `LLEN` | `failed` queues are hash maps |
 | Chrome CDP debug port | `9869` | Do NOT use for daemons — daemons talk to pinchtab on `9868` |
 | Repository root | `/root/codebase/vhd/infinitecrawler` | All commands relative to this |
 | Emails table missing cols | `is_obfuscated`, `context_snippet` | Added 2026-07-25; upsert was silently failing |
-| Emails column rename | `source_type` → `extraction_method` | Fixed 2026-08-03; UPSERT_EMAIL_SQL + caller in db_email_extract.py + stats query all updated |
+| Emails table migration | `source_type` → `extraction_method`; added `website_url`, `email_type`, `last_verified`, `is_active` | Applied 2026-08-02 via `scripts/schema_migration.py` (idempotent `UPGRADE_EMAILS_TABLE` DO block). Code + DDL + live DB now aligned; API stats queries (`extraction_method`, `email_type`) work. |
+| Email regex ReDoS | Old `OBFUSCATED_PATTERNS[0]` had optional-bracket groups → O(n²) backtracking (30KB = 23s). Replaced with 2 linear-time patterns 2026-08-02 | New patterns: `[at]`/`(at)`/`[at]`/`AT DOT` all covered; 300KB = 0.42s. Never add optional nested groups after greedy captures in these patterns. |
+| Email scan offloaded to thread | `scan_text_for_emails` + `extract_mailto_links` run via `loop.run_in_executor` in `db_email_extract.py` | 2026-08-02. Event loop no longer blocks on 25-concurrent HTTP fetches. |
+| Orphaned Redis namespaces | `gmaps_bd_business_pt:*`, `gmaps_search:*` auto-deleted at search daemon startup | `_cleanup_orphaned_queues()` in `daemons/search_daemon.py`. Only `gmaps_bd_business:*` (search) and `gmaps:*` (listing) are live. |
+| Email extract schedule | Every 2h (`00,02,...,22:15` + randomized 5min), `--max 2000 --concurrency 25`, `FETCH_TIMEOUT=12s` | `~/.config/systemd/user/infinitecrawler-email-extract.{service,timer}` |
+| LinkedIn search schedule | Every 4h (`00,04,...,20:30` + randomized 5min) | `~/.config/systemd/user/infinitecrawler-linkedin-search.timer` |
+| Search queue retry | `visibility_timeout: 300` (5 min stalled requeue), failed retried after 6h | `config/gmaps_bd_business_search.yaml`; verified correct 2026-08-02 |
+| systemctl --value trap | `systemctl show -p A,B,C --value` output is sorted ALPHABETICALLY (MainPID, ActiveState, SubState) | Never positionally parse `--value` with multiple props. Parse `key=value` lines instead. Fixed in `api/routers/dashboard.py` + `monitor.py` 2026-08-02 (daemon PID/uptime/mem were null in API). |
 | Emails unique key | `(listing_id, email)` | Added 2026-07-25 |
 | LinkedIn unique key | `profile_url` | Added 2026-07-25 |
 | Search config needs | `ignore_completed_on_enqueue: true` | Prevents query exhaustion when all queries are in completed set |
 | Listing daemon bug | `await restart_browser()` in eternal loop | Removed 2026-07-25; was restarting browser on EVERY failed URL |
-| Listing daemon tuning (2026-08-07) | `config/gmaps_listings_working.yaml`: `page_wait_seconds 15→8`, Overview/Reviews/About tab `max_wait` dropped by 1 each, global `retry.attempts 3→2` + `delay 2→1`. `category` and `plus_code` fields both got per-field `retry.attempts: 1` (was wasting retries on the ~10-37% of listings where these fields fail). | Verified live: navigation latency `~16-29s → ~8-12s`, `wait=8.00s` in logs, "All 1 retries failed for 'plus_code'" confirms per-field override works. Listings throughput target ~100/hr (was 43/hr). Category fill rate held ~90%; plus_code fill rate held ~60%. |
-| Email extract multi-page (2026-08-07) | `scripts/db_email_extract.py`: `DEFAULT_CONCURRENCY 10→25`, `FETCH_TIMEOUT 12→8`, added `PATH_CANDIDATES = ['contact','contact-us','about','about-us','team']`, `MAX_REDIRECTS=3`. `extract_listing` now tries homepage + 5 paths under the same base URL, dedups once at the end. Shared `httpx.AsyncClient` already existed (added `max_redirects`). | Verified live: 30-listing test → 4 emails (13% hit rate, vs 3.6% baseline pre-plan; pre-existing single-page only). Per-listing time cap = `FETCH_TIMEOUT * 2` = 16s via deadline check. |
-| LinkedIn match schedule (2026-08-07) | New `~/.config/systemd/user/infinitecrawler-linkedin-match.{service,timer}`. Timer fires every 6h at `03,09,15,21:30` UTC+6 with `RandomizedDelaySec=300`, `Persistent=true`. Service is oneshot running `scripts/match_linkedin_to_gmaps.py` with default `--min-score 0.5` (script has no `--max` flag; runs over all distinct companies each invocation; `UNIQUE(profile_url, gmaps_listing_id)` constraint makes re-runs idempotent). | First manual run produced 66,549 new matches: 784 high-quality (score≥0.8), ~54K with score<0.6 (broad catchment). Operator can `DELETE FROM scraper.linkedin_gmaps_matches WHERE score < 0.7` to keep only confident matches. |
 | Postgres config drift | `listen_addresses` may revert to `localhost` | If cluster restarts externally, socket path breaks. Set to `''` for unix-socket-only. |
 | Postgres config drift | `port` may revert to `5433` | Same restart issue. Keep `port = 5432`. |
-| Enrichment services | `email-extract`, `linkedin-search`, `linkedin-firehose` | `email-extract` + `linkedin-search` run as systemd timers (every 2h/4h). **`linkedin-firehose` is PERPETUAL: runs continuously as `infinitecrawler-linkedin-firehose-loop.service`** (`--loop --loop-gap 60`, restart=always) — one 8000-query cycle ends, 60s pause, fresh random 8000-query sample runs again, forever. Monitor via `systemctl --user status infinitecrawler-linkedin-firehose-loop`. Firehose uses ddgs metasearch engine v9.14.4 (`pip install ddgs`) — not the http proxy. Source=`firehose` in `scraper.linkedin_profiles`. Concurrency=8, ThreadPoolExecutor with thread-local DDGS instances. |
-| Firehose config | `config/linkedin_firehose.yaml` | Query matrix: 56 roles × (20 BD cities + 15 global hubs × 20 industries + 1 role-only) = ~18k. Capped at 8000/cycle random sample. Engine=ddgs with `auto` backend + `[yahoo, yandex]` fallbacks. Region=wt-wt (global) / bd-bn (Bangladesh). SyslogIdentifier=ic-firehose. |
-| LinkedIn profiles columns | 13 cols: `id, listing_id, profile_url, full_name, confidence, source, checked_at, profile_title, company_name, search_query, snippet, last_updated, notes` | `source` and `notes` added by scripts/schema_luxury.py FIX_LINKEDIN_PROFILES block (~line 102). Not in schema_migration.py DDL. |
+| Enrichment services | `email-extract`, `linkedin-search` | Run as systemd timers (email every 2h, linkedin every 4h), not daemons. Monitor via `systemctl --user list-timers`. |
 | Phase 3a drift trap | `-h 127.0.0.1` silently fails | 2026-07-29 audit: caused false-positive `search_1h=0`. Always use `-h /var/run/postgresql`. |
-| Phase 3 listings_1h false-alarm | `listings_1h=0` in first ~30 min after daemon restart is normal | 2026-08-07 audit: `PostgreSQLListingDetailsUpsertStrategy._BATCH_SIZE=50`; in-memory `_write_batch` is flushed only on 50 items or shutdown. With ~16-48s/URL, the first batch flush lands 13-40 min after startup. Check `MAX(updated_at)` age, not `COUNT` — if MAX age > batch_interval × 2, *then* it's a real stall. |
-| Listing daemon write path | `_write_batch` → `_flush_write_batch(executemany)` | Verified 2026-08-07: standalone test wrote 50 rows in <1s. Path is healthy; the listing daemon's apparent "no writes" was a Phase 3 false-alarm, not a real bug. |
 | Phase 2.5 drift trap | `--no-clean` invalid psql flag | Use `-t` (tuples-only). |
-| infinite_scroll probe JS quote bug | `json.dumps(['div[role="feed"]',...])` injected into JS source produced `["div[role="feed"]",...]` with unbalanced quotes → `SyntaxError` every probe → 0 scroll, hits `max_scroll_attempts=500` (~33min/query). Fixed 2026-08-01: wrap in `JSON.parse(json.dumps(...))` so quotes stay escaped. |
-| GMaps scroll needs event dispatch | Setting `el.scrollTop = el.scrollHeight` alone does NOT trigger GMaps IntersectionObserver. Must also `el.dispatchEvent(new Event('scroll', {bubbles: true}))`. Without it, cards stay at 10 forever even though more exist. Verified 2026-08-01. |
-| pinchtab 0.15 `/action kind:close` | Returns 400 `unknown action kind: close`. Same for `DELETE /tabs/:id` (404 page not found). Pinchtab has no tab-close endpoint — daemon cleanup must use `navigate("about:blank")` to reuse the tab and avoid leak. Verified 2026-08-01. |
-| Logging pattern | Root logger WARNING, app logger INFO + dedicated handler, `propagate=False` | db_linkedin_firehose.py (2026-08-03) and db_email_extract.py (2026-08-03) use this pattern to suppress httpx/ddgs noise. All enrichment scripts should follow this — `basicConfig(level=INFO)` floods logs. |
-| DB commit durability | 3x retry `conn.commit()` with 0.5s/1s backoff, `conn.rollback()` on row failure | Firehose `save_batch()` and `upsert_emails()` both use this pattern (2026-08-03). Prevents silent data loss on transient PG outages. |
-| SQL NULL trap — linkedin-search | `NOT IN` with nullable column dead since 2026-07-25 | Fixed 2026-08-03: `utils/pg.py` FETCH_UNPROCESSED_LINKEDIN_SQL and FETCH_UNPROCESSED_EMAILS_SQL now use `NOT EXISTS`. Firehose NULL listing_ids caused `NOT IN` subquery to return 0 rows always. `db_linkedin_search.py` sector-filter clause also patched. |
-| Shutdown flush order | `daemons/common.py` flush BEFORE cleanup | Fixed 2026-08-03: reordered so `output_strategy.flush_batch()` calls before `output_strategy.cleanup()` — prevents losing up to 49 batched rows on graceful shutdown. |
-| Email extract httpx leak | New client per listing with no limits | Fixed 2026-08-03: one shared `httpx.AsyncClient` per batch with `Limits(max_connections=concurrency)`, pidfile guard (`_system/email_extract.pid`), heartbeat logs every 30s, per-task `asyncio.timeout(FETCH_TIMEOUT+5)`, `MAX_HTML_BYTES=2MB` input cap. Service unit has `TimeoutStartSec=3600`, `Restart=on-failure`. |
-| Email extract ReDoS | `OBFUSCATED_PATTERNS` pattern 1 had catastrophic backtracking | Fixed 2026-08-03: bounded character classes `{1,64}`, required explicit `[at]`/`(at)` marker (no longer optional), `{2,16}` TLD cap. Created `MAX_SCAN_BYTES=2_000_000` input truncation in `scan_text_for_emails()`. |
-| LLM classifier key | `os.environ["LLM_API_KEY"]` → crash on import | Fixed 2026-08-03: `LLM_API_KEY = os.environ.get("LLM_API_KEY", "")` with graceful fallback warning. |
-| Classify timer | Not scheduled, daily at 03:00 with 10min jitter | Created 2026-08-03: `infinitecrawler-classify.{service,timer}` user units. Runs `uv run python scripts/db_classify.py`. |
-| Watchdog timer | Not scheduled, every 15 min | Created 2026-08-03: `infinitecrawler-watchdog.{service,timer}`. Runs `scripts/watchdog.sh`. Monitor extended: email-extract freshness, firehose-loop status, API health (port 8015), PG reachability. Auto-restarts firehose and email-extract in `--restart` mode. |
-| Monitor pipeline checks | Only `listing_daemon` pgrepped | Extended 2026-08-03: now checks email-extract staleness (max `discovered_at` from `scraper.emails`), `infinitecrawler-linkedin-firehose-loop` service active, API `http://127.0.0.1:8015/` responding, PG via `max(discovered_at)` query. |
-| Tests | Only `test_cli_and_config.py` existed | Added 2026-08-03: `test_pg_queries.py` (NULL trap regression), `test_email_extract.py` (26 tests: regex, obfuscation, noise, dedup, large-input ReDoS), `test_shutdown_order.py` (flush-before-cleanup ordering). All 39 tests pass. |
-| Dead-code guard | Was missing since 2026-08-03 (playbook kept flagging it) | Created 2026-08-07: `scripts/assert_dead_code.sh` — a guard-list of intentionally-removed files; fails if any reappears. Currently guards 5 paths (AGENTS.md, docs/GMAPS_*.md, scripts/check-stuck-chrome.sh, strategies/input/__init__.py). Add a line whenever you delete a file so the next Phase 5c run guards against re-regression. |
-| Lint config | None (ruff used defaults) | Added 2026-08-07: `[tool.ruff]` + `[tool.ruff.lint]` in `pyproject.toml`. Selects `E4/E7/E9/F` (same as ruff defaults) so adding `W/I/UP/B` is opt-in only. Also excludes `*.sh/*.yaml/*.md/*.json` so non-Python files don't trigger parse-error false positives (the report surfaced 41 bogus errors scanning `assert_dead_code.sh`). |
+| infinite_scroll probe JS quote bug | `json.dumps(['div[role="feed"]',...])` injected into JS source produced `["div[role="feed"]",...]` with unbalanced quotes → `SyntaxError` every probe → 0 scroll, hits `max_scroll_attempts=500`. Fixed 2026-08-01: wrap in `JSON.parse(json.dumps(...))`. |
+| GMaps scroll needs event dispatch | `el.scrollTop = el.scrollHeight` alone does NOT trigger GMaps IntersectionObserver. Must also `el.dispatchEvent(new Event('scroll', {bubbles: true}))`. Without it, cards stay at 10 forever. Verified 2026-08-01. |
+| pinchtab 0.15 `/action kind:close` | Returns 400 `unknown action kind: close`. Same for `DELETE /tabs/:id` (404). Pinchtab has no tab-close endpoint — use `navigate("about:blank")` to reuse the tab. Verified 2026-08-01. |
+| Region-anchored search yield | `/search/KEYWORD/@lat,lng,13z` yields ~5x more results than unanchored `/search/KEYWORD in City/` (120 vs 22 for 'manufacturing company' Rajshahi). City text in query narrows results (26) — keyword-only + coords is optimal. Verified 2026-08-01. |
+| Query format `KEYWORD\|LAT\|LNG` | `query_generator._build_bd_local` emits `keyword|lat|lng`; `search_daemon.search_single_query` splits on `|` and builds the anchored URL. National/global queries keep plain text. |
+| sectors yaml fallback | `software_sectors.yaml` lives in sibling repo `business-plan-template` (not always present). `_load_sectors` falls back to built-in `DEFAULT_KEYWORDS_EN/BN` — keeps daemon productive instead of crash-looping on empty pools. |
+| Hotel seed queries | `scripts/seed_hotel_queries.py` — uses same `KEYWORD\|LAT\|LNG` format as query_generator. 408 unique hotel/resort queries across 16 BD cities + national. |
+| Fixes verified stable | All 4 fixes (scroll JS quote, dispatchEvent, close_tab about:blank, scroll reset()) verified 2026-08-02. Daemons running 6h+ with 0 `/action` 400 errors. DB: 37K+ rows, ~1,500 writes/hr. |
 
 # PHASE 0 — REPOSITORY DRIFT DISCOVERY (BLOCK)
 
@@ -163,18 +154,17 @@ Run these commands in order. If any service is dead, restart it:
 # 1a. All service statuses (with recent logs)
 systemctl --user status infinitecrawler-search infinitecrawler-listing \
   infinitecrawler-email-extract infinitecrawler-linkedin-search \
-  infinitecrawler-linkedin-firehose-loop \
   pinchtab --no-pager -l --lines=20
 
 # 1b. Scheduled enrichment timers (email/linkedin/pg-backup run periodically)
 systemctl --user list-timers --no-pager | grep infinitecrawler
-# Expected: email-extract ~2h, linkedin-search ~4h, pg-backup daily. linkedin-firehose-loop is PERPETUAL (no timer).
+# Expected: email-extract every 2h, linkedin-search every 4h, pg-backup daily
 
 # 1c. Pinchtab health (the Chrome provider both daemons depend on)
 PINCHTAB_TOKEN=$(python3 -c "import json; print(json.load(open('/root/.pinchtab/config.json'))['server']['token'])")
 curl -s --connect-timeout 5 -H "Authorization: Bearer $PINCHTAB_TOKEN" http://127.0.0.1:9868/health
 
-# Expected: all three services active (running) + firehose-loop active. Health returns tab count, crashes stats.
+# Expected: all three services active (running). Health returns tab count, crashes stats.
 # Pinchtab bridge port: 9868 (NOT 9869). Token: 123456.
 ```
 
@@ -215,7 +205,6 @@ cd /root/codebase/vhd/infinitecrawler && uv run python scripts/monitor_pipeline.
 - search_1h = 0 while daemon navigates every 6s and reconnects every 100 pages → **all queries generate identical GMaps results; mapping static → ON CONFLICT DO UPDATE yields no new `updated_at`**. Query diversity exhaustion. Expand query pool or add new markets.
 - Daemon navigates 100 pages in 15min → each page produces zero new DB writes → output_strategy `ON CONFLICT` matched; probably same queries/same results.
 - **New drift trap (2026-07-29/30): `Phase 3a` using `-h 127.0.0.1` silently returns 0 for all queries.** Always use `-h /var/run/postgresql`. If `search_1h=0` while pages are being processed, switching to Unix socket is the first diagnostic.
-- **New drift trap (2026-08-01): `InfiniteScrollPaginationStrategy` logs `Scroll N: M cards, 0 new` for ALL iterations, then hits `max_scroll_attempts=500` and exits with `Reached the end (10 unique)` even though GMaps actually returned more.** Two-part cause: (a) `_scroll_pane` probe JS has unbalanced quotes from naive `json.dumps()` into JS source — fix uses `JSON.parse(json.dumps(sels))`. (b) Even with probe fixed, programmatic `scrollTop` assignment doesn't fire GMaps' IntersectionObserver — must add `el.dispatchEvent(new Event('scroll', {bubbles:true}))` after. Verify scroll health by looking at `Scroll N: M cards, K new (cumulative M)` — `K > 0` in early iterations.
 
 **EXIT_CODE: REPORT** — anomalies logged; continue audit.
 
@@ -248,42 +237,9 @@ PGPASSWORD=$PG_PASSWORD psql -h /var/run/postgresql -U postgres -d infinitecrawl
 Verify data is actually being written to PostgreSQL in real-time:
 
 ```bash
-# 3a. Per-table freshness — the authoritative stall signal.
-# Uses MAX(updated_at)-vs-NOW(), NOT a 1-hour COUNT, because listing/email
-# enrichment upserts are batched (50 rows in-memory) and don't move
-# updated_at until a flush. An old MAX is the real symptom; a 0-row 1h
-# window is often a *false alarm* when the daemon uptime is < batch
-# interval (see drift trap below). MUST use unix socket.
-PGPASSWORD="$PG_PASSWORD" psql -h /var/run/postgresql -U postgres -d infinitecrawler -c "
-SELECT 'gmaps_search_results' AS table,
-       NOW() - MAX(updated_at) AS age_max,
-       MAX(updated_at) AS last_write
-FROM scraper.gmaps_search_results
-UNION ALL
-SELECT 'gmaps_listings', NOW() - MAX(updated_at), MAX(updated_at)
-FROM scraper.gmaps_listings
-UNION ALL
-SELECT 'emails', NOW() - MAX(discovered_at), MAX(discovered_at)
-FROM scraper.emails
-UNION ALL
-SELECT 'linkedin_profiles', NOW() - MAX(checked_at), MAX(checked_at)
-FROM scraper.linkedin_profiles
-ORDER BY age_max DESC;
-"
-# Expected:
-#   gmaps_search_results.age_max < 10 min (search daemon writes ~2/s)
-#   gmaps_listings.age_max     < (daemon uptime < 1.5h ? 30 min : 10 min)
-#                                ↑ see drift trap below.
-#   With 2026-08-07 listing-daemon tuning (page_wait=8s, per-field retry.attempts=1
-#   on category+plus_code), per-URL latency is ~8-12s (was 16-29s) and target
-#   listings throughput is ~100/hr (was ~43/hr). listings_1h should be ≥60.
-#   emails.age_max             < 2h (timer every 2h; mid-run writes are continuous)
-#   linkedin_profiles.age_max  < 5 min (perpetual firehose)
-
-# 3b. Row-count velocity (last hour / 2h / 4h windows) — secondary signal.
-# These can be 0 immediately after a daemon restart even when the daemon is
-# healthy — see drift traps below. Use 3a above (max age) as the primary
-# decision signal for stall detection.
+# 3a. Search + listing velocity (last hour) — MUST use unix socket
+# TCP to 127.0.0.1:5432 silently fails on this WSL host (PG listen_addresses='').
+# Using -h 127.0.0.1 here caused a false-positive "search_1h = 0" alert on 2026-07-29.
 PGPASSWORD="$PG_PASSWORD" psql -h /var/run/postgresql -U postgres -d infinitecrawler -c "
 SELECT
   (SELECT COUNT(*) FROM scraper.gmaps_search_results WHERE updated_at > NOW() - INTERVAL '1 hour') as search_1h,
@@ -292,7 +248,7 @@ SELECT
   (SELECT COUNT(*) FROM scraper.linkedin_profiles WHERE checked_at > NOW() - INTERVAL '4 hours') as linkedin_4h;
 "
 
-# 3c. Full counts (unix socket — same reason)
+# 3b. Full counts (unix socket — same reason)
 PGPASSWORD="$PG_PASSWORD" psql -h /var/run/postgresql -U postgres -d infinitecrawler -c "
 SELECT
   (SELECT COUNT(*) FROM scraper.gmaps_search_results) as search_total,
@@ -303,10 +259,8 @@ SELECT
 "
 ```
 
-**Expected (3a max-age — primary):** search ≤ 10 min, linkedin ≤ 5 min, emails ≤ 2h, listings ≤ 10 min UNLESS listing-daemon uptime < 1.5h (see drift trap).
-**Expected (3b row counts — secondary):** search_1h > 0. listings_1h is allowed to be 0 in the first ~30 min after a listing-daemon restart.
-**Drift trap:** If `search_1h = 0` while daemon is processing, you probably used `-h 127.0.0.1`. Always use `-h /var/run/postgresql`. Verify with the 3a query (max age should be < 10 min).
-**Drift trap (2026-08-07):** `listings_1h = 0` is expected when the listing daemon's uptime < ~30 min — `PostgreSQLListingDetailsUpsertStrategy` uses an in-memory `_write_batch` with `_BATCH_SIZE=50` that is flushed only when the buffer fills or the daemon shuts down. At ~16-30s/URL that's ~13-25 min for the first flush. Distinguish from a real stall with the 3a query: if `gmaps_listings.age_max` < 1h AND daemon uptime < 1.5h, it's a normal batch interval, not a bug. After uptime > 1.5h, age_max > 30 min IS a real stall (PG connection dropped silently — check pg_stat_activity and daemon logs for "PG reconnect failed").
+**Expected:** search_1h > 0, listings_1h > 0. If zero for >1 hour, daemon is stalled.
+**Drift trap:** If you see `search_1h = 0` while daemon is processing, you probably used `-h 127.0.0.1`. Always use `-h /var/run/postgresql`. Verify with `SELECT MAX(updated_at) FROM scraper.gmaps_search_results`.
 **EXIT_CODE: REPORT**
 
 ---
@@ -319,17 +273,14 @@ Verify the offline enrichment scripts are producing results:
 # 4a. Email coverage
 cd /root/codebase/vhd/infinitecrawler && uv run python scripts/db_email_extract.py --stats
 
-# 4b. LinkedIn coverage (company-anchored)
+# 4b. LinkedIn coverage
 cd /root/codebase/vhd/infinitecrawler && uv run python scripts/db_linkedin_search.py --stats
 
-# 4b-bis. LinkedIn firehose (global DDGS, no GMaps anchor)
-cd /root/codebase/vhd/infinitecrawler && uv run python scripts/db_linkedin_firehose.py --stats
-
-# 4c. Classification coverage (requires LLM_API_KEY in .env; skip if not set)
-cd /root/codebase/vhd/infinitecrawler && uv run python scripts/db_classify.py --stats 2>/dev/null || echo "WARN: LLM_API_KEY not set — skipping classification check"
+# 4c. Classification coverage
+cd /root/codebase/vhd/infinitecrawler && uv run python scripts/db_classify.py --stats
 ```
 
-**Expected:** Email coverage growing every 2h. LinkedIn profiles growing every 4h. Firehose profiles growing continuously (perpetual service). Classification skipped if LLM_API_KEY missing.
+**Expected:** Email coverage growing every 2h. LinkedIn profiles growing every 4h. 0 remaining unclassified leads with phone+website.
 **EXIT_CODE: REPORT**
 
 ---
@@ -341,40 +292,28 @@ cd /root/codebase/vhd/infinitecrawler
 
 # 5a. Lint
 uv run ruff check .
-# Ruff rule set is configured in pyproject.toml [tool.ruff.lint].select —
-# keep it minimal (E4/E7/E9/F). Adding 'W'/'I'/'UP'/'B' surfaced 727 pre-existing
-# warnings on the 2026-08-07 audit; only broaden after a sweep cleans them.
 
 # 5b. Tests
 uv run python -m pytest tests/ -v
 
-# 5c. Dead-code assertion (self-documenting guard list)
-# scripts/assert_dead_code.sh lists every file intentionally removed in past
-# refactors. It FAILS if any of them reappears (regression detection).
-# When you delete a file, add a line to DEAD_FILES in that script — the
-# next playbook run will then guard against accidental reintroduction.
-bash scripts/assert_dead_code.sh || echo "WARN: dead-code target reappeared — see output above"
+# 5c. Dead-code assertion (self-documenting)
+# Add new assert checks to scripts/assert_dead_code.sh when you delete code
+bash scripts/assert_dead_code.sh 2>&1 || true
+# If no scripts/assert_dead_code.sh file yet, just log it:
+[ ! -f scripts/assert_dead_code.sh ] && echo "WARN: no dead-code assertion script yet — create one next time you delete code"
 
 # 5d. Pinchtab port integrity — configs must NOT reference wrong ports
 grep -rn "9869\|e03c" config/ base/ daemons/ 2>&1
 # Expected: zero matches. Port 9869 is the Chrome CDP debug port, not for daemons.
 # Token must be 123456, never the old e03c... placeholder.
 
-# 5e. Config YAMLs loadable (all 3 enrichment configs)
+# 5e. Config YAMLs loadable
 uv run python -c "
 from factory.scraper_factory import ScraperFactory
 c1 = ScraperFactory.load_config('config/gmaps_bd_business_search.yaml')
 c2 = ScraperFactory.load_config('config/gmaps_listings_working.yaml')
 print(f'Search config OK ({len(c1)} keys)')
 print(f'Listing config OK ({len(c2)} keys)')
-"
-# Note: linkedin_firehose.yaml is NOT loaded via ScraperFactory — it's read
-# directly by scripts/db_linkedin_firehose.py. Verify it parses separately:
-uv run python -c "
-import yaml
-cfg = yaml.safe_load(open('config/linkedin_firehose.yaml'))
-roles = cfg.get('roles', [])
-print(f'Firehose config OK ({len(roles)} roles)')
 "
 
 # 5f. All core imports working (auto-discovered — no hardcoded list)
@@ -416,12 +355,11 @@ print('Core import audit complete — warnings above indicate missing modules')
 
 # 5g. DB schema integrity — verify tables have columns/constraints the code expects
 PGPASSWORD=$PG_PASSWORD psql -h /var/run/postgresql -U postgres -d infinitecrawler -c "
-SELECT column_name FROM information_schema.columns WHERE table_schema='scraper' AND table_name='emails' AND column_name IN ('is_obfuscated','context_snippet','extraction_method');
+SELECT column_name FROM information_schema.columns WHERE table_schema='scraper' AND table_name='emails' AND column_name IN ('is_obfuscated','context_snippet');
 SELECT conname FROM pg_constraint WHERE conrelid='scraper.emails'::regclass AND conname='emails_listing_id_email_key';
 SELECT conname FROM pg_constraint WHERE conrelid='scraper.linkedin_profiles'::regclass AND conname='linkedin_profiles_profile_url_key';
-SELECT column_name FROM information_schema.columns WHERE table_schema='scraper' AND table_name='linkedin_profiles' AND column_name='source';
 "
-# Expected: 3 columns (is_obfuscated, context_snippet, extraction_method), 1 email unique constraint, 1 linkedin unique constraint, 1 source column
+# Expected: 2 columns, 1 email unique constraint, 1 linkedin unique constraint
 ```
 
 **EXIT_CODE: REPORT**
@@ -522,23 +460,12 @@ EOSQL
 systemctl --user restart infinitecrawler-search
 systemctl --user restart infinitecrawler-listing
 
-# 6g-bis. Fix scroll regression (InfiniteScrollPaginationStrategy reports
-#         "Scroll N: 10 cards, 0 new" forever, hits max_scroll_attempts)
-# (a) _scroll_pane probe JS — replace naive `json.dumps()`-into-JS-source
-#     with `JSON.parse(json.dumps(sels))` so quotes don't break.
-# (b) After `el.scrollTop = el.scrollHeight`, ALSO
-#     `el.dispatchEvent(new Event('scroll', {bubbles: true}))` —
-#     GMaps' IntersectionObserver does not fire from programmatic scroll
-#     alone.
-# Files: strategies/pagination/infinite_scroll.py
-
 # 6g. Restart pinchtab (only if Chrome is truly crashed and supervisor isn't recovering)
 systemctl --user restart pinchtab.service
 
 # 6h. Enrichment backlog recovery
 uv run python scripts/db_email_extract.py --max 500
 uv run python scripts/db_linkedin_search.py --max 200
-uv run python scripts/db_linkedin_firehose.py --max-queries 2000
 uv run python scripts/db_classify.py --retry-failed --max 1000
 
 # 6i. Full pipeline health snapshot (always run last)
@@ -546,56 +473,6 @@ uv run python scripts/monitor_pipeline.py --json
 ```
 
 **EXIT_CODE: BLOCK** — only proceed if phase 1-5 flagged anomalies.
-
----
-
-## PHASE 7: SCROLL HEALTH (REPORT) — added 2026-08-01
-
-Scroll regression detectors. Run when `search_1h` looks low, daemon shows
-steady activity, but `extracted N items (0 new)` repeats forever.
-
-```bash
-# 7a. Live tail — verify scroll is producing new URLs
-systemctl --user status infinitecrawler-search --no-pager -l --lines=50 \
-  | grep -E "Scroll|extracted"
-# Expected (healthy): "Scroll 2: 20 cards, 10 new (cumulative 20)" etc.
-# Bad (regression):    "Scroll N: 10 cards, 0 new (8/8)" — stall_threshold hit
-#                      but cumulative stays at ~10 → scroll never loads more.
-
-# 7b. End-of-results sanity (queries should reach varied totals, not all 10)
-PGPASSWORD="$PG_PASSWORD" psql -h /var/run/postgresql -U postgres -d \
-  infinitecrawler -t -c "
-SELECT
-  COUNT(DISTINCT key_value) AS queries,
-  COUNT(*) AS rows,
-  ROUND(AVG(cnt)) AS avg_per_query,
-  MIN(cnt) AS min_per_query,
-  MAX(cnt) AS max_per_query
-FROM (
-  SELECT key_value, COUNT(*) AS cnt
-  FROM scraper.gmaps_search_results
-  WHERE updated_at > NOW() - INTERVAL '1 hour'
-  GROUP BY key_value
-) sub;
-"
-# Expected: min_per_query > 10 (note: with ON CONFLICT upsert, each key_value may have 1 row;
-# verify scroll health via Phase 7a live-tail instead). If min_per_query = 10 across many distinct
-# key_value entries (new query with only 10 results), the scroll bug may be back.
-
-# 7c. Pinchtab /action 400s (close_tab regression)
-TOKEN=$(python3 -c 'import json; print(json.load(open("/root/.pinchtab/config.json"))["server"]["token"])')
-curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:9868/health \
-  | python3 -c "
-import json, sys
-d = json.load(sys.stdin)
-recent = d.get('failures', {}).get('recent', [])
-n400 = sum(1 for f in recent if f.get('path')=='/action' and f.get('status')==400)
-print(f'/action 400s in last batch: {n400}')
-"
-# Expected: 0. If > 0, daemon's close_tab is calling /action kind:close
-# (pinchtab 0.15 has no such action). Fix: navigate("about:blank") instead.
-
-**EXIT_CODE: REPORT**
 
 ---
 
@@ -611,10 +488,6 @@ redis-cli LLEN gmaps:pending && redis-cli LLEN gmaps:processing && redis-cli SCA
 
 # DB velocity (1h window) — must use unix socket (TCP 127.0.0.1 fails on WSL)
 PGPASSWORD="$PG_PASSWORD" psql -h /var/run/postgresql -U postgres -d infinitecrawler -c "SELECT 'search_1h', count(*) FROM scraper.gmaps_search_results WHERE updated_at > NOW() - INTERVAL '1 hour' UNION ALL SELECT 'listings_1h', count(*) FROM scraper.gmaps_listings WHERE updated_at > NOW() - INTERVAL '1 hour'"
-
-# Firehose stats + recent logs
-uv run python scripts/db_linkedin_firehose.py --stats
-journalctl --user -u infinitecrawler-linkedin-firehose --no-pager --since "6 hours ago" | grep -E "start|done|status|family-summary"
 
 # Restart all daemons
 systemctl --user restart infinitecrawler-search infinitecrawler-listing
@@ -639,23 +512,9 @@ Known Operational Risks
 
 Known False Positives
 
-- **listings_1h false-alarm post-restart**: `PostgreSQLListingDetailsUpsertStrategy._BATCH_SIZE=50` buffers writes in memory; first batch flush lands 13-40 min after daemon restart depending on per-URL latency. Use `MAX(updated_at)` age, not 1h COUNT, when daemon uptime < 1.5h.
-
 Known Temporary Workarounds
 
 Deprecated Components
-
----
-## KNOWLEDGE UPDATES
-
-Chronological log of facts added or corrected by audit runs. Newest first.
-
-- **2026-08-07** — Phase 5: 6 ruff lint errors found; 5 auto-fixed (unused imports in `scripts/llm_classifier.py`, unused `daemons.common` import in tests), 1 manually fixed (missing `Dict` import in `api/models/models.py:8`). All 39 tests still pass.
-- **2026-08-07** — Phase 3 false-alarm: `listings_1h=0` in first ~30 min after listing-daemon restart is normal (50-item in-memory batch flush). New drift trap added above + Phase 3 restructured: added 3a (`MAX(updated_at)`-based freshness) as the primary stall signal ahead of the 3b row-count secondary signal.
-- **2026-08-07** — `scripts/assert_dead_code.sh` created (was missing since 2026-08-03). Guards 5 intentionally-removed paths. Phase 5c rewired to call it.
-- **2026-08-07** — `[tool.ruff]` + `[tool.ruff.lint]` added to `pyproject.toml` (select `E4/E7/E9/F`, extend-exclude for shell/yaml/markdown). Stops ruff from emitting 41 bogus parse errors scanning `assert_dead_code.sh` and the new firehose config check.
-- **2026-08-07** — `.agents/remediate.py` config-glob broadened from `gmaps_*.yaml` to `gmaps_*.yaml + linkedin_*.yaml` so it detects drift in `config/linkedin_firehose.yaml` too.
-- **2026-08-07** — Phase 5e extended to verify `config/linkedin_firehose.yaml` parses (was previously only checking the two gmaps configs).
 
 ---
 

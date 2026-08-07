@@ -44,58 +44,52 @@ HOTEL_KEYWORDS_BN = [
     "লাক্সারি হোটেল", "বাজেট হোটেল", "বুটিক হোটেল",
 ]
 
-BD_CITIES = [
-    ("Dhaka", "ঢাকা"),
-    ("Chattogram", "চট্টগ্রাম"),
-    ("Sylhet", "সিলেট"),
-    ("Khulna", "খুলনা"),
-    ("Rajshahi", "রাজশাহী"),
-    ("Barishal", "বরিশাল"),
-    ("Rangpur", "রংপুর"),
-    ("Mymensingh", "ময়মনসিংহ"),
-    ("Cumilla", "কুমিল্লা"),
-    ("Bogura", "বগুড়া"),
-    ("Jashore", "যশোর"),
-    ("Cox's Bazar", "কক্সবাজার"),
-    ("Narayanganj", "নারায়ণগঞ্জ"),
-    ("Gazipur", "গাজীপুর"),
-    ("Feni", "ফেনী"),
-    ("Narsingdi", "নরসিংদী"),
+# City coords matched to main query_generator.BD_CITIES order.
+# Dhaka added here (not in BD_CITIES of the generator — it's implicit
+# as the national center, but we include it for hotel seeding).
+_BD_CITY_COORDS = [
+    ("Dhaka",       "ঢাকা",       23.8103,  90.4125),
+    ("Chattogram",  "চট্টগ্রাম",  22.3569,  91.7832),
+    ("Sylhet",      "সিলেট",      24.8949,  91.8687),
+    ("Khulna",      "খুলনা",      22.8456,  89.5403),
+    ("Rajshahi",    "রাজশাহী",    24.3636,  88.6241),
+    ("Barishal",    "বরিশাল",     22.7010,  90.3535),
+    ("Rangpur",     "রংপুর",      25.7439,  89.2752),
+    ("Mymensingh",  "ময়মনসিংহ", 24.7471,  90.4203),
+    ("Cumilla",     "কুমিল্লা",   23.4607,  91.1809),
+    ("Bogura",      "বগুড়া",     24.8484,  89.3733),
+    ("Jashore",     "যশোর",       23.1684,  89.2123),
+    ("Cox's Bazar", "কক্সবাজার",  21.4272,  92.0058),
+    ("Narayanganj", "নারায়ণগঞ্জ",23.6238,  90.5000),
+    ("Gazipur",     "পিজাপুর",     23.9919,  90.4203),
+    ("Feni",        "ফেনী",       23.0149,  91.3953),
+    ("Narsingdi",   "নরসিংদী",   23.9889,  90.4650),
 ]
+_BD_NATIONAL_COORDS = (23.685, 90.3563)  # Bangladesh center
 
 
 def generate_hotel_queries() -> list[str]:
-    """Generate hotel-only queries for BD-Local and BD-National.
-
-    Generates for each keyword × each city (BD-Local) and each keyword + Bangladesh (BD-National).
-    No global queries — hotels are local businesses.
+    """Generate hotel-only queries in KEYWORD|LAT|LNG format (coords-anchored).
+    Uses the same format as query_generator._build_bd_local so the daemon
+    builds region-anchored search URLs automatically.
     """
     queries = set()
 
-    # BD-Local: "{keyword} in {city}" / "{keyword} {city_bn}"
-    for kw_en in HOTEL_KEYWORDS_EN:
-        for city_en, city_bn in BD_CITIES:
-            queries.add(f"{kw_en} in {city_en}")
-            queries.add(f"{kw_en} {city_bn}")
+    # BD-Local: KEYWORD|LAT|LNG per city
+    for kw in HOTEL_KEYWORDS_EN + HOTEL_KEYWORDS_BN:
+        for _, _, lat, lng in _BD_CITY_COORDS:
+            queries.add(f"{kw}|{lat:.4f}|{lng:.4f}")
 
-    for kw_bn in HOTEL_KEYWORDS_BN:
-        for city_en, city_bn in BD_CITIES:
-            queries.add(f"{kw_bn} {city_en}")
-            queries.add(f"{kw_bn} {city_bn}")
-
-    # BD-National: "{keyword} Bangladesh"
-    all_keywords = HOTEL_KEYWORDS_EN + HOTEL_KEYWORDS_BN
-    for kw in all_keywords:
-        queries.add(f"{kw} Bangladesh")
-        if "Bangladesh" not in kw and "BD" not in kw:
-            queries.add(f"{kw} outside Dhaka")
+    # BD-National: Bangladesh-center coords
+    for kw in HOTEL_KEYWORDS_EN + HOTEL_KEYWORDS_BN:
+        queries.add(f"{kw}|{_BD_NATIONAL_COORDS[0]:.4f}|{_BD_NATIONAL_COORDS[1]:.4f}")
 
     # Normalize and deduplicate
     seen = set()
     result = []
     for q in queries:
         norm = re.sub(r"\s+", " ", q.strip().lower())
-        if norm and norm not in seen and len(norm) > 5:
+        if norm and norm not in seen and len(norm) > 10:
             seen.add(norm)
             result.append(q.strip())
 
