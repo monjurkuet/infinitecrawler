@@ -15,6 +15,7 @@ wheels/
 backup/
 *.jsonl
 !_system/classification/training_examples.jsonl
+_system/*.pid
 .uv/
 .mypy_cache/
 .pytest_cache/
