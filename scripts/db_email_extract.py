@@ -52,11 +52,13 @@ log.addHandler(_h)
 log.propagate = False
 
 DEFAULT_MAX_LISTINGS = 500
-DEFAULT_CONCURRENCY = 10  # parallel httpx fetches
-FETCH_TIMEOUT = 12  # seconds per website fetch
+DEFAULT_CONCURRENCY = 25  # parallel httpx fetches
+FETCH_TIMEOUT = 8  # seconds per website fetch
 MAX_HTML_BYTES = 2 * 1024 * 1024  # cap page size for regex safety
 HEARTBEAT_INTERVAL = 30  # seconds between progress logs
 PIDFILE = REPO_ROOT / "_system" / "email_extract.pid"
+PATH_CANDIDATES = ["contact", "contact-us", "about", "about-us", "team"]
+MAX_REDIRECTS = 3
 
 
 def acquire_lock() -> bool:
@@ -81,61 +83,77 @@ def release_lock() -> None:
 
 
 async def extract_listing(client: httpx.AsyncClient, listing: dict) -> list[dict]:
-    """Fetch one website and return email upsert dicts."""
+    """Fetch one website (homepage + contact-page candidates) and return email dicts."""
     listing_id = listing["id"]
     website = listing["website"]
 
     if not website.startswith(("http://", "https://")):
         website = f"https://{website}"
 
-    results: list[dict] = []
+    base = _base_url(website)
+    urls = [website] + [f"{base.rstrip('/')}/{p}" for p in PATH_CANDIDATES]
 
-    try:
-        async with asyncio.timeout(FETCH_TIMEOUT + 5):
-            resp = await client.get(website)
-            if resp.status_code != 200:
-                log.debug("HTTP %d for listing %d: %s", resp.status_code, listing_id, website[:50])
-                return results
+    found: list[dict] = []
+    deadline = asyncio.get_running_loop().time() + FETCH_TIMEOUT * 2
 
-            html = resp.text[:MAX_HTML_BYTES]
+    for url in urls:
+        if asyncio.get_running_loop().time() > deadline:
+            break
+        try:
+            async with asyncio.timeout(FETCH_TIMEOUT + 5):
+                resp = await client.get(url)
+        except (httpx.TimeoutException, TimeoutError):
+            continue
+        except Exception:
+            continue
+        if resp.status_code != 200:
+            continue
 
-            # 1. Standard + obfuscated
-            found = scan_text_for_emails(html)
+        html = resp.text[:MAX_HTML_BYTES]
 
-            # 2. mailto: links
-            mailto_emails = extract_mailto_links(html)
-            for email in mailto_emails:
-                if not any(e["email"] == email for e in found):
-                    found.append({
-                        "email": email,
-                        "is_obfuscated": False,
-                        "context_snippet": f"mailto:{email}",
-                    })
+        # 1. Standard + obfuscated
+        page_emails = scan_text_for_emails(html)
 
-            # 3. Filter + dedup
-            found = filter_noise(found)
-            found = deduplicate_emails(found)
-
-            for e in found:
-                results.append({
-                    "listing_id": listing_id,
-                    "website_url": website,
-                    "email": e["email"],
-                    "email_type": "general",
-                    "extraction_method": "http",
-                    "is_obfuscated": e["is_obfuscated"],
-                    "context_snippet": e.get("context_snippet", "")[:200],
+        # 2. mailto: links
+        mailto_emails = extract_mailto_links(html)
+        for email in mailto_emails:
+            if not any(e["email"] == email for e in page_emails):
+                page_emails.append({
+                    "email": email,
+                    "is_obfuscated": False,
+                    "context_snippet": f"mailto:{email}",
                 })
 
-            if results:
-                log.debug("Found %d email(s) for listing %d", len(results), listing_id)
+        found.extend(page_emails)
 
-    except (httpx.TimeoutException, TimeoutError):
-        log.debug("Timeout listing %d: %s", listing_id, website[:50])
-    except Exception as e:
-        log.debug("Error listing %d: %s — %s", listing_id, website[:50], e)
+    # 3. Filter + dedup across all fetched pages
+    found = filter_noise(found)
+    found = deduplicate_emails(found)
+
+    results: list[dict] = []
+    for e in found:
+        results.append({
+            "listing_id": listing_id,
+            "website_url": website,
+            "email": e["email"],
+            "email_type": "general",
+            "extraction_method": "http",
+            "is_obfuscated": e["is_obfuscated"],
+            "context_snippet": e.get("context_snippet", "")[:200],
+        })
+
+    if results:
+        log.debug("Found %d email(s) for listing %d", len(results), listing_id)
 
     return results
+
+
+def _base_url(website: str) -> str:
+    """Strip path/query from website URL, return scheme://host[:port]"""
+    from urllib.parse import urlparse
+
+    p = urlparse(website if website.startswith(("http://", "https://")) else f"https://{website}")
+    return f"{p.scheme}://{p.netloc}"
 
 
 async def process_batch(
@@ -165,6 +183,7 @@ async def process_batch(
     client = httpx.AsyncClient(
         timeout=httpx.Timeout(connect=10, read=FETCH_TIMEOUT, write=10, pool=10),
         follow_redirects=True,
+        max_redirects=MAX_REDIRECTS,
         limits=httpx.Limits(
             max_connections=concurrency,
             max_keepalive_connections=concurrency,

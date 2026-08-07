@@ -24,21 +24,87 @@ log = logging.getLogger("classification")
 
 
 def load_sectors() -> dict:
+    """Load active sectors from BPT config.
+
+    Reads BOTH sectors.yaml (BD-business sectors) AND software_sectors.yaml
+    (software product sectors). The search query generator targets buyer
+    business types defined in software_sectors.yaml, so the classifier must
+    be able to assign listings to those software product sectors too —
+    otherwise every garments-factory query result gets misclassified as
+    `clothing-fashion` and software product leads disappear.
+
+    Software sectors are namespaced with the `software:` prefix to keep
+    them separate from BD-business sector IDs.
+    """
     import yaml
 
-    path = BPT_DIR / "_system" / "config" / "sectors.yaml"
-    if not path.exists():
-        log.error(f"sectors.yaml not found at {path}")
-        return {}
-    data = yaml.safe_load(path.read_text())
-    return data.get("sectors", {})
+    sectors: dict = {}
+
+    # 1) BD-business sectors (clothing-fashion, food-beverage, …)
+    bd_path = BPT_DIR / "_system" / "config" / "sectors.yaml"
+    if bd_path.exists():
+        try:
+            bd_data = yaml.safe_load(bd_path.read_text())
+            for sid, sc in (bd_data.get("sectors") or {}).items():
+                if sc.get("status") == "active":
+                    sectors[sid] = sc
+        except Exception as e:
+            log.error(f"Failed to load {bd_path}: {e}")
+    else:
+        log.warning(f"sectors.yaml not found at {bd_path}")
+
+    # 2) Software product sectors (payroll, inventory, pos_retail, …)
+    sw_path = BPT_DIR / "_system" / "config" / "software_sectors.yaml"
+    if sw_path.exists():
+        try:
+            sw_data = yaml.safe_load(sw_path.read_text())
+            for sid, sc in (sw_data.get("sectors") or {}).items():
+                if sc.get("status") != "active":
+                    continue
+                # Map software product keywords → classifier-compatible structure
+                # The classifier expects: keywords.en/bn, subsegments, priority_weight
+                tbt = sc.get("target_business_types") or {}
+                en_targets = tbt.get("en") or []
+                bn_targets = tbt.get("bn") or []
+                sectors[f"software:{sid}"] = {
+                    "display_name": sc.get("display_name") or sid,
+                    "product_name": sc.get("product_name") or sid,
+                    "keywords": {"en": en_targets, "bn": bn_targets},
+                    "subsegments": sc.get("subsegments") or [],
+                    "priority_weight": sc.get("priority_weight", 0.5),
+                    "status": "active",
+                    "_source": "software_sectors",
+                }
+        except Exception as e:
+            log.error(f"Failed to load {sw_path}: {e}")
+    else:
+        log.warning(f"software_sectors.yaml not found at {sw_path}")
+
+    log.info(
+        f"Loaded {len(sectors)} active sectors "
+        f"({sum(1 for s in sectors.values() if s.get('_source') == 'software_sectors')} software)"
+    )
+    return sectors
 
 
 def _single_fallback(lead: dict, index: int, sectors: dict) -> dict:
+    """Rule-based fallback classifier.
+
+    Iteration order matters: software product sectors are searched FIRST so
+    that "Garments Factory Ltd" lands on `software:payroll` (the buyer of
+    payroll software) instead of `clothing-fashion` (the buyer of fashion
+    services). This matches the buyer-facing query design from BPT.
+    """
     category = (lead.get("category") or "").lower()
     name = (lead.get("name") or "").lower()
 
-    for sid, sc in sorted(sectors.items()):
+    # Software sectors first — they're buyer-facing, higher signal
+    ordered = sorted(
+        sectors.items(),
+        key=lambda kv: (0 if kv[1].get("_source") == "software_sectors" else 1, kv[0]),
+    )
+
+    for sid, sc in ordered:
         if sc.get("status") != "active":
             continue
         kw_dict = sc.get("keywords", {})

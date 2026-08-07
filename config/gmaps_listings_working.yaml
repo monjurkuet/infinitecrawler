@@ -3,7 +3,7 @@ content_type: listing_crawler
 browser:
   automation: pinchtab
   headless: true
-  page_wait_seconds: 15.0
+  page_wait_seconds: 8.0
 pinchtab:
   server_url: "http://127.0.0.1:9867"
   instance_url: "http://127.0.0.1:9868"
@@ -29,15 +29,15 @@ navigation:
       selector: '[role="tab"][aria-label^="Overview"]'
       required: true
       wait_for_selector: div[role='main']
-      max_wait: 5
+      max_wait: 4
     - name: Reviews
       selector: '[role="tab"][aria-label^="Reviews"]'
       wait_for_selector: div[role='main']
-      max_wait: 4
+      max_wait: 3
     - name: About
       selector: '[role="tab"][aria-label^="About"]'
       wait_for_selector: div[role='region']
-      max_wait: 3
+      max_wait: 2
 extraction:
   strategy: multi_step
   config:
@@ -105,12 +105,20 @@ extraction:
           - button[jsaction*="category"]
           - button[aria-label*="Category"]
           type: text
+          retry:
+            enabled: true
+            attempts: 1
+            delay: 0
         plus_code:
           selector: .W4Efsd .W4Efsd:last-child
           selectors:
           - .W4Efsd .W4Efsd:last-child
           - button[data-item-id="oloc"] .Io6YTe
           type: text
+          retry:
+            enabled: true
+            attempts: 1
+            delay: 0
     - action: extract_url
       fields:
         latitude:
@@ -121,8 +129,8 @@ extraction:
           pattern: 1s([A-Za-z0-9_-]+)
   retry:
     enabled: true
-    attempts: 3
-    delay: 2
+    attempts: 2
+    delay: 1
     backoff: exponential
   timeouts:
     page_load: 30

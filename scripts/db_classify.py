@@ -41,12 +41,17 @@ from scripts.llm_classifier import (  # noqa: E402
     save_training_examples,
     BATCH_SIZE,
     DEFAULT_SECTOR,
-    METHOD_FALLBACK_RULE,
-    METHOD_FALLBACK_LLM_ERROR,
-    METHOD_LLM_CACHED,
-    METHOD_LLM_PREFIX,
     MIN_TRAIN_CONFIDENCE,
 )
+
+# Classification method labels (string constants — values written to
+# scraper.gmaps_listings.classification_method). These were previously
+# exported from scripts.llm_classifier but were removed in a cleanup commit.
+# Values are stable and referenced by downstream tooling (monitoring, retries).
+METHOD_LLM_PREFIX = "llm_"
+METHOD_LLM_CACHED = "llm_cached"
+METHOD_FALLBACK_RULE = "fallback_rule"
+METHOD_FALLBACK_LLM_ERROR = "fallback_llm_error"
 from utils.pg import get_pg_config  # noqa: E402
 
 PG_CONFIG = get_pg_config()

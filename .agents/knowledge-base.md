@@ -26,6 +26,9 @@
 | LinkedIn unique key | `profile_url` | Added 2026-07-25 |
 | Search config needs | `ignore_completed_on_enqueue: true` | Prevents query exhaustion when all queries are in completed set |
 | Listing daemon bug | `await restart_browser()` in eternal loop | Removed 2026-07-25; was restarting browser on EVERY failed URL |
+| Listing daemon tuning (2026-08-07) | `config/gmaps_listings_working.yaml`: `page_wait_seconds 15→8`, Overview/Reviews/About tab `max_wait` dropped by 1 each, global `retry.attempts 3→2` + `delay 2→1`. `category` and `plus_code` fields both got per-field `retry.attempts: 1` (was wasting retries on the ~10-37% of listings where these fields fail). | Verified live: navigation latency `~16-29s → ~8-12s`, `wait=8.00s` in logs, "All 1 retries failed for 'plus_code'" confirms per-field override works. Listings throughput target ~100/hr (was 43/hr). Category fill rate held ~90%; plus_code fill rate held ~60%. |
+| Email extract multi-page (2026-08-07) | `scripts/db_email_extract.py`: `DEFAULT_CONCURRENCY 10→25`, `FETCH_TIMEOUT 12→8`, added `PATH_CANDIDATES = ['contact','contact-us','about','about-us','team']`, `MAX_REDIRECTS=3`. `extract_listing` now tries homepage + 5 paths under the same base URL, dedups once at the end. Shared `httpx.AsyncClient` already existed (added `max_redirects`). | Verified live: 30-listing test → 4 emails (13% hit rate, vs 3.6% baseline pre-plan; pre-existing single-page only). Per-listing time cap = `FETCH_TIMEOUT * 2` = 16s via deadline check. |
+| LinkedIn match schedule (2026-08-07) | New `~/.config/systemd/user/infinitecrawler-linkedin-match.{service,timer}`. Timer fires every 6h at `03,09,15,21:30` UTC+6 with `RandomizedDelaySec=300`, `Persistent=true`. Service is oneshot running `scripts/match_linkedin_to_gmaps.py` with default `--min-score 0.5` (script has no `--max` flag; runs over all distinct companies each invocation; `UNIQUE(profile_url, gmaps_listing_id)` constraint makes re-runs idempotent). | First manual run produced 66,549 new matches: 784 high-quality (score≥0.8), ~54K with score<0.6 (broad catchment). Operator can `DELETE FROM scraper.linkedin_gmaps_matches WHERE score < 0.7` to keep only confident matches. |
 | Postgres config drift | `listen_addresses` may revert to `localhost` | If cluster restarts externally, socket path breaks. Set to `''` for unix-socket-only. |
 | Postgres config drift | `port` may revert to `5433` | Same restart issue. Keep `port = 5432`. |
 | Enrichment services | `email-extract`, `linkedin-search`, `linkedin-firehose` | `email-extract` + `linkedin-search` run as systemd timers (every 2h/4h). **`linkedin-firehose` is PERPETUAL: runs continuously as `infinitecrawler-linkedin-firehose-loop.service`** (`--loop --loop-gap 60`, restart=always) — one 8000-query cycle ends, 60s pause, fresh random 8000-query sample runs again, forever. Monitor via `systemctl --user status infinitecrawler-linkedin-firehose-loop`. Firehose uses ddgs metasearch engine v9.14.4 (`pip install ddgs`) — not the http proxy. Source=`firehose` in `scraper.linkedin_profiles`. Concurrency=8, ThreadPoolExecutor with thread-local DDGS instances. |
@@ -270,7 +273,10 @@ ORDER BY age_max DESC;
 # Expected:
 #   gmaps_search_results.age_max < 10 min (search daemon writes ~2/s)
 #   gmaps_listings.age_max     < (daemon uptime < 1.5h ? 30 min : 10 min)
-#                                ↑ see drift trap below
+#                                ↑ see drift trap below.
+#   With 2026-08-07 listing-daemon tuning (page_wait=8s, per-field retry.attempts=1
+#   on category+plus_code), per-URL latency is ~8-12s (was 16-29s) and target
+#   listings throughput is ~100/hr (was ~43/hr). listings_1h should be ≥60.
 #   emails.age_max             < 2h (timer every 2h; mid-run writes are continuous)
 #   linkedin_profiles.age_max  < 5 min (perpetual firehose)
 
