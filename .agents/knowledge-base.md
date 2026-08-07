@@ -8,16 +8,21 @@
 
 | Fact | Value | Source / Why |
 |------|-------|--------------|
-| Pinchtab bridge port | `9868` | `/root/.pinchtab/config.json` → `server.port` |
-| Pinchtab API token | `123456` | `/root/.pinchtab/config.json` → `server.token` |
+| Pinchtab server port (ABM/dashboard) | `9867` | `/root/.pinchtab/config.json` → `server.port`. Process: `pinchtab-linux-amd64 server`. Dashboard UI + always-on supervisor. |
+| Pinchtab bridge port (daemon target) | `9868` | `/root/.pinchtab/config.json` → `instanceDefaults.instancePortStart`. Process: `pinchtab-linux-amd64 bridge`. Daemons (`listing_daemon.py`, `search_daemon.py`) talk to **this** port for browser commands. |
+| Pinchtab API token | `123456` | `/root/.pinchtab/config.json` → `server.token`. Required as `Authorization: Bearer 123456` on every request to ports 9867/9868. |
+| Pinchtab instance port drift | Port may be 9869 instead of 9868 after a restart | If 9868 was bound by a leftover process at restart time, pinchtab bridge lands on 9869 and all daemons time out (the listing daemon flaps indefinitely in that state). Fix: `systemctl --user restart pinchtab` so it re-binds 9868. Verified 2026-08-07 (NRestarts=37 flap → 0 after pinchtab restart). |
+| Chrome CDP debug port | `9869` (or higher) | Owned by Chrome process (pid ~190000+), not pinchtab. Do NOT use for daemons — daemons talk to pinchtab bridge on 9868. Returns HTTP 404 on `/health`. |
 | Redis namespace (search) | `gmaps_bd_business:*` | Search daemon queue prefix |
 | Redis namespace (listing) | `gmaps:*` | Listing daemon queue prefix |
-| Postgres host | `/var/run/postgresql` (unix socket) | TCP bind to 127.0.0.1:5432 fails on this WSL host; use unix socket. Configs updated. |
+| Postgres host (unix socket, primary) | `/var/run/postgresql` | `.env` uses socket path. `connect_timeout` short; `pg_service.py` omits port param when host contains `/` to avoid `psycopg` parsing port as hostname. |
+| Postgres host (TCP 127.0.0.1, works) | `127.0.0.1:5432` | Verified working 2026-08-02 onward. PG `listen_addresses=127.0.0.1`. Both TCP and unix socket are valid; systemd services use the socket path per `.env`. Older claim "TCP fails on WSL" is RESOLVED. |
 | Postgres db | `infinitecrawler` | `scraper.*` schema |
 | Postgres user | `postgres` | Default |
 | Postgres password | `$PG_PASSWORD` (env) | Set in `.env` / systemd env |
+| Postgres schema inventory (10 tables) | `scraper.{api_tasks, discovered_profiles, emails, gmaps_listings, gmaps_search_results, linkedin_gmaps_matches, linkedin_profiles, luxury_contacts, luxury_targets, traffic_results}` | As of 2026-08-07. 7 are pipeline-active (`gmaps_*`, `emails`, `linkedin_*`); `api_tasks` is task tracking; `luxury_*` and `discovered_profiles` are staging; `traffic_results` is unused. |
+| Postgres DB size | `~260 MB` | As of 2026-08-07. Backup dumps in `backups/*.dump.zst` (~5-50 MB each). |
 | Failed queues use HASHES | `HLEN` not `LLEN` | `failed` queues are hash maps |
-| Chrome CDP debug port | `9869` | Do NOT use for daemons — daemons talk to pinchtab on `9868` |
 | Repository root | `/root/codebase/vhd/infinitecrawler` | All commands relative to this |
 | Emails table missing cols | `is_obfuscated`, `context_snippet` | Added 2026-07-25; upsert was silently failing |
 | Emails table migration | `source_type` → `extraction_method`; added `website_url`, `email_type`, `last_verified`, `is_active` | Applied 2026-08-02 via `scripts/schema_migration.py` (idempotent `UPGRADE_EMAILS_TABLE` DO block). Code + DDL + live DB now aligned; API stats queries (`extraction_method`, `email_type`) work. |
@@ -37,9 +42,18 @@
 | Listing daemon tuning (2026-08-07) | `config/gmaps_listings_working.yaml`: `page_wait_seconds 15→8`, Overview/Reviews/About tab `max_wait` dropped by 1 each, global `retry.attempts 3→2` + `delay 2→1`. `category` and `plus_code` fields both got per-field `retry.attempts: 1` (was wasting retries on the ~10-37% of listings where these fields fail). | Verified live: `Pinchtab navigation complete in ~9s (wait=8.00s)` (was 16-29s). Throughput target ~100/hr (was 43/hr). Category fill held ~90% (was 91.5%); plus_code held ~60% (was 63.5%). |
 | Postgres config drift | `listen_addresses` may revert to `localhost` | If cluster restarts externally, socket path breaks. Set to `''` for unix-socket-only. |
 | Postgres config drift | `port` may revert to `5433` | Same restart issue. Keep `port = 5432`. |
-| Enrichment services | `email-extract`, `linkedin-search` | Run as systemd timers (email every 2h, linkedin every 4h), not daemons. Monitor via `systemctl --user list-timers`. |
-| Phase 3a drift trap | `-h 127.0.0.1` silently fails | 2026-07-29 audit: caused false-positive `search_1h=0`. Always use `-h /var/run/postgresql`. |
+| Enrichment services (full inventory) | 6 timer-driven + 2 perpetual | All under `~/.config/systemd/user/infinitecrawler-*`.<br>• `email-extract.{service,timer}` — every 2h at `00,02,...,22:15` + 5min randomized (`--max 2000 --concurrency 25`).<br>• `linkedin-search.{service,timer}` — every 4h at `00,04,08,12,16,20:30` + 5min randomized.<br>• `linkedin-match.{service,timer}` — every 6h at `03,09,15,21:30` + 5min randomized. (Added 2026-08-07.)<br>• `classify.{service,timer}` — daily at `03:00`. Requires `LLM_API_KEY` env (not in `.env`; only loaded by systemd).<br>• `pg-backup.{service,timer}` — daily (midnight-ish).<br>• `watchdog.{service,timer}` — every 15min, runs `monitor_pipeline.py --restart --quiet --json`.<br>• `linkedin-firehose-loop.service` — **PERPETUAL** (no timer). `--loop --loop-gap 60 --max-queries 8000 --concurrency 8`, `Restart=always`.<br>• `pinchtab.service` — **PERPETUAL** (`pinchtab-linux-amd64 server`). Watchdog depends on this being healthy. |
+| Phase 3a drift trap (RESOLVED 2026-08-02) | `-h 127.0.0.1` works; the old false-alarm was PG not listening on TCP at that time | The 2026-07-29 audit's false-positive `search_1h=0` from `-h 127.0.0.1` was caused by PG temporarily not bound to TCP. Both `-h 127.0.0.1` and `-h /var/run/postgresql` are valid since 2026-08-02. Verified 2026-08-07 (psql works to both). |
 | Phase 2.5 drift trap | `--no-clean` invalid psql flag | Use `-t` (tuples-only). |
+| Listing daemon hardcoded knobs | `URL_FETCH_BATCH=100`, `QUEUE_LOW_THRESHOLD=20`, `URL_MAX_RETRIES=3` | Hardcoded in `daemons/listing_daemon.py` — NOT in YAML config. Plan's 2026-08-07 tuning was config-only; changing these would require daemon code changes. |
+| Listing daemon write-batching | `PostgreSQLListingDetailsUpsertStrategy._BATCH_SIZE=50`, `_write_batch` flushed via `executemany` on 50 items or shutdown | 2026-08-07 audit. In-memory batch → first flush lands 13-40 min after daemon startup. Use `MAX(updated_at)` age as primary stall signal, not `COUNT`. |
+| Listing daemon false-alarm (post-restart) | `listings_1h=0` in first ~30 min after daemon restart is normal | 2026-08-07. Caused by the 50-item batch flush + per-URL latency (now ~9-12s post-tuning). 50 listings × 9s ≈ 7.5 min minimum; in practice 13-40 min depending on timeout/failure rate. |
+| Phase 3 listings_1h healthy floor | ≥60/hr (post 2026-08-07 tuning) | Pre-tuning was ~43/hr. If `listings_1h` drops below 60 with the new config, suspect pinchtab port drift (9868→9869), daemon flap, or Redis queue starvation. |
+| Email extract rate | ~50-100 emails/hr | 254 emails in last 7d before 2026-08-07 tuning; 451 emails from 177 listings in 30 min after tuning (multi-page crawl). Hit rate 8-15% on the easy backlog; ~1-3% on the residual hard backlog. |
+| LinkedIn firehose throughput | ~225 profiles/hr | 5,414 profiles/day (2026-08-06 baseline); 8,000 queries/cycle with 60s gap. `source='firehose'` in `scraper.linkedin_profiles`. Concurrency=8 with thread-local DDGS instances. |
+| Watchdog restart trigger | Only restarts a unit if `procs == 0` AND there's work remaining, OR email is >45min stale | `scripts/monitor_pipeline.py --restart`. Runs every 15min via `infinitecrawler-watchdog.timer`. Logged under `ic-watchdog` syslog identifier. |
+| Plan kb doc marker | `.kilo/plans/1786058782715-pipeline-improvement-plan.md` | The pipeline-improvement plan that drove the 2026-08-07 changes. Plan's "Open Questions" section ended at "None" before implementation. |
+| Git state drift trap | Leftover interactive rebase state | 2026-08-07. A prior session left `git rebase --merge` state, silently reverting working-tree edits. Diagnose with `git status` showing "interactive rebase in progress". Fix: `git rebase --abort`. Re-apply lost edits from plan output. |
 | infinite_scroll probe JS quote bug | `json.dumps(['div[role="feed"]',...])` injected into JS source produced `["div[role="feed"]",...]` with unbalanced quotes → `SyntaxError` every probe → 0 scroll, hits `max_scroll_attempts=500`. Fixed 2026-08-01: wrap in `JSON.parse(json.dumps(...))`. |
 | GMaps scroll needs event dispatch | `el.scrollTop = el.scrollHeight` alone does NOT trigger GMaps IntersectionObserver. Must also `el.dispatchEvent(new Event('scroll', {bubbles: true}))`. Without it, cards stay at 10 forever. Verified 2026-08-01. |
 | pinchtab 0.15 `/action kind:close` | Returns 400 `unknown action kind: close`. Same for `DELETE /tabs/:id` (404). Pinchtab has no tab-close endpoint — use `navigate("about:blank")` to reuse the tab. Verified 2026-08-01. |
@@ -154,21 +168,39 @@ The goal is that this document becomes more accurate after every execution.
 Run these commands in order. If any service is dead, restart it:
 
 ```bash
-# 1a. All service statuses (with recent logs)
-systemctl --user status infinitecrawler-search infinitecrawler-listing \
-  infinitecrawler-email-extract infinitecrawler-linkedin-search \
-  pinchtab --no-pager -l --lines=20
+# 1a. All service statuses (daemons + last 20 log lines each)
+systemctl --user status \
+  infinitecrawler-search \
+  infinitecrawler-listing \
+  infinitecrawler-linkedin-firehose-loop \
+  pinchtab \
+  --no-pager -l --lines=20
 
-# 1b. Scheduled enrichment timers (email/linkedin/pg-backup run periodically)
-systemctl --user list-timers --no-pager | grep infinitecrawler
-# Expected: email-extract every 2h, linkedin-search every 4h, pg-backup daily
+# 1b. All timers (one-shot scheduled units)
+systemctl --user list-timers --all --no-pager | grep infinitecrawler
+# Expected (current as of 2026-08-07):
+#   - watchdog every 15min
+#   - email-extract every 2h
+#   - linkedin-search every 4h
+#   - linkedin-match every 6h
+#   - pg-backup daily
+#   - classify daily at 03:00
 
 # 1c. Pinchtab health (the Chrome provider both daemons depend on)
 PINCHTAB_TOKEN=$(python3 -c "import json; print(json.load(open('/root/.pinchtab/config.json'))['server']['token'])")
+# Bridge (daemon target): 9868. Returns {"status":"ok","tabs":N}.
 curl -s --connect-timeout 5 -H "Authorization: Bearer $PINCHTAB_TOKEN" http://127.0.0.1:9868/health
+# Server (ABM dashboard): 9867. Returns larger JSON with defaultInstance status.
+curl -s --connect-timeout 5 -H "Authorization: Bearer $PINCHTAB_TOKEN" http://127.0.0.1:9867/health
 
-# Expected: all three services active (running). Health returns tab count, crashes stats.
-# Pinchtab bridge port: 9868 (NOT 9869). Token: 123456.
+# 1d. Daemon port integrity (catch listing daemon flap)
+ss -tlnp 2>&1 | grep -E ":98(67|68|69)" | head -5
+# Expected: 9867 = pinchtab server, 9868 = pinchtab bridge (daemon target), 9869 = Chrome CDP (do NOT use).
+# If bridge is on 9869 instead of 9868: `systemctl --user restart pinchtab`.
+
+# Expected: all four services active (running). Pinchtab bridge health returns tab count, crashes stats.
+# If listing daemon has high NRestarts (e.g. >5), it's flapping — almost always pinchtab port drift.
+# Restore: `systemctl --user restart pinchtab && systemctl --user restart infinitecrawler-listing`.
 ```
 
 **EXIT_CODE: BLOCK** — if any service is dead or unreachable, repair it before continuing.
@@ -240,10 +272,8 @@ PGPASSWORD=$PG_PASSWORD psql -h /var/run/postgresql -U postgres -d infinitecrawl
 Verify data is actually being written to PostgreSQL in real-time:
 
 ```bash
-# 3a. Search + listing velocity (last hour) — MUST use unix socket
-# TCP to 127.0.0.1:5432 silently fails on this WSL host (PG listen_addresses='').
-# Using -h 127.0.0.1 here caused a false-positive "search_1h = 0" alert on 2026-07-29.
-PGPASSWORD="$PG_PASSWORD" psql -h /var/run/postgresql -U postgres -d infinitecrawler -c "
+# 3a. Search + listing velocity (last hour) — TCP 127.0.0.1 or unix socket both work (verified 2026-08-02)
+PGPASSWORD="$PG_PASSWORD" psql -h 127.0.0.1 -U postgres -d infinitecrawler -c "
 SELECT
   (SELECT COUNT(*) FROM scraper.gmaps_search_results WHERE updated_at > NOW() - INTERVAL '1 hour') as search_1h,
   (SELECT COUNT(*) FROM scraper.gmaps_listings WHERE updated_at > NOW() - INTERVAL '1 hour') as listings_1h,
@@ -251,7 +281,7 @@ SELECT
   (SELECT COUNT(*) FROM scraper.linkedin_profiles WHERE checked_at > NOW() - INTERVAL '4 hours') as linkedin_4h;
 "
 
-# 3b. Full counts (unix socket — same reason)
+# 3b. Full counts (both targets valid; unix socket matches systemd env)
 PGPASSWORD="$PG_PASSWORD" psql -h /var/run/postgresql -U postgres -d infinitecrawler -c "
 SELECT
   (SELECT COUNT(*) FROM scraper.gmaps_search_results) as search_total,
@@ -262,8 +292,8 @@ SELECT
 "
 ```
 
-**Expected:** search_1h > 0, listings_1h > 0. If zero for >1 hour, daemon is stalled.
-**Drift trap:** If you see `search_1h = 0` while daemon is processing, you probably used `-h 127.0.0.1`. Always use `-h /var/run/postgresql`. Verify with `SELECT MAX(updated_at) FROM scraper.gmaps_search_results`.
+**Expected:** search_1h > 0, listings_1h > 60 (post 2026-08-07 tuning; was ≥0 before). With multi-page email crawl, emails_2h should be ≥50 (was 10-30). If `search_1h=0` while daemon is processing, verify with `SELECT MAX(updated_at) FROM scraper.gmaps_search_results` — drift is more likely a daemon stall or pinchtab port flap than a psql flag.
+**Drift trap (RESOLVED 2026-08-02):** the 2026-07-29 false-positive `search_1h=0` was caused by PG not listening on TCP at that time. Both `-h 127.0.0.1` and `-h /var/run/postgresql` are now valid; the `.env` and systemd env use the unix socket path.
 **EXIT_CODE: REPORT**
 
 ---
@@ -283,7 +313,13 @@ cd /root/codebase/vhd/infinitecrawler && uv run python scripts/db_linkedin_searc
 cd /root/codebase/vhd/infinitecrawler && uv run python scripts/db_classify.py --stats
 ```
 
-**Expected:** Email coverage growing every 2h. LinkedIn profiles growing every 4h. 0 remaining unclassified leads with phone+website.
+**Expected:**
+- Email coverage growing every 2h (timer-driven; multi-page crawl since 2026-08-07).
+- LinkedIn profiles growing every 4h (search timer) and continuously (~225/hr via firehose loop).
+- LinkedIn↔GMaps matches written every 6h (match timer added 2026-08-07); high-quality (score≥0.8) match count growing.
+- 0 remaining unclassified leads with phone+website (the `infinitecrawler-classify.timer` runs daily at 03:00; **requires `LLM_API_KEY` in systemd env** to actually classify — if missing, the timer exits early without writing sectors).
+
+**Drift trap:** `--stats` commands that hit the LLM classifier need `LLM_API_KEY` in env. Run via `set -a; source .env; ...` or `systemctl --user show infinitecrawler-classify.service -p Environment | tr ' ' '\n' | grep LLM_API_KEY` to confirm.
 **EXIT_CODE: REPORT**
 
 ---
