@@ -20,6 +20,7 @@ Usage:
 
 import argparse
 import logging
+import os
 import random
 import re
 import sys
@@ -39,18 +40,23 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from utils.linkedin_parser import parse_linkedin as _parse_linkedin  # noqa: E402
 from utils.pg import get_pg_config  # noqa: E402
+from utils.transliterate import bn_to_en, contains_bengali  # noqa: E402
+
+DDGS_BACKOFF_S = int(os.environ.get("DDGS_BACKOFF_S", "300"))
+DDGS_500_THRESHOLD = int(os.environ.get("DDGS_500_THRESHOLD", "3"))
+_ddgs_500_streak = 0
+_ddgs_cooldown_until = 0.0
 
 log = logging.getLogger("firehose")
 logging.basicConfig(
     level=logging.WARNING,
-    format="%(asctime)s  %(levelname)-7s  %(message)s",
-    datefmt="%H:%M:%S",
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 # firehose logger → INFO; root stays at WARNING to suppress ddgs noise
 log.handlers.clear()
 _h = logging.StreamHandler()
 _h.setLevel(logging.INFO)
-_h.setFormatter(logging.Formatter("%(asctime)s  %(levelname)-7s  %(message)s", datefmt="%H:%M:%S"))
+_h.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
 log.addHandler(_h)
 log.setLevel(logging.INFO)
 log.propagate = False
@@ -245,6 +251,21 @@ def _get_ddgs(timeout: int) -> DDGS:
     return client
 
 
+def _ddgs_should_cooldown() -> bool:
+    """True if the global DDGS cooldown window is active."""
+    return time.monotonic() < _ddgs_cooldown_until
+
+
+def _ddgs_record_500(count: int) -> None:
+    """Increment the 500 streak; trip cooldown at threshold."""
+    global _ddgs_500_streak, _ddgs_cooldown_until
+    _ddgs_500_streak = count
+    if count >= DDGS_500_THRESHOLD and _ddgs_cooldown_until <= time.monotonic():
+        _ddgs_cooldown_until = time.monotonic() + DDGS_BACKOFF_S
+        log.warning("DDGS cooldown started: %d consecutive 500s, sleeping %ds",
+                    count, DDGS_BACKOFF_S)
+
+
 def search_one(item: dict, exec_cfg: dict, delay_seconds: float = 0.0) -> tuple[list[dict], bool]:
     """Search one query via ddgs. Returns (profiles, error).
 
@@ -252,6 +273,11 @@ def search_one(item: dict, exec_cfg: dict, delay_seconds: float = 0.0) -> tuple[
     backend raised; `error=False` with empty list means genuinely empty
     search results. `delay_seconds` paces each worker thread between
     queries to stay under rate limits.
+
+    Bengali-script queries are pre-transliterated to Latin before dispatch
+    because the upstream DDGS HTTP gateway returns 500 on ~15% of BN queries.
+    Circuit breaker trips a global cooldown after DDGS_500_THRESHOLD 500s in a
+    row.
     """
     client = _get_ddgs(exec_cfg.get("search_timeout", 20))
     region = item["params"].get("region") or exec_cfg.get("global_region", "wt-wt")
@@ -259,12 +285,22 @@ def search_one(item: dict, exec_cfg: dict, delay_seconds: float = 0.0) -> tuple[
     backends = ([exec_cfg.get("backend", "auto")]
                 + list(exec_cfg.get("backend_fallbacks", [])))
 
+    if _ddgs_should_cooldown():
+        return [], True
+
+    q = item["query"]
+    bn = contains_bengali(q)
+    q_dispatched = bn_to_en(q) if bn else q
+    if bn and q_dispatched != q:
+        log.debug("DDGS transliterate BN→EN: %r → %r", q[:60], q_dispatched[:60])
+
     last_exc: Optional[Exception] = None
+    streak_500 = 0
     try:
         for backend in backends:
             try:
                 results = client.text(
-                    item["query"],
+                    q_dispatched,
                     region=region,
                     safesearch="off",
                     max_results=max_results,
@@ -272,12 +308,16 @@ def search_one(item: dict, exec_cfg: dict, delay_seconds: float = 0.0) -> tuple[
                 )
                 profiles = [
                     p for r in results
-                    if (p := parse_profile(r, item["query"], item["family"])) is not None
+                    if (p := parse_profile(r, q_dispatched, item["family"])) is not None
                 ]
                 if profiles:
                     return profiles, False
             except Exception as exc:
                 last_exc = exc
+                msg = str(exc).lower()
+                if "500" in msg or "internal server error" in msg:
+                    streak_500 += 1
+                    _ddgs_record_500(streak_500)
                 continue
 
         if last_exc is not None:
@@ -435,6 +475,7 @@ def show_stats():
 
 
 def main():
+    import sys as _sys
     p = argparse.ArgumentParser(description="Global LinkedIn firehose via ddgs")
     p.add_argument("--max-queries", type=int, default=None)
     p.add_argument("--delay-seconds", type=float, default=None)
@@ -460,6 +501,7 @@ def main():
     queries = generate_queries(cfg, max_q)
     family_counts = Counter(q["family"] for q in queries)
 
+    log.info("started version=1 args=%s", " ".join(_sys.argv[1:]))
     log.info("start   %d queries  delay=%.1fs  workers=%d  engine=ddgs  families=%s",
              len(queries), delay, conc, dict(family_counts.most_common()))
 
@@ -470,6 +512,7 @@ def main():
             log.info("  DRY  %s%s", q["query"][:90], tag)
         if len(queries) > 10:
             log.info("  DRY  ... and %d more", len(queries) - 10)
+        log.info("stopped reason=dry_run")
         return
 
     stats = run_firehose(cfg, queries, conc, delay, batch)
@@ -487,25 +530,30 @@ def main():
     # Runs batches back-to-back forever: resample fresh queries each cycle
     # so results never exhaust. Used by the perpetual systemd service.
     cycle = 1
-    while args.loop:
-        gap = args.loop_gap
-        log.info("loop    cycle %d complete — pausing %.0fs before next batch",
-                 cycle, gap)
-        time.sleep(gap)
-        cycle += 1
-        queries = generate_queries(cfg, max_q)
-        log.info("start   cycle %d: %d queries  delay=%.1fs  workers=%d",
-                 cycle, len(queries), delay, conc)
+    try:
+        while args.loop:
+            gap = args.loop_gap
+            log.info("loop    cycle %d complete — pausing %.0fs before next batch",
+                     cycle, gap)
+            time.sleep(gap)
+            cycle += 1
+            queries = generate_queries(cfg, max_q)
+            log.info("start   cycle %d: %d queries  delay=%.1fs  workers=%d",
+                     cycle, len(queries), delay, conc)
 
-        stats = run_firehose(cfg, queries, conc, delay, batch)
-        elapsed = stats["time_seconds"]
-        rate = stats["total_queries"] / max(elapsed, 0.001)
-        log.info(
-            "done    %dqs  +%d profiles  dup=%d  db=%d  err=%d  empty=%d  %.0fs  %.1fq/s",
-            stats["total_queries"], stats["profiles_new"],
-            stats["profiles_dup"], stats["db_written"],
-            stats["errors"], stats["empty_results"], elapsed, rate,
-        )
+            stats = run_firehose(cfg, queries, conc, delay, batch)
+            elapsed = stats["time_seconds"]
+            rate = stats["total_queries"] / max(elapsed, 0.001)
+            log.info(
+                "done    %dqs  +%d profiles  dup=%d  db=%d  err=%d  empty=%d  %.0fs  %.1fq/s",
+                stats["total_queries"], stats["profiles_new"],
+                stats["profiles_dup"], stats["db_written"],
+                stats["errors"], stats["empty_results"], elapsed, rate,
+            )
+    except KeyboardInterrupt:
+        log.info("stopped reason=SIGINT")
+        return
+    log.info("stopped reason=exit")
 
 
 if __name__ == "__main__":

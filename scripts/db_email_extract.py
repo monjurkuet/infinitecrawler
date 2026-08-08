@@ -36,7 +36,12 @@ from utils.email_extractor import (  # noqa: E402
     filter_noise,
     deduplicate_emails,
 )
-from utils.pg import get_pg_config, get_unprocessed_emails, upsert_emails  # noqa: E402
+from utils.pg import (  # noqa: E402
+    get_all_listings_with_website,
+    get_pg_config,
+    get_unprocessed_emails,
+    upsert_emails,
+)
 
 logging.basicConfig(
     level=logging.WARNING,
@@ -51,7 +56,7 @@ log.handlers.clear()
 log.addHandler(_h)
 log.propagate = False
 
-DEFAULT_MAX_LISTINGS = 500
+DEFAULT_MAX_LISTINGS = 2000
 DEFAULT_CONCURRENCY = 25  # parallel httpx fetches
 FETCH_TIMEOUT = 8  # seconds per website fetch
 MAX_HTML_BYTES = 2 * 1024 * 1024  # cap page size for regex safety
@@ -59,6 +64,13 @@ HEARTBEAT_INTERVAL = 30  # seconds between progress logs
 PIDFILE = REPO_ROOT / "_system" / "email_extract.pid"
 PATH_CANDIDATES = ["contact", "contact-us", "about", "about-us", "team"]
 MAX_REDIRECTS = 3
+
+# T2 — browser-fallback knobs.  Concurrency is intentionally low (3) to avoid
+# the Facebook/Instagram CLOSE-WAIT stall documented in project memory; 0.2s
+# between navigations keeps the pinchtab request queue from starving.
+BROWSER_CONCURRENCY = int(os.environ.get("BROWSER_CONCURRENCY", "3"))
+BROWSER_NAV_DELAY = float(os.environ.get("BROWSER_NAV_DELAY", "0.2"))
+BROWSER_PAGE_TIMEOUT = int(os.environ.get("BROWSER_PAGE_TIMEOUT", "60"))
 
 
 def acquire_lock() -> bool:
@@ -156,13 +168,76 @@ def _base_url(website: str) -> str:
     return f"{p.scheme}://{p.netloc}"
 
 
-async def process_batch(
+async def extract_listing_browser(client, listing: dict) -> list[dict]:
+    """Browser-rendered email extraction via pinchtab (T2 fallback path).
+
+    The browser has already executed the page's JS, so emails hidden behind
+    obfuscation scripts (Cloudflare email-decoder, [at]/[dot] rewrites,
+    mailto: anchors built at runtime) are visible.  Returns the same dict
+    shape as `extract_listing` so downstream `upsert_emails` is unchanged.
+    """
+    import re
+
+    listing_id = listing["id"]
+    website = listing["website"]
+    if not website.startswith(("http://", "https://")):
+        website = f"https://{website}"
+
+    try:
+        tab = await asyncio.wait_for(
+            client.navigate(website), timeout=BROWSER_PAGE_TIMEOUT,
+        )
+    except Exception as exc:
+        log.debug("browser nav failed for %s: %s", website[:60], exc)
+        return []
+
+    if BROWSER_NAV_DELAY:
+        await asyncio.sleep(BROWSER_NAV_DELAY)
+
+    try:
+        page = await asyncio.wait_for(
+            tab.extract_emails_from_page(), timeout=BROWSER_PAGE_TIMEOUT,
+        )
+    except Exception as exc:
+        log.debug("browser extract failed for %s: %s", website[:60], exc)
+        return []
+
+    text = (page.get("text") or "")[:MAX_HTML_BYTES]
+    mailto = page.get("mailto_hrefs") or []
+    found = scan_text_for_emails(text)
+    for href in mailto:
+        m = re.search(r"mailto:([^?\"'>]+)", href, re.I)
+        if not m:
+            continue
+        addr = m.group(1)
+        if not any(e["email"] == addr for e in found):
+            found.append({
+                "email": addr,
+                "is_obfuscated": False,
+                "context_snippet": f"mailto:{addr}",
+            })
+
+    found = filter_noise(found)
+    found = deduplicate_emails(found)
+
+    return [
+        {
+            "listing_id": listing_id,
+            "website_url": website,
+            "email": e["email"],
+            "email_type": "general",
+            "extraction_method": "browser",
+            "is_obfuscated": e["is_obfuscated"],
+            "context_snippet": e.get("context_snippet", "")[:200],
+        }
+        for e in found
+    ]
+
+
+async def process_batch_http(
     conn, listings: list[dict], concurrency: int, dry_run: bool
 ) -> tuple[int, int]:
-    """Process a batch of listings concurrently with one shared httpx client.
-
-    Returns (listings_processed, emails_written).
-    """
+    """HTTP-only batch (legacy)."""
     semaphore = asyncio.Semaphore(concurrency)
     counter_lock = asyncio.Lock()
     listings_processed = 0
@@ -220,6 +295,87 @@ async def process_batch(
     return listings_processed, emails_written
 
 
+async def process_batch_both(
+    conn, listings: list[dict], concurrency: int, dry_run: bool
+) -> tuple[int, int, int]:
+    """HTTP pass first → browser fallback for zero-result listings.
+
+    Returns (listings_processed, emails_written, browser_queue_size).  The
+    browser queue is logged for observability so the cron watchdog can
+    detect connection stalls (see project memory `email.facebook_connection_stall`).
+    """
+    http_done, http_emails = await process_batch_http(conn, listings, concurrency, dry_run)
+
+    if dry_run:
+        return http_done, http_emails, 0
+
+    # Identify which listings still need a browser pass.  We can't trust the
+    # in-memory `results` list (it was scoped to each call), so re-query.
+    website_by_id = {lst["id"]: lst["website"] for lst in listings}
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT listing_id, email FROM scraper.emails
+            WHERE listing_id = ANY(%s)
+            """,
+            (list(website_by_id),),
+        )
+        have_email = {row[0] for row in cur.fetchall()}
+    todo_browser = [
+        {"id": lid, "website": site}
+        for lid, site in website_by_id.items()
+        if lid not in have_email and site
+    ]
+    if not todo_browser:
+        return http_done, http_emails, 0
+
+    log.info("browser pass: %d listings without HTTP emails", len(todo_browser))
+
+    from base.pinchtab_client import PinchtabConfig, PinchtabClient
+    pt_cfg = PinchtabConfig.from_env_and_config({})
+    pt = PinchtabClient(pt_cfg)
+    try:
+        await pt.start()
+    except Exception as exc:
+        log.warning("browser pass skipped: pinchtab unreachable: %s", exc)
+        return http_done, http_emails, 0
+
+    sem = asyncio.Semaphore(BROWSER_CONCURRENCY)
+    counter_lock = asyncio.Lock()
+    browser_processed = 0
+    browser_emails = 0
+
+    async def one(listing: dict):
+        nonlocal browser_processed, browser_emails
+        async with sem:
+            results = await extract_listing_browser(pt, listing)
+            async with counter_lock:
+                browser_processed += 1
+            if results:
+                written = upsert_emails(conn, results)
+                async with counter_lock:
+                    browser_emails += written
+
+    tasks = [asyncio.create_task(one(lst)) for lst in todo_browser]
+    try:
+        await asyncio.gather(*tasks, return_exceptions=True)
+    finally:
+        await pt.cleanup()
+
+    log.info("browser pass: processed=%d emails=%d", browser_processed, browser_emails)
+    return http_done, http_emails + browser_emails, len(todo_browser)
+
+
+async def process_batch(
+    conn, listings: list[dict], concurrency: int, dry_run: bool, mode: str = "http",
+) -> tuple[int, int] | tuple[int, int, int]:
+    """Back-compat shim: routes to http or both.  Mode='http' returns
+    (processed, written).  Mode='both' returns (processed, written, browser_q)."""
+    if mode == "both":
+        return await process_batch_both(conn, listings, concurrency, dry_run)
+    return await process_batch_http(conn, listings, concurrency, dry_run)
+
+
 def show_stats(conn):
     """Print email extraction statistics."""
     with conn.cursor() as cur:
@@ -266,6 +422,10 @@ def main():
                         help="Run continuously: after each batch, claim new unscanned listings and repeat forever")
     parser.add_argument("--loop-gap", type=float, default=30.0,
                         help="Pause seconds between loop cycles (default 30)")
+    parser.add_argument("--mode", choices=["http", "browser", "both"], default="http",
+                        help="Extraction mode (T2: 'both' runs http first then browser fallback for zero-result listings)")
+    parser.add_argument("--force-rescan", action="store_true",
+                        help="Re-scan listings even if they already have an email row (T6: backlog drain)")
     args = parser.parse_args()
 
     if not args.stats and not acquire_lock():
@@ -290,7 +450,12 @@ def main():
         while True:
             cycle += 1
 
-            listings = get_unprocessed_emails(conn, limit=args.max)
+            if args.force_rescan:
+                listings = get_all_listings_with_website(conn, limit=args.max)
+                log.info("[cycle %d] --force-rescan: %d listings with website",
+                         cycle, len(listings))
+            else:
+                listings = get_unprocessed_emails(conn, limit=args.max)
             if not listings:
                 log.info("[cycle %d] No listings with unprocessed emails found.", cycle)
                 if not args.loop:
@@ -299,8 +464,8 @@ def main():
                 time.sleep(args.loop_gap)
                 continue
 
-            log.info("[cycle %d] Found %d listings needing email extraction (limit: %d)",
-                     cycle, len(listings), args.max)
+            log.info("[cycle %d] Found %d listings needing email extraction (limit: %d, mode=%s)",
+                     cycle, len(listings), args.max, args.mode)
 
             if args.dry_run:
                 log.info("=== DRY RUN === (no writes)")
@@ -310,12 +475,17 @@ def main():
                     log.info("  ... and %d more", len(listings) - 5)
                 return
 
-            processed, written = asyncio.run(
-                process_batch(conn, listings, args.concurrency, dry_run=False)
+            result = asyncio.run(
+                process_batch(conn, listings, args.concurrency, dry_run=False, mode=args.mode)
             )
-
-            log.info("[cycle %d] Done: processed %d / %d listings, wrote %d emails",
-                     cycle, processed, len(listings), written)
+            if args.mode == "both":
+                processed, written, browser_q = result  # type: ignore[misc]
+                log.info("[cycle %d] Done: processed %d / %d listings, wrote %d emails (browser_queue=%d)",
+                         cycle, processed, len(listings), written, browser_q)
+            else:
+                processed, written = result  # type: ignore[misc]
+                log.info("[cycle %d] Done: processed %d / %d listings, wrote %d emails",
+                         cycle, processed, len(listings), written)
 
             if not args.loop:
                 return

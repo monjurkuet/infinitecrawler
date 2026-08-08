@@ -61,7 +61,7 @@ PG_USER, PG_PASSWORD, PG_DB = _pg["user"], _pg["password"], _pg["dbname"]
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - search-daemon - %(name)s - %(levelname)s - %(message)s",
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[logging.StreamHandler()],
 )
 log = logging.getLogger("search_daemon")
@@ -525,23 +525,25 @@ async def shutdown(state: DaemonState):
 # ── Entry point ─────────────────────────────────────────────────────────────
 
 async def main():
+    import sys as _sys
     state = DaemonState()
 
     # Register signal handlers
     install_signal_handlers(state)
 
-    log.info("=" * 60)
-    log.info("InfiniteCrawler Search Daemon starting")
+    log.info("started version=1 args=%s", " ".join(_sys.argv[1:]))
     log.info("Config: %s", CONFIG_PATH)
     log.info("PG: %s:%s/%s", PG_HOST, PG_PORT, PG_DB)
     log.info("Browser restart: every %ds or %d pages",
              BROWSER_RESTART_INTERVAL_SEC, BROWSER_RESTART_PAGES)
     log.info("Queue low threshold: %d, batch size: %d",
              QUEUE_LOW_THRESHOLD, QUERY_BATCH_SIZE)
-    log.info("=" * 60)
 
     await init_infrastructure(state)
-    await eternal_loop(state)
+    try:
+        await eternal_loop(state)
+    finally:
+        log.info("stopped reason=%s", "SIGTERM" if state.shutdown_requested else "exit")
 
 
 if __name__ == "__main__":

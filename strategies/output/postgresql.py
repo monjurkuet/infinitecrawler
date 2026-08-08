@@ -29,7 +29,16 @@ class _PostgreSQLOutputBase(OutputStrategy):
 
     default_table = "gmaps_listings"
 
-    FLUSH_INTERVAL_SEC = 5.0
+    # T5 — allow lowering the flush interval via env so partial records (one
+    # item per cycle in the listing daemon) don't sit in the batch queue.
+    # Default kept at 5s; set FLUSH_INTERVAL_SEC=1 in the daemon env to ship
+    # each successful listing immediately.
+    FLUSH_INTERVAL_SEC = float(os.environ.get("FLUSH_INTERVAL_SEC", "5.0"))
+    # When True, any write_item that contains a phone or website flushes the
+    # batch immediately (bounded by size=50 fallback).  Default off so
+    # non-listing daemons keep batching.  Listing daemon opts in via env.
+    FLUSH_ON_REQUIRED_FIELD = os.environ.get("FLUSH_ON_REQUIRED_FIELD", "0") == "1"
+    REQUIRED_FLUSH_FIELDS = ("phone", "website")
 
     def __init__(self, config: dict):
         self.config = config.get("config", {})
@@ -63,6 +72,23 @@ class _PostgreSQLOutputBase(OutputStrategy):
         finally:
             self._write_batch.clear()
             self._last_flush = time.monotonic()
+
+    def _maybe_flush_partial(self, item: Optional[Dict] = None) -> None:
+        """T5 — early flush when a high-value field lands in a partial row.
+
+        Honors FLUSH_ON_REQUIRED_FIELD env toggle so callers that prefer
+        batched writes (search daemon, firehose) don't pay the per-item
+        round-trip.
+        """
+        if not self._write_batch:
+            return
+        if not self.FLUSH_ON_REQUIRED_FIELD:
+            return
+        if item is not None and not any(item.get(f) for f in self.REQUIRED_FLUSH_FIELDS):
+            return
+        sql = getattr(self, "_batch_sql", None)
+        if sql is not None:
+            self._flush_write_batch(sql, trigger="required_field")
 
     def flush_batch(self) -> None:
         sql = getattr(self, '_batch_sql', None)
@@ -698,6 +724,8 @@ class PostgreSQLListingDetailsUpsertStrategy(_PostgreSQLOutputBase):
             self._write_batch.append(params)
             if len(self._write_batch) >= self._BATCH_SIZE:
                 self._flush_write_batch(upsert_sql, trigger="size")
+            else:
+                self._maybe_flush_partial(item)
         except Exception as e:
             self.logger.error(f"Failed to upsert listing details to PostgreSQL: {e}")
             raise

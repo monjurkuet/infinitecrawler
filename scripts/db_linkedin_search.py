@@ -19,6 +19,7 @@ Usage:
 import argparse
 import asyncio
 import logging
+import os
 import re
 import sys
 from pathlib import Path
@@ -31,6 +32,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 from utils.pg import get_pg_config, get_unprocessed_linkedin, upsert_linkedin_profiles  # noqa: E402
+from utils.transliterate import bn_to_en, contains_bengali  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,
@@ -42,6 +44,12 @@ DEFAULT_MAX_LISTINGS = 100
 DDGS_BASE_URL = "https://search.datasolved.org/search/text"
 REQUEST_DELAY = 2.0  # seconds between API calls (rate limiting)
 MAX_RESULTS_PER_QUERY = 5
+
+# Circuit breaker for upstream DDGS HTTP 500s on Bengali scripts.
+_ddgs_500_streak = 0
+_ddgs_cooldown_until = 0.0
+DDGS_BACKOFF_S = int(os.environ.get("DDGS_BACKOFF_S", "300"))
+DDGS_500_THRESHOLD = int(os.environ.get("DDGS_500_THRESHOLD", "3"))
 
 # ── Sector → role keywords ────────────────────────────────────────────────────
 # When a listing has a sector_id, we append targeted role keywords to the query.
@@ -186,15 +194,34 @@ async def search_linkedin(
     queries = build_queries(company_name, sector)
 
     for query in queries:
+        global _ddgs_500_streak, _ddgs_cooldown_until
+        if asyncio.get_running_loop().time() < _ddgs_cooldown_until:
+            log.debug("DDGS in cooldown; skipping query: %s", query[:50])
+            await asyncio.sleep(REQUEST_DELAY)
+            continue
+        if contains_bengali(query):
+            q_dispatched = bn_to_en(query)
+            if q_dispatched != query:
+                log.debug("DDGS transliterate BN→EN: %r → %r", query[:60], q_dispatched[:60])
+        else:
+            q_dispatched = query
         try:
             resp = await client.get(
                 DDGS_BASE_URL,
                 params={
-                    "query": query,
+                    "query": q_dispatched,
                     "max_results": MAX_RESULTS_PER_QUERY,
                     "region": "bd-bn",  # Bangladesh + international
                 },
             )
+            if resp.status_code == 500:
+                _ddgs_500_streak += 1
+                if _ddgs_500_streak >= DDGS_500_THRESHOLD and _ddgs_cooldown_until <= asyncio.get_running_loop().time():
+                    _ddgs_cooldown_until = asyncio.get_running_loop().time() + DDGS_BACKOFF_S
+                    log.warning("DDGS cooldown started: %d consecutive 500s, sleeping %ds",
+                                _ddgs_500_streak, DDGS_BACKOFF_S)
+            elif resp.status_code == 200:
+                _ddgs_500_streak = 0
             if resp.status_code != 200:
                 log.debug("DDGS returned %d for query: %s", resp.status_code, query[:50])
                 await asyncio.sleep(REQUEST_DELAY)

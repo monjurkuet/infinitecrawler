@@ -9,7 +9,7 @@ import csv
 from typing import Any, Optional
 
 from psycopg_pool import AsyncConnectionPool
-from utils.pg import get_pg_config, get_uncrawled_count_sql
+from utils.pg import build_async_dsn, get_pg_config, get_uncrawled_count_sql
 
 log = logging.getLogger("api.pg_service")
 
@@ -23,16 +23,13 @@ async def create_pool() -> AsyncConnectionPool:
     _pg = get_pg_config()
     host = _pg["host"]
     port = _pg["port"]
-    user = _pg["user"]
-    password = _pg["password"]
     dbname = _pg["dbname"]
 
-    # Build DSN: when host is a unix socket path (contains '/'), omit port
-    # to prevent psycopg3 async pool from parsing "port=5432" as a hostname.
-    if "/" in host:
-        dsn = f"host={host} user={user} password={password} dbname={dbname}"
-    else:
-        dsn = f"host={host} port={port} user={user} password={password} dbname={dbname}"
+    # DSN: when host is a unix socket path (contains '/'), omit port to
+    # prevent psycopg3 from parsing "port=5432" as a hostname.  Always
+    # include the three session timeouts (T3) so a single runaway query or
+    # stuck `idle in transaction` backend can't lock up the whole pool.
+    dsn = build_async_dsn()
 
     pool = AsyncConnectionPool(
         dsn,

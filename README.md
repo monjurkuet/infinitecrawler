@@ -41,12 +41,14 @@ uv run python -m api.main
 | Search results (PG) | 79,336 | ~400/hr |
 | Listings (PG) | 19,366 | ~91–154/hr |
 | Qualified (phone+website) | 6,772 | — |
-| Emails extracted | 6,535 | ~25–36/hr |
-| LinkedIn profiles | 51,927 | ~226/hr |
+| Emails extracted | 6,566 | ~25–36/hr (HTTP) → ≥50/hr target with `--mode both` |
+| LinkedIn profiles | 51,927 | ~226/hr (firehose) |
 | LinkedIn↔GMaps matches (verified ≥0.7) | 1,096 / 70,071 | — |
 | Classified (17 sectors) | 18,004 | — |
 | Unclassified leads with phone+website | 0 | done |
 | Listings pending email extraction | 3,624 | clearing via loop |
+
+> Backend PG timeouts are now enforced (`idle_in_transaction_session_timeout=30s`, `statement_timeout=120s`, `lock_timeout=10s`); see `.agents/knowledge-base.md` for env knobs.
 
 ## Storage
 
@@ -132,6 +134,18 @@ curl -s -H "Authorization: Bearer $PINCHTAB_TOKEN" http://127.0.0.1:9868/health
 ```
 
 **Stability:** Chrome must be configured with `--max_old_space_size=2048 --renderer-process-limit=5` in `/root/.pinchtab/config.json` to avoid OOM crashes on Google Maps. If bridge lands on port 9869 (port drift), restart pinchtab: `systemctl --user restart pinchtab`.
+
+## Pipeline Hardening (2026-08-09)
+
+DDGS Bengali transliteration gate (`utils/transliterate.py`) — Bengali-script queries are pre-transliterated to Latin before being dispatched to `search.datasolved.org`, which has been returning 500 on ~15% of BN queries. A 500-streak circuit breaker trips a 300s cooldown after 3 consecutive failures. Brand-name safety: queries that yield 0 Latin letters after transliteration are dispatched unchanged.
+
+PG session hardening — every psycopg connection (sync + async pool) now applies `idle_in_transaction_session_timeout=30s`, `statement_timeout=120s`, `lock_timeout=10s` via the libpq-standard `options=` kwarg. Env-overridable.
+
+Pinchtab browser fallback for email extraction — `db_email_extract.py --mode both` runs the HTTP crawl first, then queues zero-result listings for a browser pass using rendered DOM + mailto hrefs. Targets ≥10% email hit-rate vs 3.6% HTTP-only. Concurrency 3, 0.2s nav delay (mitigates the documented Facebook/Instagram CLOSE-WAIT stall). New `--force-rescan` flag drains the existing backlog; `--max` default raised 500→2000 for loop mode.
+
+Listing daemon diagnostics — per-cycle `cycle_summary` line every 5 min (`success{phone,website,plus_code,category} retries{…}`); on final retry failure, `ERROR` line with URL + last-failure-kind. Set `LOG_SAMPLE_HTML=1` for first-500-chars HTML forensics. Set `FLUSH_ON_REQUIRED_FIELD=1` + `FLUSH_INTERVAL_SEC=1` to flush each successful listing immediately.
+
+Standardized logging — listing + search daemons + firehose use `%(asctime)s - %(name)s - %(levelname)s - %(message)s` with `started version=1 args=…` / `stopped reason=…` lifecycle markers.
 
 ## Documentation
 

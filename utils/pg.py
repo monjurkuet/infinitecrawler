@@ -18,15 +18,80 @@ PG_DEFAULT_PASSWORD = os.environ.get("PG_PASSWORD", "")
 PG_DEFAULT_DB = os.environ.get("PG_DB", "infinitecrawler")
 
 
-def get_pg_config() -> dict:
-    """Return postgres connection kwargs from environment."""
-    return {
+def get_pg_config(include_timeouts: bool = True) -> dict:
+    """Return postgres connection kwargs from environment.
+
+    When `include_timeouts=True` (default) the returned dict carries the
+    T3 session-hardening options.  psycopg3 does NOT accept libpq GUC names
+    as direct kwargs, so the timeouts are packed into a single `options=`
+    string with `-c` flags — exactly what libpq expects.
+    """
+    cfg = {
         "host": PG_DEFAULT_HOST,
         "port": os.getenv("PG_PORT", "5432"),
         "dbname": PG_DEFAULT_DB,
         "user": os.getenv("PG_USER", "postgres"),
         "password": PG_DEFAULT_PASSWORD,
     }
+    if include_timeouts:
+        cfg["options"] = (
+            f"-c idle_in_transaction_session_timeout={PG_IDLE_TX_TIMEOUT} "
+            f"-c statement_timeout={PG_STATEMENT_TIMEOUT} "
+            f"-c lock_timeout={PG_LOCK_TIMEOUT}"
+        )
+    return cfg
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Async DSN builder (T3 — PG session hardening)
+# ──────────────────────────────────────────────────────────────────────────
+#
+# Defaults lifted from the rollout plan. Env overrides:
+#   PG_IDLE_TX_TIMEOUT  (default 30s)
+#   PG_STATEMENT_TIMEOUT (default 120s)
+#   PG_LOCK_TIMEOUT     (default 10s)
+#
+# `idle_in_transaction_session_timeout` aborts any backend that sits in
+# `idle in transaction` longer than the threshold — this was the root cause
+# of the slow "idle in transaction" PG backends observed in the health report.
+# `statement_timeout` and `lock_timeout` bound the worst-case latency a single
+# runaway query can inflict on the pool.
+
+PG_IDLE_TX_TIMEOUT = os.getenv("PG_IDLE_TX_TIMEOUT", "30s")
+PG_STATEMENT_TIMEOUT = os.getenv("PG_STATEMENT_TIMEOUT", "120s")
+PG_LOCK_TIMEOUT = os.getenv("PG_LOCK_TIMEOUT", "10s")
+
+
+def build_async_dsn() -> str:
+    """Return a libpq DSN string suitable for psycopg3 AsyncConnectionPool.
+
+    Honors the unix-socket quirk documented in api.services.pg_service:
+    when PG_HOST contains a `/` (unix socket), the port parameter is omitted
+    so psycopg3 doesn't misparse it as a hostname.
+
+    Note: psycopg3 ignores bare `key=value` pairs in DSN strings unless they
+    are standard libpq options (host, port, dbname, user, password).  All
+    session-level GUCs must be wrapped in `options=...`.  We use the
+    `connect_timeout` kwarg path on the pool itself for connect-level limits.
+    """
+    cfg = get_pg_config()
+    host = cfg["host"]
+    port = cfg["port"]
+    user = cfg["user"]
+    password = cfg["password"]
+    dbname = cfg["dbname"]
+
+    if "/" in host:
+        base = f"host={host} user={user} password={password} dbname={dbname}"
+    else:
+        base = f"host={host} port={port} user={user} password={password} dbname={dbname}"
+
+    options = (
+        f"-c idle_in_transaction_session_timeout={PG_IDLE_TX_TIMEOUT} "
+        f"-c statement_timeout={PG_STATEMENT_TIMEOUT} "
+        f"-c lock_timeout={PG_LOCK_TIMEOUT}"
+    )
+    return f"{base} options='{options}'"
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -155,6 +220,28 @@ def get_unprocessed_emails(conn, limit: int = 100) -> list[dict]:
     """Return listings that have a website but no emails extracted yet."""
     with conn.cursor() as cur:
         cur.execute(FETCH_UNPROCESSED_EMAILS_SQL + " LIMIT %s", (limit,))
+        rows = cur.fetchall()
+    return [{"id": r[0], "website": r[1]} for r in rows]
+
+
+FETCH_ALL_LISTINGS_WITH_WEBSITE_SQL = r"""
+    SELECT l.id, l.website
+    FROM scraper.gmaps_listings l
+    WHERE l.website IS NOT NULL
+      AND l.website != ''
+    ORDER BY l.updated_at DESC
+"""
+
+
+def get_all_listings_with_website(conn, limit: int = 100) -> list[dict]:
+    """T6 — return every listing with a website, ignoring email history.
+
+    Used by `--force-rescan` so the email backlog drainer can re-scan sites
+    that already have a row in scraper.emails (and may have a new contact
+    address since).
+    """
+    with conn.cursor() as cur:
+        cur.execute(FETCH_ALL_LISTINGS_WITH_WEBSITE_SQL + " LIMIT %s", (limit,))
         rows = cur.fetchall()
     return [{"id": r[0], "website": r[1]} for r in rows]
 

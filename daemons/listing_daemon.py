@@ -14,6 +14,7 @@ systemd unit: ~/.config/systemd/user/infinitecrawler-listing.service
 
 import asyncio
 import logging
+import os
 import sys
 import time
 from datetime import datetime, timezone
@@ -53,6 +54,11 @@ URL_NAV_TIMEOUT = 120  # Seconds for initial URL navigation (includes page_wait_
 BROWSER_START_TIMEOUT = 30  # Seconds for browser launch
 STALLED_REQUEUE_INTERVAL = 60  # Check for stalled processing items every N sec
 
+# T4 diagnostics — sample HTML on persistent failure.  Off by default because
+# page bytes bloat logs; set LOG_SAMPLE_HTML=1 to enable forensics.
+LOG_SAMPLE_HTML = os.environ.get("LOG_SAMPLE_HTML", "0") == "1"
+LOG_SAMPLE_BYTES = 500
+
 # PG connection (separate from output strategy — used for live URL feed)
 _pg = get_pg_config()
 PG_HOST, PG_PORT = _pg["host"], _pg["port"]
@@ -71,7 +77,7 @@ def _connect_pg() -> psycopg.Connection:
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - listing-daemon - %(name)s - %(levelname)s - %(message)s",
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[logging.StreamHandler()],
 )
 log = logging.getLogger("listing_daemon")
@@ -102,6 +108,14 @@ class DaemonState:
         self.max_consecutive_errors: int = 10
 
         self.shutdown_requested: bool = False
+
+        # T4 — per-cycle field success counters for the cycle_summary log line
+        self.cycle_success: dict[str, int] = {
+            "phone": 0, "website": 0, "plus_code": 0, "category": 0,
+        }
+        self.cycle_retries: int = 0
+        self.cycle_processed: int = 0
+        self.cycle_last_summary: float = time.monotonic()
 
 
 # ── Browser lifecycle ───────────────────────────────────────────────────────
@@ -315,6 +329,7 @@ async def process_url(state: DaemonState, url: str) -> bool:
     """Deep-extract a single listing URL with retry logic.
     Returns True if data was extracted and written to PG, False otherwise.
     """
+    last_failure_kind: Optional[str] = None
     for attempt in range(URL_MAX_RETRIES):
         try:
             # Navigate with timeout
@@ -324,6 +339,7 @@ async def process_url(state: DaemonState, url: str) -> bool:
                     timeout=URL_NAV_TIMEOUT,
                 )
             except asyncio.TimeoutError:
+                last_failure_kind = "nav_timeout"
                 log.warning("Navigation timed out for %s (attempt %d/%d)",
                             url[:60], attempt + 1, URL_MAX_RETRIES)
                 if attempt < URL_MAX_RETRIES - 1:
@@ -340,6 +356,7 @@ async def process_url(state: DaemonState, url: str) -> bool:
                     timeout=URL_EXTRACTION_TIMEOUT,
                 )
             except asyncio.TimeoutError:
+                last_failure_kind = "extract_timeout"
                 log.warning("Extraction timed out after %ds for %s",
                             URL_EXTRACTION_TIMEOUT, url[:60])
                 items = []
@@ -353,10 +370,12 @@ async def process_url(state: DaemonState, url: str) -> bool:
             if items:
                 items = [item for item in items if _has_meaningful_data(item)]
                 if not items:
+                    last_failure_kind = "no_meaningful_data"
                     log.warning("No meaningful data extracted from %s (attempt %d/%d)",
                                 url[:60], attempt + 1, URL_MAX_RETRIES)
 
             if not items:
+                last_failure_kind = last_failure_kind or "empty_extract"
                 log.warning("No data extracted from %s (attempt %d/%d)",
                             url[:60], attempt + 1, URL_MAX_RETRIES)
                 # Extraction timeout OR empty result: increment error counter so
@@ -366,7 +385,8 @@ async def process_url(state: DaemonState, url: str) -> bool:
                 # which inflated the listing count with empty rows).
                 state.consecutive_errors += 1
                 if attempt == URL_MAX_RETRIES - 1:
-                    return False
+                    break
+                state.cycle_retries += 1
                 await asyncio.sleep(URL_RETRY_DELAY)
                 continue
 
@@ -386,6 +406,10 @@ async def process_url(state: DaemonState, url: str) -> bool:
                     item["classification_method"] = METHOD_FALLBACK_RULE
                     item["classified_at"] = datetime.now(timezone.utc)
                 await state.output_strategy.write_item(item)
+                # T4 — per-cycle field success counters
+                for field in ("phone", "website", "plus_code", "category"):
+                    if item.get(field):
+                        state.cycle_success[field] += 1
 
             log.info("Extracted %d fields from %s (attempt %d/%d)",
                      len(items), url[:60], attempt + 1, URL_MAX_RETRIES)
@@ -400,14 +424,25 @@ async def process_url(state: DaemonState, url: str) -> bool:
                 await state.browser_manager.close_tab()
             return True
         except Exception as e:
+            last_failure_kind = f"exception:{type(e).__name__}"
             log.warning("Attempt %d/%d failed for %s: %s",
                         attempt + 1, URL_MAX_RETRIES, url[:60], e)
             if attempt < URL_MAX_RETRIES - 1:
                 await restart_browser(state)
                 await asyncio.sleep(2)
 
-    # All retries exhausted
-    log.error("All %d attempts failed for %s", URL_MAX_RETRIES, url[:60])
+    # All retries exhausted — T4: emit ERROR with sample HTML for forensics
+    log.error("All %d attempts failed for %s (kind=%s)",
+              URL_MAX_RETRIES, url[:60], last_failure_kind)
+    if LOG_SAMPLE_HTML and state.browser_manager:
+        try:
+            sample = await state.browser_manager.tab.evaluate(
+                "(document.documentElement.outerHTML || '')[:%d]" % LOG_SAMPLE_BYTES
+            ) if state.browser_manager.tab else None
+            if sample:
+                log.error("sample_html url=%s html=%s", url[:120], str(sample)[:LOG_SAMPLE_BYTES])
+        except Exception as sample_exc:
+            log.debug("sample_html capture failed: %s", sample_exc)
     return False
 
 
@@ -416,10 +451,24 @@ async def process_url(state: DaemonState, url: str) -> bool:
 async def eternal_loop(state: DaemonState):
     """The forever loop: refill → dequeue → extract → repeat."""
     last_stalled_check = 0.0
+    SUMMARY_INTERVAL = 300  # T4 — emit cycle_summary every 5 min
 
     while not state.shutdown_requested:
         try:
             now = time.monotonic()
+
+            # T4 — per-cycle summary line (success{...} retries{...})
+            if now - state.cycle_last_summary >= SUMMARY_INTERVAL:
+                log.info(
+                    "cycle_summary processed=%d success{phone:%d, website:%d, plus_code:%d, category:%d} retries{%d→%d}",
+                    state.cycle_processed,
+                    state.cycle_success["phone"],
+                    state.cycle_success["website"],
+                    state.cycle_success["plus_code"],
+                    state.cycle_success["category"],
+                    state.cycle_retries, state.cycle_retries,
+                )
+                state.cycle_last_summary = now
 
             # 0. Periodic write-batch flush (5s timer, supersedes 50-row size trigger)
             if state.output_strategy and hasattr(state.output_strategy, "flush_if_due"):
@@ -470,6 +519,7 @@ async def eternal_loop(state: DaemonState):
 
             # 6. Process URL
             log.info("Processing: %s", url[:80])
+            state.cycle_processed += 1
             success = await process_url(state, url)
 
             if success:
@@ -517,13 +567,13 @@ async def shutdown(state: DaemonState):
 # ── Entry point ─────────────────────────────────────────────────────────────
 
 async def main():
+    import sys as _sys
     state = DaemonState()
 
     # Register signal handlers
     install_signal_handlers(state)
 
-    log.info("=" * 60)
-    log.info("InfiniteCrawler Listing Daemon starting")
+    log.info("started version=1 args=%s", " ".join(_sys.argv[1:]))
     log.info("Config: %s", CONFIG_PATH)
     log.info("PG: %s:%s/%s", PG_HOST, PG_PORT, PG_DB)
     log.info("Browser restart: every %ds or %d pages",
@@ -532,7 +582,6 @@ async def main():
              QUEUE_LOW_THRESHOLD, URL_FETCH_BATCH)
     log.info("URL retries: %d attempts, %ds delay",
              URL_MAX_RETRIES, URL_RETRY_DELAY)
-    log.info("=" * 60)
 
     # Preload BPT sectors once for in-stream fallback classification
     try:
@@ -544,7 +593,12 @@ async def main():
         state.sectors = {}
 
     await init_infrastructure(state)
-    await eternal_loop(state)
+    try:
+        await eternal_loop(state)
+    finally:
+        log.info("stopped reason=%s total_pages=%d",
+                 "SIGTERM" if state.shutdown_requested else "exit",
+                 state.total_pages_processed)
 
 
 if __name__ == "__main__":
