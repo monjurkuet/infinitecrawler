@@ -262,6 +262,10 @@ def main():
     parser.add_argument("--stats", action="store_true", help="Show stats only")
     parser.add_argument("--concurrency", type=int, default=DEFAULT_CONCURRENCY,
                         help=f"Parallel fetches (default: {DEFAULT_CONCURRENCY})")
+    parser.add_argument("--loop", action="store_true",
+                        help="Run continuously: after each batch, claim new unscanned listings and repeat forever")
+    parser.add_argument("--loop-gap", type=float, default=30.0,
+                        help="Pause seconds between loop cycles (default 30)")
     args = parser.parse_args()
 
     if not args.stats and not acquire_lock():
@@ -282,28 +286,43 @@ def main():
         except OSError as e:
             log.warning("Could not write pidfile %s: %s", PIDFILE, e)
 
-        listings = get_unprocessed_emails(conn, limit=args.max)
-        if not listings:
-            log.info("No listings with unprocessed emails found.")
-            return
+        cycle = 0
+        while True:
+            cycle += 1
 
-        log.info("Found %d listings needing email extraction (limit: %d)",
-                 len(listings), args.max)
+            listings = get_unprocessed_emails(conn, limit=args.max)
+            if not listings:
+                log.info("[cycle %d] No listings with unprocessed emails found.", cycle)
+                if not args.loop:
+                    return
+                log.info("loop: sleeping %.0fs before next cycle", args.loop_gap)
+                time.sleep(args.loop_gap)
+                continue
 
-        if args.dry_run:
-            log.info("=== DRY RUN === (no writes)")
-            for lead in listings[:5]:
-                log.info("  [%d] %s", lead["id"], lead["website"][:60])
-            if len(listings) > 5:
-                log.info("  ... and %d more", len(listings) - 5)
-            return
+            log.info("[cycle %d] Found %d listings needing email extraction (limit: %d)",
+                     cycle, len(listings), args.max)
 
-        processed, written = asyncio.run(
-            process_batch(conn, listings, args.concurrency, dry_run=False)
-        )
+            if args.dry_run:
+                log.info("=== DRY RUN === (no writes)")
+                for lead in listings[:5]:
+                    log.info("  [%d] %s", lead["id"], lead["website"][:60])
+                if len(listings) > 5:
+                    log.info("  ... and %d more", len(listings) - 5)
+                return
 
-        log.info("Done: processed %d / %d listings, wrote %d emails",
-                 processed, len(listings), written)
+            processed, written = asyncio.run(
+                process_batch(conn, listings, args.concurrency, dry_run=False)
+            )
+
+            log.info("[cycle %d] Done: processed %d / %d listings, wrote %d emails",
+                     cycle, processed, len(listings), written)
+
+            if not args.loop:
+                return
+
+            log.info("loop: cycle %d complete — pausing %.0fs before next batch",
+                     cycle, args.loop_gap)
+            time.sleep(args.loop_gap)
 
     finally:
         release_lock()

@@ -421,6 +421,13 @@ async def eternal_loop(state: DaemonState):
         try:
             now = time.monotonic()
 
+            # 0. Periodic write-batch flush (5s timer, supersedes 50-row size trigger)
+            if state.output_strategy and hasattr(state.output_strategy, "flush_if_due"):
+                try:
+                    state.output_strategy.flush_if_due()
+                except Exception as flush_exc:
+                    log.warning("Periodic flush failed: %s", flush_exc)
+
             # 1. Periodic stalled requeue
             if now - last_stalled_check > STALLED_REQUEUE_INTERVAL:
                 requeue_stalled(state)

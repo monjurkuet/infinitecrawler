@@ -29,10 +29,19 @@
 | Email regex ReDoS | Old `OBFUSCATED_PATTERNS[0]` had optional-bracket groups → O(n²) backtracking (30KB = 23s). Replaced with 2 linear-time patterns 2026-08-02 | New patterns: `[at]`/`(at)`/`[at]`/`AT DOT` all covered; 300KB = 0.42s. Never add optional nested groups after greedy captures in these patterns. |
 | Email scan offloaded to thread | `scan_text_for_emails` + `extract_mailto_links` run via `loop.run_in_executor` in `db_email_extract.py` | 2026-08-02. Event loop no longer blocks on 25-concurrent HTTP fetches. |
 | Orphaned Redis namespaces | `gmaps_bd_business_pt:*`, `gmaps_search:*` auto-deleted at search daemon startup | `_cleanup_orphaned_queues()` in `daemons/search_daemon.py`. Only `gmaps_bd_business:*` (search) and `gmaps:*` (listing) are live. |
-| Email extract schedule | Every 2h (`00,02,...,22:15` + randomized 5min), `--max 2000 --concurrency 25`, `FETCH_TIMEOUT=8s` | `~/.config/systemd/user/infinitecrawler-email-extract.{service,timer}` |
+| Email extract schedule | Every 2h (`00,02,...,22:15` + randomized 5min), `--max 200 --concurrency 25`, `FETCH_TIMEOUT=8s` | `~/.config/systemd/user/infinitecrawler-email-extract.{service,timer}`. `--max 200` cap (2026-08-08 plan) so the timer doesn't fight the perpetual loop. |
+| Email extract perpetual loop (2026-08-08) | New perpetual daemon `infinitecrawler-email-extract-loop.service` runs `db_email_extract.py --loop --loop-gap 30 --max 1000 --concurrency 25`, `Restart=always`. Replaces the 2h timer as primary driver; the 2h timer stays as safety net for long-tail/hard listings. | `~/.config/systemd/user/infinitecrawler-email-extract-loop.service`. Target ≥20 emails/hr vs ~4/hr baseline. Watchdog metric `emails_1h < 5` flags leakage. |
 | Email extract multi-page (2026-08-07) | `db_email_extract.py` crawls homepage + 5 paths per listing (`/contact`, `/contact-us`, `/about`, `/about-us`, `/team`). Defaults: `concurrency=25`, `FETCH_TIMEOUT=8`, `MAX_REDIRECTS=3`. Shared httpx client (`Limits` matching concurrency). Per-listing deadline = `FETCH_TIMEOUT*2` = 16s. | Verified: 30-listing live run → 4 emails (13% hit rate, vs 3.6% baseline before plan). Dedup runs once across all fetched pages. Process has pidfile lock (`_system/email_extract.pid`) preventing overlapping runs. |
+| `linkedin_gmaps_matches.is_verified` (2026-08-08) | New BOOLEAN column, `NOT NULL DEFAULT false`, partial index. Set to `(score >= 0.7)` on INSERT and ON CONFLICT UPDATE. Soft-delete marker for the ~63% noise matches below the 0.7 threshold — preserves data, allows re-scoring without DELETE. Backfilled in-place on 2026-08-08: 1093 verified / 69323 total. | `scripts/schema_migration.py` (idempotent). Writer: `scripts/match_linkedin_to_gmaps.py:225`. Monitor: `verified_matches`, `verified_matches_1h`. |
+| Listing daemon flush trigger (2026-08-08) | `_PostgreSQLOutputBase.FLUSH_INTERVAL_SEC=5.0` — daemon loop calls `flush_if_due()` every iteration. Structured log: `listing.flush size=N age=Xs trigger=timer\|size`. Supersedes the 50-row size-only trigger; eliminates 13–40 min stall blindness after daemon restart. | `strategies/output/postgresql.py:42,52,76`. Wired in `daemons/listing_daemon.py:422` (loop step 0). Size trigger still fires at 50 rows. |
+| File logging on user units (2026-08-08) | All 11 infinitecrawler-* + pinchtab user units get drop-in override `StandardOutput=append:/var/log/infinitecrawler/<unit>.log`. Drop-ins live in `~/.config/systemd/user/<unit>.service.d/override.conf`. Logrotate is out of scope (logs grow unbounded; monitor `df` in Phase 2.5). | Active files observed 2026-08-08: `infinitecrawler-{search,listing,email-extract-loop,linkedin-firehose-loop,watchdog,pinchtab}.log`. Timer-triggered units write on next activation. |
+| Classify LLM key health gate (2026-08-08) | `db_classify.py:main()` checks `os.environ.get("LLM_API_KEY")` first; if empty, logs `classify.aborted reason=missing_llm_api_key` and exits with code 2 (distinct from 1 to prevent systemd Restart=on-failure tight loop). `LLM_API_KEY` is sourced from `.env` via systemd `EnvironmentFile`. | `scripts/db_classify.py:284`. Verify with `env -u LLM_API_KEY uv run python scripts/db_classify.py` → exit 2. |
 | LinkedIn search schedule | Every 4h (`00,04,...,20:30` + randomized 5min) | `~/.config/systemd/user/infinitecrawler-linkedin-search.timer` |
-| LinkedIn match schedule (2026-08-07) | Every 6h (`03,09,15,21:30` + randomized 5min), `Persistent=true`. Service is oneshot running `scripts/match_linkedin_to_gmaps.py` (no `--max`; runs all distinct companies per invocation). Default `--min-score 0.5` retained. | `~/.config/systemd/user/infinitecrawler-linkedin-match.{service,timer}`. Re-runs are idempotent via `UNIQUE(profile_url, gmaps_listing_id)`. First run produced 66,549 new matches: 784 high-quality (score≥0.8), ~54K broad catch (score<0.6). Filter via `DELETE FROM scraper.linkedin_gmaps_matches WHERE score < 0.7`. |
+| LinkedIn match schedule (2026-08-07) | Every 6h (`03,09,15,21:30` + randomized 5min), `Persistent=true`. Service is oneshot running `scripts/match_linkedin_to_gmaps.py` (no `--max`; runs all distinct companies per invocation). Default `--min-score 0.5` retained (2026-08-09: keep — preserves weak matches for future independent LinkedIn crawler). | `~/.config/systemd/user/infinitecrawler-linkedin-match.{service,timer}`. Re-runs are idempotent via `UNIQUE(profile_url, gmaps_listing_id)`. First run produced 66,549 new matches: 784 high-quality (score≥0.8), ~54K broad catch (score<0.6). Filter via `DELETE FROM scraper.linkedin_gmaps_matches WHERE score < 0.7`. |
+| Match scorer distinct-overlap guard (2026-08-09) | `score_match` requires ≥1 non-noise word of length ≥4 in the intersection (`c_clean & l_clean`), otherwise returns 0.0. Effect: kills ~90% of recent Jaccard-path matches (the 0.50–0.60 noise cluster) for NEW rows. Substring paths (0.85/0.75) unaffected. Skipped `'co'`/`'pvt'` from NOISE_WORDS — too short, breaks real brand names. | `scripts/match_linkedin_to_gmaps.py:87`. Verified yield unchanged at ~0.08% (substring path dominates). Real bottleneck is input data quality (LinkedIn `company_name` is too generic), not scorer math. |
+| Match NOISE_WORDS expansion (2026-08-09) | Added role tokens (manager/director/ceo/cto/founder/...), business-suffix tokens (group/company/international/global/world/...), LinkedIn-suffix tokens (official/page/profile/career/jobs/hiring/...). ~40 new words. | `scripts/match_linkedin_to_gmaps.py:54`. |
+| Match verified-rate ceiling (2026-08-09) | Verified (score≥0.7) yield from new runs is bottlenecked by LinkedIn `company_name` quality, not scorer math. Recent 1,965-row run produced 1 verified (substring path only). Even with the distinct-overlap guard, Jaccard-path matches don't reach 0.7 — they max out around 0.45+0.45*j where j is small. | Verified by simulation against `matched_at > NOW() - INTERVAL '24 hours'` sample. Real fix requires tighter `parse_company` regex or matching on `gmaps_website` domain. Deferred to independent LinkedIn crawler plan. |
+| LinkedIn future direction (2026-08-09) | Firehose is becoming the primary independent path. GMaps-matching is secondary. Future independent crawler will capture company size, employees, etc. Deferred to a separate plan. | Current firehose captures profile-level only (`full_name`, `profile_url`, `profile_title`, `company_name`, `search_query`, `confidence`, `snippet`). |
 | Search queue retry | `visibility_timeout: 300` (5 min stalled requeue), failed retried after 6h | `config/gmaps_bd_business_search.yaml`; verified correct 2026-08-02 |
 | systemctl --value trap | `systemctl show -p A,B,C --value` output is sorted ALPHABETICALLY (MainPID, ActiveState, SubState) | Never positionally parse `--value` with multiple props. Parse `key=value` lines instead. Fixed in `api/routers/dashboard.py` + `monitor.py` 2026-08-02 (daemon PID/uptime/mem were null in API). |
 | Emails unique key | `(listing_id, email)` | Added 2026-07-25 |
@@ -42,12 +51,12 @@
 | Listing daemon tuning (2026-08-07) | `config/gmaps_listings_working.yaml`: `page_wait_seconds 15→8`, Overview/Reviews/About tab `max_wait` dropped by 1 each, global `retry.attempts 3→2` + `delay 2→1`. `category` and `plus_code` fields both got per-field `retry.attempts: 1` (was wasting retries on the ~10-37% of listings where these fields fail). | Verified live: `Pinchtab navigation complete in ~9s (wait=8.00s)` (was 16-29s). Throughput target ~100/hr (was 43/hr). Category fill held ~90% (was 91.5%); plus_code held ~60% (was 63.5%). |
 | Postgres config drift | `listen_addresses` may revert to `localhost` | If cluster restarts externally, socket path breaks. Set to `''` for unix-socket-only. |
 | Postgres config drift | `port` may revert to `5433` | Same restart issue. Keep `port = 5432`. |
-| Enrichment services (full inventory) | 6 timer-driven + 2 perpetual | All under `~/.config/systemd/user/infinitecrawler-*`.<br>• `email-extract.{service,timer}` — every 2h at `00,02,...,22:15` + 5min randomized (`--max 2000 --concurrency 25`).<br>• `linkedin-search.{service,timer}` — every 4h at `00,04,08,12,16,20:30` + 5min randomized.<br>• `linkedin-match.{service,timer}` — every 6h at `03,09,15,21:30` + 5min randomized. (Added 2026-08-07.)<br>• `classify.{service,timer}` — daily at `03:00`. Requires `LLM_API_KEY` env (not in `.env`; only loaded by systemd).<br>• `pg-backup.{service,timer}` — daily (midnight-ish).<br>• `watchdog.{service,timer}` — every 15min, runs `monitor_pipeline.py --restart --quiet --json`.<br>• `linkedin-firehose-loop.service` — **PERPETUAL** (no timer). `--loop --loop-gap 60 --max-queries 8000 --concurrency 8`, `Restart=always`.<br>• `pinchtab.service` — **PERPETUAL** (`pinchtab-linux-amd64 server`). Watchdog depends on this being healthy. |
+| Enrichment services (full inventory) | 6 timer-driven + 3 perpetual | All under `~/.config/systemd/user/infinitecrawler-*`.<br>• `email-extract.{service,timer}` — every 2h at `00,02,...,22:15` + 5min randomized (`--max 200 --concurrency 25`; safety net).<br>• `email-extract-loop.service` — **PERPETUAL** (added 2026-08-08). `--loop --loop-gap 30 --max 1000 --concurrency 25`, `Restart=always`. Primary email driver.<br>• `linkedin-search.{service,timer}` — every 4h at `00,04,08,12,16,20:30` + 5min randomized.<br>• `linkedin-match.{service,timer}` — every 6h at `03,09,15,21:30` + 5min randomized. (Added 2026-08-07.)<br>• `classify.{service,timer}` — daily at `03:00`. Requires `LLM_API_KEY` env (in `.env`, loaded via `EnvironmentFile`). Missing key → exit 2 (health gate, 2026-08-08).<br>• `pg-backup.{service,timer}` — daily (midnight-ish).<br>• `watchdog.{service,timer}` — every 15min, runs `monitor_pipeline.py --restart --quiet --json`.<br>• `linkedin-firehose-loop.service` — **PERPETUAL** (no timer). `--loop --loop-gap 60 --max-queries 8000 --concurrency 8`, `Restart=always`.<br>• `pinchtab.service` — **PERPETUAL** (`pinchtab-linux-amd64 server`). Watchdog depends on this being healthy. |
 | Phase 3a drift trap (RESOLVED 2026-08-02) | `-h 127.0.0.1` works; the old false-alarm was PG not listening on TCP at that time | The 2026-07-29 audit's false-positive `search_1h=0` from `-h 127.0.0.1` was caused by PG temporarily not bound to TCP. Both `-h 127.0.0.1` and `-h /var/run/postgresql` are valid since 2026-08-02. Verified 2026-08-07 (psql works to both). |
 | Phase 2.5 drift trap | `--no-clean` invalid psql flag | Use `-t` (tuples-only). |
 | Listing daemon hardcoded knobs | `URL_FETCH_BATCH=100`, `QUEUE_LOW_THRESHOLD=20`, `URL_MAX_RETRIES=3` | Hardcoded in `daemons/listing_daemon.py` — NOT in YAML config. Plan's 2026-08-07 tuning was config-only; changing these would require daemon code changes. |
-| Listing daemon write-batching | `PostgreSQLListingDetailsUpsertStrategy._BATCH_SIZE=50`, `_write_batch` flushed via `executemany` on 50 items or shutdown | 2026-08-07 audit. In-memory batch → first flush lands 13-40 min after daemon startup. Use `MAX(updated_at)` age as primary stall signal, not `COUNT`. |
-| Listing daemon false-alarm (post-restart) | `listings_1h=0` in first ~30 min after daemon restart is normal | 2026-08-07. Caused by the 50-item batch flush + per-URL latency (now ~9-12s post-tuning). 50 listings × 9s ≈ 7.5 min minimum; in practice 13-40 min depending on timeout/failure rate. |
+| Listing daemon write-batching | `PostgreSQLListingDetailsUpsertStrategy._BATCH_SIZE=50` + 5s timer-based flush via `flush_if_due()`. Log line `listing.flush size=N age=Xs trigger=timer\|size`. | 2026-08-08 plan replaced size-only flush with timer+size so first flush lands within 5s of first URL completion (was 13-40 min). |
+| Listing daemon false-alarm (post-restart) | First `listing.flush trigger=timer` log line should appear within ~10-30s of daemon startup. If absent, suspect pinchtab port drift (9868→9869) or daemon flap. | 2026-08-08 plan. Verified live. |
 | Phase 3 listings_1h healthy floor | ≥60/hr (post 2026-08-07 tuning) | Pre-tuning was ~43/hr. If `listings_1h` drops below 60 with the new config, suspect pinchtab port drift (9868→9869), daemon flap, or Redis queue starvation. |
 | Email extract rate | ~50-100 emails/hr | 254 emails in last 7d before 2026-08-07 tuning; 451 emails from 177 listings in 30 min after tuning (multi-page crawl). Hit rate 8-15% on the easy backlog; ~1-3% on the residual hard backlog. |
 | LinkedIn firehose throughput | ~225 profiles/hr | 5,414 profiles/day (2026-08-06 baseline); 8,000 queries/cycle with 60s gap. `source='firehose'` in `scraper.linkedin_profiles`. Concurrency=8 with thread-local DDGS instances. |
@@ -303,7 +312,7 @@ SELECT
 Verify the offline enrichment scripts are producing results:
 
 ```bash
-# 4a. Email coverage
+# 4a. Email coverage (incl. emails_1h velocity)
 cd /root/codebase/vhd/infinitecrawler && uv run python scripts/db_email_extract.py --stats
 
 # 4b. LinkedIn coverage
@@ -311,6 +320,23 @@ cd /root/codebase/vhd/infinitecrawler && uv run python scripts/db_linkedin_searc
 
 # 4c. Classification coverage
 cd /root/codebase/vhd/infinitecrawler && uv run python scripts/db_classify.py --stats
+
+# 4d. emails_1h velocity from monitor (added 2026-08-08 plan)
+PGPASSWORD=$(grep ^PG_PASSWORD /root/codebase/vhd/infinitecrawler/.env | cut -d= -f2) \
+  psql -h /var/run/postgresql -U postgres -d infinitecrawler -t \
+  -c "SELECT count(*) FROM scraper.emails WHERE discovered_at > NOW() - INTERVAL '1 hour';"
+# Warn if <5 (loop daemon target is ≥20/hr)
+
+# 4e. LinkedIn match score-bucket histogram (added 2026-08-09 plan)
+PGPASSWORD=$(grep ^PG_PASSWORD /root/codebase/vhd/infinitecrawler/.env | cut -d= -f2) \
+  psql -h /var/run/postgresql -U postgres -d infinitecrawler -t -c "
+SELECT width_bucket(score, 0.0, 1.01, 10) AS bucket, count(*)
+FROM scraper.linkedin_gmaps_matches
+WHERE matched_at > NOW() - INTERVAL '24 hours'
+GROUP BY 1 ORDER BY 1;"
+# Expected post-2026-08-09 plan: bucket 5+6 (≤0.600) should be near-zero; most new
+# rows either reach substring path (0.85/0.75) or get killed (no row). Jaccard-path
+# matches in bucket 7+ (≥0.611) are rare because input data is too generic.
 ```
 
 **Expected:**
@@ -345,6 +371,12 @@ bash scripts/assert_dead_code.sh 2>&1 || true
 grep -rn "9869\|e03c" config/ base/ daemons/ 2>&1
 # Expected: zero matches. Port 9869 is the Chrome CDP debug port, not for daemons.
 # Token must be 123456, never the old e03c... placeholder.
+
+# 5d.2 File-log freshness (2026-08-08 plan) — must show fresh activity
+head -50 /var/log/infinitecrawler/infinitecrawler-listing.log
+ls -la /var/log/infinitecrawler/*.log | wc -l
+# Expect: first line should contain a `listing.flush` event within last ~30s of any active daemon;
+#        ≥5 files for actively running units.
 
 # 5e. Config YAMLs loadable
 uv run python -c "

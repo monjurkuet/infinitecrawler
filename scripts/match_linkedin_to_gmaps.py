@@ -52,11 +52,24 @@ CREATE_MATCHES_TABLE = """
 """
 
 NOISE_WORDS = {
+    # Existing — BD locations + generic business
     'bangladesh', 'dhaka', 'gulshan', 'banani', 'mirpur', 'uttara', 'bashundhara',
     'dhanmondi', 'motijheel', 'savar', 'gazipur', 'narayanganj', 'chattogram',
     'sylhet', 'khulna', 'rajshahi', 'barisal', 'cox', 'comilla', 'mymensingh',
     'hotel', 'hotels', 'resorts', 'resort', 'ltd', 'limited', 'inc', 'corporation',
     'linkedin', 'list', 'shop',
+    # Added 2026-08-09 — high-frequency noise in LinkedIn company_name fields
+    'manager', 'director', 'ceo', 'cto', 'cfo', 'coo', 'founder', 'co-founder',
+    'cofounder', 'owner', 'head', 'lead', 'senior', 'junior', 'executive',
+    'officer', 'president', 'vp', 'vice', 'chairman', 'chairwoman', 'partner',
+    'consultant', 'advisor', 'specialist', 'analyst', 'engineer', 'developer',
+    'designer', 'architect',
+    # Business / corporate suffixes (common in BD company registration).
+    # NOTE: 'co' and 'pvt' deliberately excluded — too short, breaks real
+    # brand names like "X Co" or "Y Pvt".
+    'group', 'company', 'companies', 'international', 'global', 'world', 'worldwide',
+    # LinkedIn-page suffix tokens (often in profile titles that leak into company_name)
+    'official', 'page', 'profile', 'career', 'careers', 'jobs', 'hiring',
 }
 
 
@@ -88,6 +101,14 @@ def score_match(company: str, listing_name: str, listing_category: str | None) -
         return 0.85
     if ln in c and len(l_clean) >= 1:
         return 0.75
+
+    # Require at least one meaningful distinct-word overlap.
+    # "Distinct" = non-noise AND length >= 4 (e.g., "grameenphone" survives;
+    # "co", "pvt", "ltd" do not). Kills the 0.50-0.60 noise cluster (~90% of
+    # recent jaccard-path matches) for new rows. Existing rows untouched (D4).
+    distinct_words = {w for w in (c_clean & l_clean) if len(w) >= 4}
+    if not distinct_words:
+        return 0.0
 
     inter = c_clean & l_clean
     if not inter:
@@ -225,15 +246,17 @@ def save_matches(conn, matches: list[dict]) -> int:
                     INSERT INTO scraper.linkedin_gmaps_matches
                         (profile_url, full_name, company_name, profile_title,
                          gmaps_listing_id, gmaps_name, gmaps_website, gmaps_phone,
-                         gmaps_address, gmaps_category, score)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                         gmaps_address, gmaps_category, score, is_verified)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (profile_url, gmaps_listing_id) DO UPDATE SET
                         score = GREATEST(linkedin_gmaps_matches.score, EXCLUDED.score),
-                        gmaps_name = EXCLUDED.gmaps_name
+                        gmaps_name = EXCLUDED.gmaps_name,
+                        is_verified = (linkedin_gmaps_matches.score >= 0.7) OR EXCLUDED.is_verified
                 """, (
                     m["profile_url"], m["full_name"], m["company_name"], m["profile_title"],
                     m["gmaps_listing_id"], m["gmaps_name"], m["gmaps_website"], m["gmaps_phone"],
                     m["gmaps_address"], m["gmaps_category"], m["score"],
+                    m["score"] >= 0.7,
                 ))
                 written += 1
             except Exception as e:

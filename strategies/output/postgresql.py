@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import time
 from datetime import datetime
 from typing import Any, Dict, Optional
 
@@ -28,6 +29,8 @@ class _PostgreSQLOutputBase(OutputStrategy):
 
     default_table = "gmaps_listings"
 
+    FLUSH_INTERVAL_SEC = 5.0
+
     def __init__(self, config: dict):
         self.config = config.get("config", {})
         self.schema = self.config.get("schema", "scraper")
@@ -40,23 +43,43 @@ class _PostgreSQLOutputBase(OutputStrategy):
         self._connection = None
         self._write_batch: list[tuple] = []
         self._BATCH_SIZE = 50
+        self._last_flush = time.monotonic()
         self._connect()
         self._ensure_schema_and_table()
 
-    def _flush_write_batch(self, sql_template: sql.Composed) -> None:
+    def _flush_write_batch(self, sql_template: sql.Composed, trigger: str = "size") -> None:
         if not self._write_batch:
             return
+        n = len(self._write_batch)
         try:
+            age = time.monotonic() - self._last_flush
             with self._connection.cursor() as cursor:
                 cursor.executemany(sql_template, self._write_batch)
-            self.results_count += len(self._write_batch)
+            self.results_count += n
+            self.logger.info(
+                "listing.flush size=%d age=%.1fs trigger=%s",
+                n, age, trigger,
+            )
         finally:
             self._write_batch.clear()
+            self._last_flush = time.monotonic()
 
     def flush_batch(self) -> None:
         sql = getattr(self, '_batch_sql', None)
         if sql is not None and self._write_batch:
             self._flush_write_batch(sql)
+
+    def flush_if_due(self, force: bool = False) -> None:
+        """Timer-based flush — call from daemon loop every FLUSH_INTERVAL_SEC.
+
+        Flushes if batch is non-empty AND either force=True or the time
+        threshold has elapsed. No-op when batch is empty.
+        """
+        sql = getattr(self, '_batch_sql', None)
+        if sql is None or not self._write_batch:
+            return
+        if force or (time.monotonic() - self._last_flush) >= self.FLUSH_INTERVAL_SEC:
+            self._flush_write_batch(sql, trigger="timer")
 
     def _resolve_setting(
         self,
@@ -312,7 +335,7 @@ class PostgreSQLOutputStrategy(_PostgreSQLOutputBase):
 
             self._write_batch.append((key_value, source_type, Jsonb(payload)))
             if len(self._write_batch) >= self._BATCH_SIZE:
-                self._flush_write_batch(insert_sql)
+                self._flush_write_batch(insert_sql, trigger="size")
         except Exception as e:
             self.logger.error(f"Failed to write to PostgreSQL: {e}")
             raise
@@ -379,7 +402,7 @@ class PostgreSQLUpsertStrategy(_PostgreSQLOutputBase):
 
             self._write_batch.append((key_value, source_type, Jsonb(payload)))
             if len(self._write_batch) >= self._BATCH_SIZE:
-                self._flush_write_batch(upsert_sql)
+                self._flush_write_batch(upsert_sql, trigger="size")
         except Exception as e:
             self.logger.error(f"Failed to upsert to PostgreSQL: {e}")
             raise
@@ -674,7 +697,7 @@ class PostgreSQLListingDetailsUpsertStrategy(_PostgreSQLOutputBase):
 
             self._write_batch.append(params)
             if len(self._write_batch) >= self._BATCH_SIZE:
-                self._flush_write_batch(upsert_sql)
+                self._flush_write_batch(upsert_sql, trigger="size")
         except Exception as e:
             self.logger.error(f"Failed to upsert listing details to PostgreSQL: {e}")
             raise

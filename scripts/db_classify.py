@@ -15,6 +15,7 @@ Usage:
 
 import argparse
 import logging
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -281,6 +282,12 @@ def main():
     parser.add_argument("--retry-failed", action="store_true",
                         help="Retry leads previously classified via fallback_llm_error")
     args = parser.parse_args()
+
+    # Health gate: abort with distinct exit code if LLM key missing.
+    # Exit 2 prevents systemd Restart=on-failure from hammering in a tight loop.
+    if not os.environ.get("LLM_API_KEY"):
+        log.warning("classify.aborted reason=missing_llm_api_key")
+        sys.exit(2)
 
     conn = psycopg.connect(**PG_CONFIG)
     conn.autocommit = False

@@ -258,6 +258,16 @@ def run_checks(restart: bool = False) -> dict:
     listings_with_linkedin = pg_query(
         "SELECT COUNT(DISTINCT listing_id) FROM scraper.linkedin_profiles"
     )
+    verified_matches = pg_query(
+        "SELECT COUNT(*) FROM scraper.linkedin_gmaps_matches WHERE is_verified"
+    )
+    verified_matches_1h = pg_query(
+        "SELECT COUNT(*) FROM scraper.linkedin_gmaps_matches "
+        "WHERE is_verified AND matched_at > NOW() - INTERVAL '1 hour'"
+    )
+    emails_1h = pg_query(
+        "SELECT COUNT(*) FROM scraper.emails WHERE discovered_at > NOW() - INTERVAL '1 hour'"
+    )
 
     # 8. Data velocity (last 1h and 6h window)
     velocity_search_1h = pg_query(
@@ -309,6 +319,9 @@ def run_checks(restart: bool = False) -> dict:
             is_healthy = False
             state = "active" if email_service_active else "inactive"
             issues.append(f"Email extraction stale: no emails written for {stale} min (service {state})")
+        if emails_1h != "error" and int(emails_1h) < 5:
+            is_healthy = False
+            issues.append(f"Email extraction low-throughput: only {emails_1h} emails written in last 1h")
     else:
         is_healthy = False
         issues.append("PG unreachable — cannot verify pipeline state")
@@ -398,8 +411,11 @@ def run_checks(restart: bool = False) -> dict:
                 "total_emails": int(total_emails) if total_emails != "error" else None,
                 "listings_with_email": int(listings_with_email) if listings_with_email != "error" else None,
                 "unprocessed_emails": int(unprocessed_emails) if unprocessed_emails != "error" else None,
+                "emails_1h": int(emails_1h) if emails_1h != "error" else None,
                 "total_linkedin_profiles": int(total_linkedin) if total_linkedin != "error" else None,
                 "listings_with_linkedin": int(listings_with_linkedin) if listings_with_linkedin != "error" else None,
+                "verified_matches": int(verified_matches) if verified_matches != "error" else None,
+                "verified_matches_1h": int(verified_matches_1h) if verified_matches_1h != "error" else None,
             },
         },
     }
@@ -441,9 +457,11 @@ def main():
         # Enrichment stats
         enrich = db.get("enrichment", {})
         if enrich.get("total_emails") is not None:
-            print(f"   Emails: {enrich['total_emails']} total ({enrich['listings_with_email']} listings, {enrich['unprocessed_emails']} pending)")
+            print(f"   Emails: {enrich['total_emails']} total ({enrich['listings_with_email']} listings, {enrich['unprocessed_emails']} pending, {enrich.get('emails_1h', '?')} last 1h)")
         if enrich.get("total_linkedin_profiles") is not None:
             print(f"   LinkedIn profiles: {enrich['total_linkedin_profiles']} ({enrich['listings_with_linkedin']} listings)")
+        if enrich.get("verified_matches") is not None:
+            print(f"   LinkedIn→GMaps matches: {enrich['verified_matches']} verified (score≥0.7; {enrich.get('verified_matches_1h', '?')} last 1h)")
 
         svc = status.get("services", {})
         if svc:

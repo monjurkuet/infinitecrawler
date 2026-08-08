@@ -99,12 +99,27 @@ WHERE website IS NOT NULL AND website != ''
   AND website ~* 'facebook\\.com|instagram\\.com|linkedin\\.com|twitter\\.com|youtube\\.com|tiktok\\.com';
 """
 
+ADD_MATCHES_IS_VERIFIED = """
+ALTER TABLE scraper.linkedin_gmaps_matches
+  ADD COLUMN IF NOT EXISTS is_verified BOOLEAN NOT NULL DEFAULT false;
+CREATE INDEX IF NOT EXISTS linkedin_gmaps_matches_verified_idx
+  ON scraper.linkedin_gmaps_matches(is_verified);
+"""
+
+BACKFILL_MATCHES_IS_VERIFIED = """
+UPDATE scraper.linkedin_gmaps_matches
+   SET is_verified = (score >= 0.7)
+ WHERE is_verified IS DISTINCT FROM (score >= 0.7);
+"""
+
 ALL_STATEMENTS = [
     CREATE_EMAILS_TABLE,
     CREATE_LINKEDIN_TABLE,
     CREATE_EMAILS_INDEXES,
     CREATE_LINKEDIN_INDEXES,
     MIGRATE_SOCIAL_LINKS,
+    ADD_MATCHES_IS_VERIFIED,
+    BACKFILL_MATCHES_IS_VERIFIED,
 ]
 
 
