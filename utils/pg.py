@@ -6,6 +6,7 @@ for emails and LinkedIn profiles.
 
 import logging
 import os
+from typing import Optional
 
 
 # ---------------------------------------------------------------------------
@@ -202,6 +203,7 @@ UPSERT_LINKEDIN_SQL = """
         listing_id    = EXCLUDED.listing_id,
         profile_title = COALESCE(EXCLUDED.profile_title, scraper.linkedin_profiles.profile_title),
         confidence    = GREATEST(scraper.linkedin_profiles.confidence, EXCLUDED.confidence),
+        checked_at    = NOW(),
         last_updated  = NOW()
 """
 
@@ -211,17 +213,51 @@ FETCH_UNPROCESSED_EMAILS_SQL = r"""
     FROM scraper.gmaps_listings l
     WHERE l.website IS NOT NULL
       AND l.website != ''
-      AND NOT EXISTS (SELECT 1 FROM scraper.emails e WHERE e.listing_id = l.id)
-    ORDER BY l.updated_at DESC
+      AND (
+            l.email_scanned_at IS NULL
+         OR l.email_scanned_at < NOW() - INTERVAL '14 days'
+      )
+    ORDER BY COALESCE(l.email_scanned_at, '1970-01-01'::timestamptz) ASC,
+             l.updated_at DESC
 """
 
 
 def get_unprocessed_emails(conn, limit: int = 100) -> list[dict]:
-    """Return listings that have a website but no emails extracted yet."""
+    """Return listings needing an email re-scan.
+
+    Listings with no prior scan (`email_scanned_at IS NULL`) or whose last scan
+    is older than 14 days. A site is re-scanned periodically so newly published
+    contact pages are caught; the 14-day window prevents infinite re-fetches of
+    sites that have no email on any of the paths we crawl.
+    """
     with conn.cursor() as cur:
         cur.execute(FETCH_UNPROCESSED_EMAILS_SQL + " LIMIT %s", (limit,))
         rows = cur.fetchall()
     return [{"id": r[0], "website": r[1]} for r in rows]
+
+
+MARK_EMAIL_SCANNED_SQL = """
+    UPDATE scraper.gmaps_listings
+       SET email_scanned_at = NOW()
+     WHERE id = ANY(%s)
+"""
+
+
+def mark_listings_email_scanned(conn, listing_ids: list[int]) -> int:
+    """Stamp `email_scanned_at = NOW()` on the given listings.
+
+    Called by `db_email_extract` after each batch — even when no emails were
+    found — so the perpetual loop does not re-fetch the same zero-email
+    listings on the next 30s cycle. Without this, the loop refetches the same
+    1000 listings forever.
+    """
+    if not listing_ids:
+        return 0
+    with conn.cursor() as cur:
+        cur.execute(MARK_EMAIL_SCANNED_SQL, (listing_ids,))
+        n = cur.rowcount
+    conn.commit()
+    return n
 
 
 FETCH_ALL_LISTINGS_WITH_WEBSITE_SQL = r"""
@@ -299,3 +335,165 @@ def upsert_linkedin_profiles(conn, profiles: list[dict], source: str = "linkedin
                 logger.error("Failed to upsert LinkedIn profile %s for listing %s: %s", p.get("profile_url"), p.get("listing_id"), exc)
     conn.commit()
     return written
+
+
+# ---------------------------------------------------------------------------
+# LinkedIn company enrichment (T1.2 / T1.3)
+# ---------------------------------------------------------------------------
+
+UPSERT_LINKEDIN_COMPANY_SQL = """
+    INSERT INTO scraper.linkedin_companies
+        (company_name_norm, company_name, slug, linkedin_url, industry,
+         company_size, employee_count, followers, headquarters, website,
+         founded, specialties, description, logo_url,
+         last_checked_at, attempts, notes)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), 1, %s)
+    ON CONFLICT (company_name_norm) DO UPDATE SET
+        slug              = COALESCE(EXCLUDED.slug,              scraper.linkedin_companies.slug),
+        linkedin_url      = COALESCE(EXCLUDED.linkedin_url,      scraper.linkedin_companies.linkedin_url),
+        industry          = COALESCE(EXCLUDED.industry,          scraper.linkedin_companies.industry),
+        company_size      = COALESCE(EXCLUDED.company_size,      scraper.linkedin_companies.company_size),
+        employee_count    = COALESCE(EXCLUDED.employee_count,    scraper.linkedin_companies.employee_count),
+        followers         = COALESCE(EXCLUDED.followers,         scraper.linkedin_companies.followers),
+        headquarters      = COALESCE(EXCLUDED.headquarters,      scraper.linkedin_companies.headquarters),
+        website           = COALESCE(EXCLUDED.website,           scraper.linkedin_companies.website),
+        founded           = COALESCE(EXCLUDED.founded,           scraper.linkedin_companies.founded),
+        specialties       = COALESCE(EXCLUDED.specialties,       scraper.linkedin_companies.specialties),
+        description       = COALESCE(EXCLUDED.description,       scraper.linkedin_companies.description),
+        logo_url          = COALESCE(EXCLUDED.logo_url,          scraper.linkedin_companies.logo_url),
+        last_checked_at   = NOW(),
+        attempts          = scraper.linkedin_companies.attempts + 1
+"""
+
+
+def upsert_linkedin_company(conn, c: dict) -> int:
+    """Upsert one row into scraper.linkedin_companies. Key = normalized company name."""
+    cur = conn.cursor()
+    cur.execute(UPSERT_LINKEDIN_COMPANY_SQL, (
+        c["company_name_norm"],
+        c["company_name"],
+        c.get("slug"),
+        c.get("linkedin_url"),
+        c.get("industry"),
+        c.get("company_size"),
+        c.get("employee_count"),
+        c.get("followers"),
+        c.get("headquarters"),
+        c.get("website"),
+        c.get("founded"),
+        c.get("specialties"),
+        c.get("description"),
+        c.get("logo_url"),
+        c.get("notes"),
+    ))
+    written = cur.rowcount or 1
+    conn.commit()
+    return written
+
+
+MARK_COMPANY_ATTEMPTED_SQL = """
+    INSERT INTO scraper.linkedin_companies (company_name_norm, company_name, last_attempted_at, attempts)
+    VALUES (%s, %s, NOW(), 1)
+    ON CONFLICT (company_name_norm) DO UPDATE SET
+        last_attempted_at = NOW(),
+        attempts          = scraper.linkedin_companies.attempts + 1
+"""
+
+
+def mark_company_attempted(conn, company_name: str, company_name_norm: str) -> None:
+    """Bump `last_attempted_at` even when the scraper returned nothing.
+
+    Prevents the enrichment loop from hammering a slug that consistently 404s.
+    """
+    cur = conn.cursor()
+    cur.execute(MARK_COMPANY_ATTEMPTED_SQL, (company_name_norm, company_name))
+    conn.commit()
+
+
+FETCH_COMPANIES_TO_ENRICH_SQL = r"""
+    SELECT all_co.company_name AS company_name, COUNT(*) AS n
+      FROM (
+          SELECT DISTINCT company_name
+            FROM scraper.linkedin_profiles
+           WHERE company_name IS NOT NULL AND company_name != ''
+          UNION
+          SELECT DISTINCT name AS company_name
+            FROM scraper.gmaps_listings
+           WHERE name IS NOT NULL AND name != ''
+      ) all_co
+      LEFT JOIN scraper.linkedin_companies lc
+        ON lc.company_name_norm = lower(regexp_replace(all_co.company_name, '\s+', ' ', 'g'))
+     WHERE lc.company_name_norm IS NULL
+        OR lc.last_checked_at  IS NULL
+        OR lc.last_checked_at  < NOW() - INTERVAL '30 days'
+     GROUP BY all_co.company_name
+     ORDER BY n DESC
+"""
+
+
+def get_companies_to_enrich(conn, limit: int = 200) -> list[dict]:
+    """Return distinct company names still needing (re-)enrichment.
+
+    Sources are BOTH:
+      - `linkedin_profiles.company_name` (companies we discovered employees at)
+      - `gmaps_listings.name`            (businesses we crawled)
+
+    A company is eligible if its `linkedin_companies` row is missing OR its
+    `last_checked_at` is older than 30 days. Order = source frequency (most
+    cited first), so we enrich the high-value targets before one-offs.
+    """
+    with conn.cursor() as cur:
+        cur.execute(FETCH_COMPANIES_TO_ENRICH_SQL + " LIMIT %s", (limit,))
+        rows = cur.fetchall()
+    return [{"company_name": r[0], "occurrences": r[1]} for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# LinkedIn profile snippet backfill (T1.1)
+# ---------------------------------------------------------------------------
+
+FETCH_PROFILES_TO_BACKFILL_SQL = r"""
+    SELECT profile_url, snippet, profile_title
+      FROM scraper.linkedin_profiles
+     WHERE (enriched_at IS NULL
+            OR enriched_at < NOW() - INTERVAL '60 days')
+       AND snippet IS NOT NULL AND snippet != ''
+"""
+
+
+def get_profiles_to_backfill(conn, limit: int = 500) -> list[dict]:
+    """Profiles whose snippet can be re-parsed for location/connections/headline."""
+    with conn.cursor() as cur:
+        cur.execute(FETCH_PROFILES_TO_BACKFILL_SQL + " LIMIT %s", (limit,))
+        rows = cur.fetchall()
+    return [{"profile_url": r[0], "snippet": r[1], "profile_title": r[2]} for r in rows]
+
+
+BACKFILL_PROFILE_ENRICHMENT_SQL = """
+    UPDATE scraper.linkedin_profiles
+       SET profile_location = COALESCE(%s, profile_location),
+           profile_country  = COALESCE(%s, profile_country),
+           connections_count= COALESCE(%s, connections_count),
+           headline         = COALESCE(%s, headline),
+           enriched_at      = NOW()
+     WHERE profile_url = %s
+"""
+
+
+def update_profile_enrichment(
+    conn,
+    profile_url: str,
+    *,
+    profile_location: Optional[str] = None,
+    profile_country: Optional[str] = None,
+    connections_count: Optional[str] = None,
+    headline: Optional[str] = None,
+) -> int:
+    """Apply snippet-parsed enrichment fields to a single profile."""
+    cur = conn.cursor()
+    cur.execute(BACKFILL_PROFILE_ENRICHMENT_SQL, (
+        profile_location, profile_country, connections_count, headline, profile_url,
+    ))
+    n = cur.rowcount or 0
+    conn.commit()
+    return n

@@ -40,6 +40,7 @@ from utils.pg import (  # noqa: E402
     get_all_listings_with_website,
     get_pg_config,
     get_unprocessed_emails,
+    mark_listings_email_scanned,
     upsert_emails,
 )
 
@@ -62,7 +63,16 @@ FETCH_TIMEOUT = 8  # seconds per website fetch
 MAX_HTML_BYTES = 2 * 1024 * 1024  # cap page size for regex safety
 HEARTBEAT_INTERVAL = 30  # seconds between progress logs
 PIDFILE = REPO_ROOT / "_system" / "email_extract.pid"
-PATH_CANDIDATES = ["contact", "contact-us", "about", "about-us", "team"]
+PATH_CANDIDATES = [
+    # English
+    "contact", "contact-us", "contact_us", "contactus", "contacts",
+    "about", "about-us", "about_us", "aboutus",
+    "team", "our-team", "our_team", "staff", "people",
+    "get-in-touch", "get_in_touch", "reach-us", "reach_us",
+    "support", "help", "help-center",
+    # Common alt paths
+    "imprint", "impressum", "legal", "company",
+]
 MAX_REDIRECTS = 3
 
 # T2 — browser-fallback knobs.  Concurrency is intentionally low (3) to avoid
@@ -486,6 +496,16 @@ def main():
                 processed, written = result  # type: ignore[misc]
                 log.info("[cycle %d] Done: processed %d / %d listings, wrote %d emails",
                          cycle, processed, len(listings), written)
+
+            # Stamp `email_scanned_at` on every listing we touched this batch
+            # (including zero-result ones) so the perpetual loop does not
+            # re-fetch the same sites on the next 30s cycle. Listings older
+            # than the staleness window (FETCH_UNPROCESSED_EMAILS_SQL) will be
+            # re-scanned for newly published contact pages.
+            ids = [l["id"] for l in listings]
+            if ids and not args.dry_run:
+                marked = mark_listings_email_scanned(conn, ids)
+                log.info("[cycle %d] Marked %d listings email_scanned_at=NOW()", cycle, marked)
 
             if not args.loop:
                 return

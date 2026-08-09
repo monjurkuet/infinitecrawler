@@ -91,6 +91,7 @@ class DaemonState:
         self.consecutive_errors: int = 0
         self.max_consecutive_errors: int = 10
         self.url_retries: dict[str, int] = {}
+        self.zero_item_streak: dict[str, int] = {}  # query → consecutive zero-item runs
 
         # Shutdown flag
         self.shutdown_requested: bool = False
@@ -254,7 +255,7 @@ async def search_single_query(state: DaemonState, query: str) -> bool:
             )
         except asyncio.TimeoutError:
             log.warning("Navigation timed out for query '%s'", query[:60])
-            return False
+            return False, 0
 
         # Verify navigation actually reached Google Maps (detect stuck browsers)
         try:
@@ -265,11 +266,11 @@ async def search_single_query(state: DaemonState, query: str) -> bool:
             if "google.com/maps" not in current_url:
                 log.warning("Navigation verification failed - expected GMaps, got: %s", current_url[:60])
                 await restart_browser(state)
-                return False
+                return False, 0
         except Exception as e:
             log.warning("Navigation verification error: %s", e)
             await restart_browser(state)
-            return False
+            return False, 0
 
         if state.delay_manager:
             await state.delay_manager.apply_delay("between_requests")
@@ -282,10 +283,11 @@ async def search_single_query(state: DaemonState, query: str) -> bool:
 
         scroll_attempts = 0
         max_scroll = state.config.get("pagination", {}).get("max_scroll_attempts", 200)
+        total_extracted = 0
 
         while scroll_attempts < max_scroll:
             if state.shutdown_requested:
-                return False
+                return False, total_extracted
 
             if state.output_strategy and state.output_strategy.has_reached_limit():
                 break
@@ -322,6 +324,7 @@ async def search_single_query(state: DaemonState, query: str) -> bool:
                     seen_items.add(item_id)
                     new_count += 1
 
+            total_extracted += new_count
             log.info("Query '%s': extracted %d items (%d new)",
                      query[:60], len(items), new_count)
 
@@ -339,11 +342,11 @@ async def search_single_query(state: DaemonState, query: str) -> bool:
             scroll_attempts += 1
             await state.delay_manager.apply_delay("between_requests")
 
-        return True
+        return True, total_extracted
 
     except Exception as e:
         log.error("Search failed for '%s': %s", query[:60], e)
-        return False
+        return False, 0
     finally:
         # Close the tab after each query to prevent tab buildup (maxTabs=20 eviction)
         if state.browser_manager and state.browser_manager.tab:
@@ -386,6 +389,17 @@ def retry_stale_failures(state: DaemonState, max_age_hours: float = 6.0):
     if hasattr(state.queue_strategy, "requeue_stale_failed"):
         return state.queue_strategy.requeue_stale_failed(max_age_hours)
     return 0
+
+
+# Cap retries on queries that keep producing zero items.  Without this, a
+# single bad query (e.g. a Bengali keyword with no real results, or a Google
+# Maps search page that never renders the expected DOM) re-enters the loop
+# every Redis visibility-timeout and burns ~30s of CPU per attempt — observed
+# in 2026-08-09 logs as the same query being dequeued 97× back-to-back.
+# After this many consecutive zero-item runs we mark the query as completed
+# (skip) so it leaves the rotation for ~1h, after which retry_stale_failures
+# will bring it back if it's still worth trying.
+ZERO_ITEM_RETRY_CAP = 3
 
 
 # ── Main loop ───────────────────────────────────────────────────────────────
@@ -485,16 +499,42 @@ async def eternal_loop(state: DaemonState):
                 continue
 
             # 7. Process the query
-            success = await search_single_query(state, query)
+            success, items_extracted = await search_single_query(state, query)
             if success:
                 state.queue_strategy.mark_completed(query)
+                # Reset the zero-item streak on any successful extraction, so
+                # queries that intermittently return items are not punished.
+                if items_extracted > 0:
+                    state.zero_item_streak.pop(query, None)
                 last_write_time = time.monotonic()  # update staleness timer
                 state.consecutive_errors = 0
                 state.pages_since_restart += 1
                 state.total_pages_processed += 1
+            elif items_extracted > 0:
+                # Reached the scroll cap with at least some items but stopped
+                # cleanly. Treat as completed so we don't retry-storm the query.
+                state.queue_strategy.mark_completed(query)
+                state.zero_item_streak.pop(query, None)
+                state.consecutive_errors = 0
             else:
-                state.url_retries[query] = state.url_retries.get(query, 0) + 1
-                state.queue_strategy.mark_failed(query, "Search extraction failed", state.url_retries[query])
+                # Zero items — count a streak and skip the query once it hits
+                # the cap. `retry_stale_failures` will eventually bring it
+                # back if it has a real chance of working later.
+                streak = state.zero_item_streak.get(query, 0) + 1
+                state.zero_item_streak[query] = streak
+                if streak >= ZERO_ITEM_RETRY_CAP:
+                    log.info(
+                        "Skipping query after %d zero-item runs: %s",
+                        streak, query[:60],
+                    )
+                    state.queue_strategy.mark_completed(query)
+                    state.zero_item_streak.pop(query, None)
+                else:
+                    state.url_retries[query] = state.url_retries.get(query, 0) + 1
+                    state.queue_strategy.mark_failed(
+                        query, "Search extraction failed",
+                        state.url_retries[query],
+                    )
                 state.consecutive_errors += 1
 
             # 8. Jitter delay

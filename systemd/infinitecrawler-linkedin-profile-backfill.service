@@ -1,0 +1,19 @@
+[Unit]
+Description=InfiniteCrawler LinkedIn Profile Snippet Backfill — re-parse stored DDGS snippets for location/connections/headline
+Documentation=https://github.com/monjurkuet/infinitecrawler
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/codebase/vhd/infinitecrawler
+EnvironmentFile=%h/codebase/vhd/infinitecrawler/.env
+ExecStart=/root/.local/bin/uv run python scripts/db_linkedin_profile_backfill.py --loop --loop-gap 86400 --max 5000
+Restart=always
+RestartSec=600
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ic-li-backfill
+
+[Install]
+WantedBy=default.target
