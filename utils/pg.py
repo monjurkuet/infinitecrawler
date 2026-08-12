@@ -167,6 +167,7 @@ def upsert_emails(conn, emails: list[dict]) -> int:
     with conn.cursor() as cur:
         for e in emails:
             try:
+                cur.execute("SAVEPOINT sv_row")
                 cur.execute(UPSERT_EMAIL_SQL, (
                     e["listing_id"],
                     e["email"],
@@ -175,10 +176,13 @@ def upsert_emails(conn, emails: list[dict]) -> int:
                     e.get("context_snippet"),
                 ))
                 written += cur.rowcount or 1
+                cur.execute("RELEASE SAVEPOINT sv_row")
             except Exception as exc:
-                # Skip failed row; do NOT rollback — earlier rows in this
-                # txn remain valid and commit below.
                 logger.error("Failed to upsert email %s for listing %s: %s", e.get("email"), e.get("listing_id"), exc)
+                try:
+                    cur.execute("ROLLBACK TO SAVEPOINT sv_row")
+                except Exception:
+                    pass
     for attempt in range(3):
         try:
             conn.commit()
@@ -322,6 +326,7 @@ def upsert_linkedin_profiles(conn, profiles: list[dict], source: str = "linkedin
     with conn.cursor() as cur:
         for p in profiles:
             try:
+                cur.execute("SAVEPOINT sv_row")
                 cur.execute(UPSERT_LINKEDIN_SQL, (
                     p["listing_id"],
                     p.get("full_name"),
@@ -334,8 +339,13 @@ def upsert_linkedin_profiles(conn, profiles: list[dict], source: str = "linkedin
                     source,
                 ))
                 written += cur.rowcount or 1
+                cur.execute("RELEASE SAVEPOINT sv_row")
             except Exception as exc:
                 logger.error("Failed to upsert LinkedIn profile %s for listing %s: %s", p.get("profile_url"), p.get("listing_id"), exc)
+                try:
+                    cur.execute("ROLLBACK TO SAVEPOINT sv_row")
+                except Exception:
+                    pass
     conn.commit()
     return written
 

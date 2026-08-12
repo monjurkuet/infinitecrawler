@@ -39,7 +39,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 from utils.linkedin_parser import parse_linkedin as _parse_linkedin  # noqa: E402
-from utils.pg import get_pg_config  # noqa: E402
+from utils.pg import PG_LOCK_TIMEOUT, get_pg_config  # noqa: E402
 from utils.rate_gate import RateGate  # noqa: E402
 from utils.transliterate import bn_to_en, contains_bengali  # noqa: E402
 
@@ -155,8 +155,12 @@ UPSERT_SQL = """
 def save_batch(conn, profiles: list[dict]) -> int:
     """Upsert a batch of profiles. Retries commit on transient DB error.
 
-    Per-row failures are logged and skipped WITHOUT rolling back the whole
-    batch (which would lose previously queued rows). Returns rows written.
+    Uses SAVEPOINT per row so a single row failure (lock_timeout,
+    statement_timeout) only rolls back that row, not the entire batch.
+    Without SAVEPOINT, a single INSERT failure aborts the whole txn
+    and every subsequent INSERT fails with "current transaction is
+    aborted".
+    Returns rows written (to DB, not attempted).
     """
     if not profiles:
         return 0
@@ -164,6 +168,7 @@ def save_batch(conn, profiles: list[dict]) -> int:
     with conn.cursor() as cur:
         for p in profiles:
             try:
+                cur.execute("SAVEPOINT sv_row")
                 cur.execute(UPSERT_SQL, (
                     p.get("full_name"),
                     p["profile_url"],
@@ -175,10 +180,13 @@ def save_batch(conn, profiles: list[dict]) -> int:
                     SOURCE_TAG,
                 ))
                 written += cur.rowcount or 1
+                cur.execute("RELEASE SAVEPOINT sv_row")
             except Exception as exc:
-                # Skip failed row; do NOT rollback — previous rows in this
-                # txn are still valid and will commit below.
                 log.warning("save_batch: row skipped: %s (%s)", p.get("profile_url"), exc)
+                try:
+                    cur.execute("ROLLBACK TO SAVEPOINT sv_row")
+                except Exception:
+                    pass
     for attempt in range(3):
         try:
             conn.commit()
@@ -332,7 +340,13 @@ def run_firehose(
 
     Returns stats dict.
     """
-    conn = psycopg.connect(**get_pg_config())
+    _pg_cfg = dict(get_pg_config())
+    # Firehose UPSERTs contend with linkedin-search daemon on profile_url
+    # rows — use a longer lock_timeout so batches survive brief contention.
+    _pg_cfg["options"] = _pg_cfg.get("options", "").replace(
+        f"lock_timeout={PG_LOCK_TIMEOUT}", "lock_timeout=60s"
+    ) if "options" in _pg_cfg else ""
+    conn = psycopg.connect(**_pg_cfg)
     conn.autocommit = False
 
     exec_cfg = cfg["execution"]
