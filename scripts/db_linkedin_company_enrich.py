@@ -64,7 +64,6 @@ logging.basicConfig(
 log = logging.getLogger("db_linkedin_company_enrich")
 
 DEFAULT_MAX = 100
-DDGS_BASE_URL = "https://search.datasolved.org/search/text"  # noqa: F841 — historical
 DDGS_DELAY_S = 2.0  # rate-limit DDGS to be polite
 HTTP_DELAY_S = 4.0  # LinkedIn anti-bot: ChocoData observed 4s + fresh conn works
 LINKEDIN_PATH_RE = re.compile(r"linkedin\.com/company/([^/?#]+)", re.I)
@@ -109,6 +108,7 @@ async def resolve_slug(
                 )
                 results.extend(rs)
             except Exception:
+                log.debug("db_linkedin_company_enrich: backend %s failed", backend, exc_info=True)
                 continue
     except Exception as e:
         log.debug("DDGS failed for '%s': %s", company_name[:50], e)

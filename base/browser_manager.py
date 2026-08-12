@@ -1,6 +1,6 @@
 import asyncio
 import logging
-
+import os
 
 
 class BrowserManager:
@@ -14,8 +14,10 @@ class BrowserManager:
     `--max_old_space_size=2048 --renderer-process-limit=5` (the pinchtab defaults
     OOM on Google Maps).
 
-    `self.tab` continues to expose a Tab interface so the existing
-    pagination/extraction strategies work unchanged.
+    `self.tab` continues to expose a single Tab for back-compat with code paths
+    that don't pass a tab explicitly (e.g. search daemon).  The listing daemon
+    uses the round-robin ``tabs`` pool (size = ``LISTING_TAB_POOL`` env, default
+    3) so multiple URLs can be processed concurrently.
     """
 
     def __init__(
@@ -27,6 +29,10 @@ class BrowserManager:
         self.headless = headless
         self.page_wait_seconds = page_wait_seconds
         self.tab = None
+        self.tabs: list = []            # tab pool (round-robin)
+        self.tab_pool_size: int = int(os.environ.get("LISTING_TAB_POOL", "3"))
+        self.tab_pool_lock = asyncio.Lock()
+        self._next_idx: int = 0
         self.pinchtab_config = pinchtab_config or {}
         self._pinchtab = None
         self.logger = logging.getLogger(self.__class__.__name__)
@@ -48,7 +54,7 @@ class BrowserManager:
         self.logger.info("Pinchtab browser attached")
 
     async def navigate(self, url: str):
-        """Navigate to URL and return a Tab adapter for the scraper."""
+        """Navigate single-slot tab (back-compat for search daemon)."""
         start = asyncio.get_running_loop().time()
         self.tab = await self._pinchtab.navigate(url)
         elapsed = asyncio.get_running_loop().time() - start
@@ -57,14 +63,25 @@ class BrowserManager:
         )
         return self.tab
 
-    async def cleanup(self):
-        """Release the HTTP session, close aiohttp connector.
-
-        We intentionally do NOT kill pinchtab's Chrome — the always-on
-        supervisor manages that lifecycle.  Killing from outside desyncs the
-        dashboard.  But we DO need to close our HTTP/TCP layers cleanly or
-        aiohttp spams "Unclosed connector" warnings on GC.
+    async def acquire_tab(self):
+        """Return a tab from the pool, creating one lazily up to
+        ``tab_pool_size``.  New tabs land on ``about:blank``; the caller
+        navigates to the real URL.  Reused tabs are returned round-robin
+        without navigation (avoids double page-loads — the caller navigates
+        in the same step).  Pinchtab 0.15 lacks tab-close, so re-navigation
+        is the only way to "reset" a tab.
         """
+        async with self.tab_pool_lock:
+            if len(self.tabs) < self.tab_pool_size:
+                tab = await self._pinchtab.navigate("about:blank")
+                self.tabs.append(tab)
+                return tab
+            tab = self.tabs[self._next_idx % len(self.tabs)]
+            self._next_idx += 1
+        return tab
+
+    async def cleanup(self):
+        """Single-tab cleanup (back-compat for search daemon / older callers)."""
         if self._pinchtab:
             try:
                 await self._pinchtab.cleanup()
@@ -72,10 +89,37 @@ class BrowserManager:
                 self.logger.warning("Pinchtab cleanup error: %s", e)
         self._pinchtab = None
         self.tab = None
+        self.tabs.clear()
         self.logger.info("Pinchtab session cleaned up")
 
+    async def cleanup_all(self):
+        """Reset every tab in the pool, then tear down the pinchtab session.
+
+        Called by the listing daemon's wall-clock browser restart.  Each tab
+        is navigated to ``about:blank`` to free its underlying page; pinchtab
+        0.15 has no real close API, so this is the strongest reset available.
+        """
+        async with self.tab_pool_lock:
+            for t in list(self.tabs):
+                try:
+                    await t._client.navigate("about:blank")
+                except RuntimeError:
+                    pass
+                except Exception as e:
+                    self.logger.warning("tab reset error: %s", e)
+            self.tabs.clear()
+            self._next_idx = 0
+        if self._pinchtab:
+            try:
+                await self._pinchtab.cleanup()
+            except Exception as e:
+                self.logger.warning("Pinchtab cleanup error: %s", e)
+        self._pinchtab = None
+        self.tab = None
+        self.logger.info("Pinchtab session cleaned up (all tabs)")
+
     async def close_tab(self):
-        """Close the current tab to prevent tab buildup."""
+        """Close the current single-slot tab to prevent tab buildup."""
         if self._pinchtab and self.tab:
             try:
                 await self._pinchtab.close_tab()

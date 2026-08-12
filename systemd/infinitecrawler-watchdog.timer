@@ -1,0 +1,12 @@
+[Unit]
+Description=InfiniteCrawler watchdog timer (every 10 min)
+Requires=infinitecrawler-watchdog.service
+
+[Timer]
+OnCalendar=*:0/10
+Persistent=true
+AccuracySec=30s
+Unit=infinitecrawler-watchdog.service
+
+[Install]
+WantedBy=timers.target

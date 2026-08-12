@@ -19,10 +19,28 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Optional
 
 import psycopg
 from dotenv import load_dotenv
+
+if TYPE_CHECKING:
+    from base.strategies import (
+        ExtractionStrategy,
+        OutputStrategy,
+        QueueStrategy,
+    )
+
+# psutil is optional on minimal envs.  Guard the import once at module load;
+# the heartbeat block skips the mem line when this flag is False instead of
+# raising ImportError inside the eternal loop (which would otherwise trip
+# consecutive_errors and churn browser restarts).
+try:
+    import psutil as _psutil  # noqa: F401
+    _HAS_PSUTIL = True
+except ImportError:
+    _psutil = None  # type: ignore[assignment]
+    _HAS_PSUTIL = False
 
 # ── Project imports ─────────────────────────────────────────────────────────
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -53,6 +71,15 @@ URL_EXTRACTION_TIMEOUT = 35  # Seconds before extraction attempt is aborted (pag
 URL_NAV_TIMEOUT = 120  # Seconds for initial URL navigation (includes page_wait_seconds=45 plus page load)
 BROWSER_START_TIMEOUT = 30  # Seconds for browser launch
 STALLED_REQUEUE_INTERVAL = 60  # Check for stalled processing items every N sec
+HEARTBEAT_SEC = int(os.environ.get("DAEMON_HEARTBEAT_SEC", "300"))  # log heartbeat every N sec
+
+# Concurrency-storm guard: when two+ coroutines in the same gather() batch
+# detect a fault after a browser restart (cleanup_all() invalidated all the
+# pooled tabs at once), only ALLOW one to actually rebuild — the others skip
+# the restart inside _restart_locked_get_tab if another restart completed
+# within this window. 5s is comfortably above BROWSER_START_TIMEOUT-heavy
+# rebuilds while small enough that a real second fault still re-triggers.
+_RESTART_DEDUP_WINDOW_S = 5
 
 # T4 diagnostics — sample HTML on persistent failure.  Off by default because
 # page bytes bloat logs; set LOG_SAMPLE_HTML=1 to enable forensics.
@@ -90,9 +117,9 @@ class DaemonState:
 
     def __init__(self):
         self.browser_manager: Optional[BrowserManager] = None
-        self.output_strategy: Optional[Any] = None
-        self.extraction_strategy: Optional[Any] = None
-        self.queue_strategy: Optional[Any] = None
+        self.output_strategy: Optional[OutputStrategy] = None
+        self.extraction_strategy: Optional[ExtractionStrategy] = None
+        self.queue_strategy: Optional[QueueStrategy] = None
         self.delay_manager: Optional[DelayManager] = None
         self.pg_conn: Optional[psycopg.Connection] = None
         self.config: dict = {}
@@ -102,12 +129,26 @@ class DaemonState:
         self.pages_since_restart: int = 0
         self.last_restart_time: float = 0.0
         self.total_pages_processed: int = 0
+        # B14 — per-tab local page counters (avoid race under tab-pool concurrency);
+        # folded into total_pages_processed after each gather() batch.
+        self.tab_pages: dict[int, int] = {}
+        # Serializes restart_browser() so concurrent process_url coroutines
+        # in a gather batch don't race on cleanup_all() / start_browser().
+        self.restart_lock = asyncio.Lock()
+        # Monotonic timestamp of the most recent restart_browser() call; used
+        # by _restart_locked_get_tab to dedup restarts when sibling coroutines
+        # in the same gather() batch trip after the same underlying fault.
+        self.last_browser_restart_monotonic: float = 0.0
 
         # Error tracking
         self.consecutive_errors: int = 0
         self.max_consecutive_errors: int = 10
 
         self.shutdown_requested: bool = False
+
+        # Heartbeat tracking
+        self.last_heartbeat_time: float = 0.0
+        self.last_heartbeat_pages: int = 0
 
         # T4 — per-cycle field success counters for the cycle_summary log line
         self.cycle_success: dict[str, int] = {
@@ -153,8 +194,9 @@ async def restart_browser(state: DaemonState):
     log.info("Reconnecting to pinchtab (pages=%d, uptime=%ds)...",
              state.pages_since_restart, int(time.time() - state.last_restart_time))
     if state.browser_manager:
-        await state.browser_manager.cleanup()
+        await state.browser_manager.cleanup_all()
     state.browser_manager = None
+    state.tab_pages = {}
     # Unbind browser-bound strategies
     state.extraction_strategy = None
     await asyncio.sleep(1)
@@ -162,6 +204,10 @@ async def restart_browser(state: DaemonState):
         await asyncio.wait_for(start_browser(state), timeout=BROWSER_START_TIMEOUT)
         await asyncio.wait_for(
             _refresh_browser_bound_strategies(state), timeout=BROWSER_START_TIMEOUT)
+        # Stamp the monotonic restart completion so concurrent callers in the
+        # same gather() batch can dedup their own restart attempts (see
+        # _restart_locked_get_tab).
+        state.last_browser_restart_monotonic = time.monotonic()
     except asyncio.TimeoutError:
         log.error("Pinchtab reconnect timed out after %ds", BROWSER_START_TIMEOUT)
         state.browser_manager = None
@@ -239,18 +285,18 @@ def _pg_reconnect(state: DaemonState) -> None:
             with state.pg_conn.cursor() as cur:
                 cur.execute("SELECT 1")
             return  # alive
-        except Exception:
+        except (psycopg.OperationalError, ConnectionError):
             log.info("PG connection stale — reconnecting…")
             try:
                 state.pg_conn.close()
             except Exception:
-                pass
+                log.debug("listing_daemon: stale pg close failed", exc_info=True)
             state.pg_conn = None
     try:
         state.pg_conn = _connect_pg()
         state.pg_conn.autocommit = True
         log.info("PG reconnected: %s:%s/%s", PG_HOST, PG_PORT, PG_DB)
-    except Exception as e:
+    except (psycopg.OperationalError, ConnectionError) as e:
         log.error("PG reconnect failed: %s", e)
         state.pg_conn = None
 
@@ -325,17 +371,58 @@ def _has_meaningful_data(item: dict) -> bool:
     return bool(item.get("name"))
 
 
-async def process_url(state: DaemonState, url: str) -> bool:
+async def _restart_locked_get_tab(state: DaemonState, tab_key: int):
+    """Serialize browser restart across the concurrent batch, then hand back a
+    fresh tab from the rebuilt pool (old tab objects die with the old session).
+
+    Dedup: if a sibling coroutine in the same gather() batch already triggered
+    a restart within the last ~5s, skip the (idempotent-but-expensive) rebuild
+    and just acquire a fresh tab. Without this dedup, N concurrent coroutines
+    that all detect a fault (because cleanup_all() invalidated every pooled
+    tab at once) would each serialize on restart_lock and rebuild the browser
+    N times for the single underlying fault.
+    """
+    async with state.restart_lock:
+        if state.shutdown_requested:
+            return None
+        now = time.monotonic()
+        if now - state.last_browser_restart_monotonic > _RESTART_DEDUP_WINDOW_S:
+            await restart_browser(state)
+        else:
+            log.debug("skip restart (within %ds dedup window)", _RESTART_DEDUP_WINDOW_S)
+    try:
+        return await state.browser_manager.acquire_tab()
+    except Exception as e:
+        log.warning("tab re-acquire after restart failed: %s", e)
+        return None
+
+
+async def process_url(state: DaemonState, url: str, tab, tab_key: int) -> bool:
     """Deep-extract a single listing URL with retry logic.
-    Returns True if data was extracted and written to PG, False otherwise.
+
+    ``tab`` is the pre-acquired PinchtabTab from the pool. ``tab_key`` is an
+    **opaque identity** (currently ``id(tab)``) used as the per-iteration key
+    for ``state.tab_pages`` — it is NOT a stable pool slot index.  A fresh tab
+    acquired after a restart gets a new ``id()``, so the key is unique per
+    live tab object.  Per-tab local counter (`state.tab_pages[tab_key]`)
+    avoids racing on `state.total_pages_processed` under concurrency; the
+    aggregate is folded into the global counter after gather() returns.
+
+    NOTE: a browser restart (nav timeout / extraction timeout / fatal
+    exception) invalidates every pooled tab.  After a restart we re-acquire a
+    fresh tab and keep retrying with it.
     """
     last_failure_kind: Optional[str] = None
     for attempt in range(URL_MAX_RETRIES):
         try:
-            # Navigate with timeout
+            # Navigate with timeout — re-navigate the existing tab in-place
+            # via the tab-scoped /tabs/{id}/navigate endpoint so the listing
+            # daemon's worker pool keeps the same set of tabs (avoiding the
+            # pinchtab ``maxTabs`` eviction cliff that orphans worker tabs
+            # under concurrent navigation).
             try:
                 await asyncio.wait_for(
-                    state.browser_manager.navigate(url),
+                    tab._client.navigate(url, tab_id=tab._tab_id),
                     timeout=URL_NAV_TIMEOUT,
                 )
             except asyncio.TimeoutError:
@@ -343,7 +430,9 @@ async def process_url(state: DaemonState, url: str) -> bool:
                 log.warning("Navigation timed out for %s (attempt %d/%d)",
                             url[:60], attempt + 1, URL_MAX_RETRIES)
                 if attempt < URL_MAX_RETRIES - 1:
-                    await restart_browser(state)
+                    tab = await _restart_locked_get_tab(state, tab_key)
+                    if tab is None:
+                        return False
                     continue
                 return False
             if state.delay_manager:
@@ -352,7 +441,7 @@ async def process_url(state: DaemonState, url: str) -> bool:
             # Extract with timeout — multi-step extraction can hang on slow/broken pages
             try:
                 items = await asyncio.wait_for(
-                    state.extraction_strategy.extract_items(),
+                    state.extraction_strategy.extract_items(tab),
                     timeout=URL_EXTRACTION_TIMEOUT,
                 )
             except asyncio.TimeoutError:
@@ -363,7 +452,9 @@ async def process_url(state: DaemonState, url: str) -> bool:
                 # Restart browser after ANY extraction timeout — wait_for cancel
                 # can leave the Chrome tab in a bad state, causing subsequent
                 # navigate() calls to hang indefinitely.
-                await restart_browser(state)
+                tab = await _restart_locked_get_tab(state, tab_key)
+                if tab is None:
+                    return False
                 state.consecutive_errors = 0
 
             # Filter out items with no meaningful data (empty name, phone, etc.)
@@ -394,7 +485,7 @@ async def process_url(state: DaemonState, url: str) -> bool:
             for item in items:
                 item["_crawl_meta"] = {
                     "source_url": url,
-                    "pages_processed": state.total_pages_processed,
+                    "pages_processed": state.tab_pages.get(tab_key, 0),
                     "retry_count": attempt,
                 }
                 # In-stream rule-based fallback classification — zero-cost, pure CPU.
@@ -413,32 +504,32 @@ async def process_url(state: DaemonState, url: str) -> bool:
 
             log.info("Extracted %d fields from %s (attempt %d/%d)",
                      len(items), url[:60], attempt + 1, URL_MAX_RETRIES)
-            # Close tab to prevent buildup
-            if state.browser_manager:
-                await state.browser_manager.close_tab()
+            # Tab is reused by the pool — no close.
+            state.tab_pages[tab_key] = state.tab_pages.get(tab_key, 0) + 1
             return True
 
         except psycopg.errors.UniqueViolation:
             log.debug("Already in DB (duplicate source_url): %s", url[:60])
-            if state.browser_manager:
-                await state.browser_manager.close_tab()
+            # Tab is reused by the pool — no close.
             return True
         except Exception as e:
             last_failure_kind = f"exception:{type(e).__name__}"
             log.warning("Attempt %d/%d failed for %s: %s",
                         attempt + 1, URL_MAX_RETRIES, url[:60], e)
             if attempt < URL_MAX_RETRIES - 1:
-                await restart_browser(state)
+                tab = await _restart_locked_get_tab(state, tab_key)
+                if tab is None:
+                    return False
                 await asyncio.sleep(2)
 
     # All retries exhausted — T4: emit ERROR with sample HTML for forensics
     log.error("All %d attempts failed for %s (kind=%s)",
               URL_MAX_RETRIES, url[:60], last_failure_kind)
-    if LOG_SAMPLE_HTML and state.browser_manager:
+    if LOG_SAMPLE_HTML and tab is not None:
         try:
-            sample = await state.browser_manager.tab.evaluate(
+            sample = await tab.evaluate(
                 "(document.documentElement.outerHTML || '')[:%d]" % LOG_SAMPLE_BYTES
-            ) if state.browser_manager.tab else None
+            )
             if sample:
                 log.error("sample_html url=%s html=%s", url[:120], str(sample)[:LOG_SAMPLE_BYTES])
         except Exception as sample_exc:
@@ -457,6 +548,24 @@ async def eternal_loop(state: DaemonState):
         try:
             now = time.monotonic()
 
+            # 0a. Heartbeat
+            if now - state.last_heartbeat_time > HEARTBEAT_SEC:
+                elapsed = now - state.last_heartbeat_time
+                delta = state.total_pages_processed - state.last_heartbeat_pages
+                if _HAS_PSUTIL:
+                    mem_mb = _psutil.Process().memory_info().rss // 1048576
+                    log.info(
+                        "heartbeat uptime=%.0fs processed_delta=%d velocity=%d/hr mem=%dMB",
+                        elapsed, delta, int(3600 * delta / elapsed) if elapsed > 0 else 0, mem_mb,
+                    )
+                else:
+                    log.info(
+                        "heartbeat uptime=%.0fs processed_delta=%d velocity=%d/hr",
+                        elapsed, delta, int(3600 * delta / elapsed) if elapsed > 0 else 0,
+                    )
+                state.last_heartbeat_time = now
+                state.last_heartbeat_pages = state.total_pages_processed
+
             # T4 — per-cycle summary line (success{...} retries{...})
             if now - state.cycle_last_summary >= SUMMARY_INTERVAL:
                 log.info(
@@ -473,7 +582,7 @@ async def eternal_loop(state: DaemonState):
             # 0. Periodic write-batch flush (5s timer, supersedes 50-row size trigger)
             if state.output_strategy and hasattr(state.output_strategy, "flush_if_due"):
                 try:
-                    state.output_strategy.flush_if_due()
+                    await state.output_strategy.flush_if_due()
                 except Exception as flush_exc:
                     log.warning("Periodic flush failed: %s", flush_exc)
 
@@ -508,33 +617,61 @@ async def eternal_loop(state: DaemonState):
                 await restart_browser(state)
                 state.consecutive_errors = 0
 
-            # 5. Dequeue next URL
-            url = state.queue_strategy.dequeue(timeout=10)
-            if not url:
+            # 5. Dequeue a batch of URLs (one per tab in the pool).
+            pool_size = state.browser_manager.tab_pool_size if state.browser_manager else 1
+            batch = []
+            for _ in range(pool_size):
+                url = state.queue_strategy.dequeue(timeout=10)
+                if not url:
+                    break
+                batch.append(url)
+
+            if not batch:
                 stats = state.queue_strategy.get_stats()
                 log.debug("No URL available (pending=%d processing=%d)",
                           stats.get("pending", 0), stats.get("processing", 0))
                 await asyncio.sleep(5)
                 continue
 
-            # 6. Process URL
-            log.info("Processing: %s", url[:80])
-            state.cycle_processed += 1
-            success = await process_url(state, url)
+            # 6. Acquire one tab per URL (creates tabs lazily up to pool size),
+            # then process the batch in parallel.  ``key = id(tab)`` is an
+            # opaque per-iteration identity for state.tab_pages — not a slot.
+            tabs_with_key = []
+            for url in batch:
+                tab = await state.browser_manager.acquire_tab()
+                tabs_with_key.append((tab, id(tab)))
 
-            if success:
-                state.queue_strategy.mark_completed(url)
-                state.consecutive_errors = 0
-                state.pages_since_restart += 1
-                state.total_pages_processed += 1
-            else:
-                state.consecutive_errors += 1
-                state.queue_strategy.mark_failed(url, "Extraction exhausted retries",
-                                                 state.consecutive_errors)
-                # Browser restart is handled by the scheduled triggers (step 3/4)
-                # or by process_url() on timeout. Do NOT restart on every failure.
+            results = await asyncio.gather(
+                *(process_url(state, url, tab, key) for url, (tab, key) in zip(batch, tabs_with_key)),
+                return_exceptions=True,
+            )
 
-            # 7. Jitter delay
+            # 7. Aggregate per-tab local counters into global.
+            for url, (_tab, key), result in zip(batch, tabs_with_key, results):
+                state.cycle_processed += 1
+                if isinstance(result, Exception):
+                    log.error("process_url raised: %s url=%s", result, url[:80])
+                    state.consecutive_errors += 1
+                    state.queue_strategy.mark_failed(url, f"Exception: {result}",
+                                                     state.consecutive_errors)
+                    continue
+                if result:
+                    state.queue_strategy.mark_completed(url)
+                    state.consecutive_errors = 0
+                    state.pages_since_restart += 1
+                else:
+                    state.consecutive_errors += 1
+                    state.queue_strategy.mark_failed(url, "Extraction exhausted retries",
+                                                     state.consecutive_errors)
+                    # Browser restart handled by scheduled triggers (step 3/4)
+                    # or by process_url() on timeout. Do NOT restart on every failure.
+
+            # Fold per-tab counters into the global total (atomic write).
+            tab_total = sum(state.tab_pages.values())
+            state.total_pages_processed += tab_total
+            state.tab_pages = {}
+
+            # 8. Jitter delay between batches
             await state.delay_manager.apply_delay("between_requests")
 
         except Exception as e:
@@ -554,7 +691,7 @@ async def shutdown(state: DaemonState):
         try:
             state.pg_conn.close()
         except Exception:
-            pass
+            log.debug("listing_daemon: pg close failed", exc_info=True)
         state.pg_conn = None
 
     log.info("Listing daemon stopped. Total pages: %d.",

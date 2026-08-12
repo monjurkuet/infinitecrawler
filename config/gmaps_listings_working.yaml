@@ -3,7 +3,7 @@ content_type: listing_crawler
 browser:
   automation: pinchtab
   headless: true
-  page_wait_seconds: 8.0
+  page_wait_seconds: 5.0
 pinchtab:
   server_url: "http://127.0.0.1:9867"
   instance_url: "http://127.0.0.1:9868"

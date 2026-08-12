@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 
 import psutil
 from fastapi import APIRouter, Depends, Query
@@ -21,40 +22,51 @@ from api.services import pg_service, redis_service
 router = APIRouter(prefix="/api", tags=["monitor"])
 _start_time = time.time()
 
-# ----- systemd daemon detection (replaces legacy main.py pgrep) -----
-_LISTING_UNIT = "infinitecrawler-listing"
+# ----- daemon detection (hand-launched processes + log files) -----
+# Canonical names are full-prefixed (`infinitecrawler-<short>`); the same
+# prefix is used for log files in /var/log/infinitecrawler.
 _DAEMON_ALLOWLIST = {
     "infinitecrawler-listing",
     "infinitecrawler-search",
+    "infinitecrawler-email-extract",
+    "infinitecrawler-linkedin-firehose",
+    "infinitecrawler-linkedin-search",
+    "infinitecrawler-classify",
+    "infinitecrawler-linkedin-match",
+}
+
+_DAEMON_PGREP = {
+    "infinitecrawler-listing": r"daemons\.listing_daemon",
+    "infinitecrawler-search": r"daemons\.search_daemon",
+    "infinitecrawler-email-extract": r"db_email_extract\.py",
+    "infinitecrawler-linkedin-firehose": r"db_linkedin_firehose\.py",
+    "infinitecrawler-linkedin-search": r"db_linkedin_search\.py",
+    "infinitecrawler-classify": r"db_classify\.py",
+    "infinitecrawler-linkedin-match": r"match_linkedin_to_gmaps\.py",
+}
+
+# Same commands as scripts/launch_daemons.sh (keep in sync).
+_DAEMON_LAUNCH_CMD = {
+    "infinitecrawler-listing": "uv run python -m daemons.listing_daemon",
+    "infinitecrawler-search": "uv run python -m daemons.search_daemon",
+    "infinitecrawler-email-extract": "uv run python scripts/db_email_extract.py --loop --loop-gap 30 --max 2000 --concurrency 25 --burst 3",
+    "infinitecrawler-linkedin-firehose": "uv run python scripts/db_linkedin_firehose.py --max-queries 8000 --concurrency 8 --loop --loop-gap 60",
+    "infinitecrawler-linkedin-search": "uv run python scripts/db_linkedin_search.py --loop --loop-gap 600 --max 2000",
+    "infinitecrawler-classify": "uv run python scripts/db_classify.py --loop --loop-gap 300 --max 2000",
+    "infinitecrawler-linkedin-match": "uv run python scripts/match_linkedin_to_gmaps.py --loop --loop-gap 900",
+}
+
+_PROJECT_DIR = "/root/codebase/vhd/infinitecrawler"
+_DAEMON_LOGFILE = {
+    unit: f"/var/log/infinitecrawler/{unit}.log" for unit in _DAEMON_ALLOWLIST
 }
 
 
-def _systemd_active(unit: str) -> bool:
-    try:
-        r = subprocess.run(
-            ["systemctl", "--user", "is-active", unit],
-            capture_output=True, text=True, timeout=5,
-        )
-        return r.stdout.strip() == "active"
-    except Exception:
-        return False
-
-
 def _listing_pids() -> list[int]:
-    """Return listing daemon PIDs. systemd MainPID when active, else vendor pgrep."""
-    if _systemd_active(_LISTING_UNIT):
-        try:
-            r = subprocess.run(
-                ["systemctl", "--user", "show", "-p", "MainPID", "--value", _LISTING_UNIT],
-                capture_output=True, text=True, timeout=5,
-            )
-            pid = r.stdout.strip()
-            return [int(pid)] if pid and pid != "0" else []
-        except Exception:
-            return []
+    """Return listing daemon PIDs via pgrep."""
     try:
         r = subprocess.run(
-            ["pgrep", "-f", r"daemons\.listing_daemon"],
+            ["pgrep", "-f", _DAEMON_PGREP["infinitecrawler-listing"]],
             capture_output=True, text=True, timeout=5,
         )
         return [int(p) for p in r.stdout.strip().split("\n") if p.strip()]
@@ -188,24 +200,15 @@ async def clear_failed(
 def _daemon_info(unit: str) -> dict:
     try:
         r = subprocess.run(
-            ["systemctl", "--user", "show", unit],
+            ["pgrep", "-af", _DAEMON_PGREP[unit]],
             capture_output=True, text=True, timeout=5,
         )
-        # Parse key=value output — systemctl sorts props alphabetically,
-        # so positional --value parsing is unreliable
-        props = {}
-        for line in r.stdout.strip().split("\n"):
-            if "=" in line:
-                k, v = line.split("=", 1)
-                props[k] = v
-        active = props.get("ActiveState", "unknown")
-        sub_state = props.get("SubState", "unknown")
         pid = None
-        try:
-            v = props.get("MainPID", "0")
-            pid = int(v) if v and v != "0" else None
-        except ValueError:
-            pid = None
+        for line in r.stdout.strip().split("\n"):
+            first = line.split(None, 1)
+            if first and first[0].isdigit():
+                pid = int(first[0])
+                break
 
         mem = None
         uptime_s = None
@@ -215,12 +218,12 @@ def _daemon_info(unit: str) -> dict:
                 mem = round(proc.memory_info().rss / (1024 ** 2), 2)
                 uptime_s = time.time() - proc.create_time()
             except (psutil.NoSuchProcess, psutil.AccessDenied):
-                pass
+                pid = None
 
         return {
             "unit": unit,
-            "active": active,
-            "sub": sub_state,
+            "active": "active" if pid else "inactive",
+            "sub": "running" if pid else "dead",
             "pid": pid,
             "uptime_seconds": uptime_s,
             "memory_mb": mem,
@@ -255,26 +258,45 @@ async def daemon_logs(
     if unit not in _DAEMON_ALLOWLIST:
         from fastapi import HTTPException
         raise HTTPException(status_code=403, detail=f"Unknown daemon unit: {unit}")
-    cmd = ["journalctl", "--user", "-u", unit, "--no-pager", "-n", str(tail)]
+    try:
+        lines = Path(_DAEMON_LOGFILE[unit]).read_text(
+            errors="replace"
+        ).splitlines()
+    except OSError:
+        return {"unit": unit, "lines": tail, "logs": "", "error": "log file not found"}
     if filter:
-        cmd.extend(["--grep", filter])
-    try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-    except subprocess.TimeoutExpired:
-        return {"logs": "", "error": "journalctl timed out"}
-    return {"unit": unit, "lines": tail, "logs": r.stdout.strip()}
+        lines = [ln for ln in lines if filter in ln]
+    return {"unit": unit, "lines": tail, "logs": "\n".join(lines[-tail:])}
 
 
-def _systemctl_action(unit: str, action: str) -> dict:
+def _system_action(unit: str, action: str) -> dict:
     try:
-        r = subprocess.run(
-            ["systemctl", "--user", action, unit],
-            capture_output=True, text=True, timeout=10,
-        )
-        success = r.returncode == 0
-        return {"status": "ok" if success else "error", "message": r.stdout.strip() or r.stderr.strip(), "pid": None}
-    except subprocess.TimeoutExpired:
-        return {"status": "error", "message": "systemctl timed out", "pid": None}
+        pattern = _DAEMON_PGREP[unit]
+        if action == "stop":
+            r = subprocess.run(
+                ["pkill", "-TERM", "-f", pattern],
+                capture_output=True, text=True, timeout=10,
+            )
+            code = r.returncode
+            message = (r.stdout.strip() or r.stderr.strip() or
+                       ("signal sent" if code == 0 else "no matching process"))
+            return {"status": "ok" if code == 0 else "error",
+                    "message": message, "pid": None}
+        # start / restart: kill first (restart), then spawn via launcher command
+        if action == "restart":
+            subprocess.run(["pkill", "-TERM", "-f", pattern],
+                           capture_output=True, text=True, timeout=10)
+        cmd = _DAEMON_LAUNCH_CMD[unit]
+        import os
+        with open(os.devnull, "w") as devnull:
+            subprocess.Popen(
+                ["nohup", "bash", "-c", f"cd {_PROJECT_DIR} && exec {cmd}"],
+                stdout=devnull, stderr=devnull,
+                start_new_session=True, cwd=_PROJECT_DIR,
+            )
+        return {"status": "ok", "message": f"{action} initiated", "pid": None}
+    except KeyError:
+        return {"status": "error", "message": f"unknown daemon unit: {unit}", "pid": None}
     except Exception as e:
         return {"status": "error", "message": str(e), "pid": None}
 
@@ -284,7 +306,7 @@ async def restart_daemon(unit: str, _user: str = Depends(verify_token)):
     if unit not in _DAEMON_ALLOWLIST:
         from fastapi import HTTPException
         raise HTTPException(status_code=403, detail=f"Unknown daemon unit: {unit}")
-    result = _systemctl_action(unit, "restart")
+    result = _system_action(unit, "restart")
     info = _daemon_info(unit)
     result["pid"] = info["pid"]
     return result
@@ -295,7 +317,7 @@ async def stop_daemon(unit: str, _user: str = Depends(verify_token)):
     if unit not in _DAEMON_ALLOWLIST:
         from fastapi import HTTPException
         raise HTTPException(status_code=403, detail=f"Unknown daemon unit: {unit}")
-    result = _systemctl_action(unit, "stop")
+    result = _system_action(unit, "stop")
     return result
 
 
@@ -304,7 +326,7 @@ async def start_daemon(unit: str, _user: str = Depends(verify_token)):
     if unit not in _DAEMON_ALLOWLIST:
         from fastapi import HTTPException
         raise HTTPException(status_code=403, detail=f"Unknown daemon unit: {unit}")
-    result = _systemctl_action(unit, "start")
+    result = _system_action(unit, "start")
     info = _daemon_info(unit)
     result["pid"] = info["pid"]
     return result

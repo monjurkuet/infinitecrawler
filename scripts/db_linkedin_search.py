@@ -22,6 +22,7 @@ import logging
 import os
 import re
 import sys
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -32,6 +33,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 from utils.pg import get_pg_config, get_unprocessed_linkedin, upsert_linkedin_profiles  # noqa: E402
+from utils.rate_gate import RateGate  # noqa: E402
 from utils.transliterate import bn_to_en, contains_bengali  # noqa: E402
 
 logging.basicConfig(
@@ -47,7 +49,7 @@ MAX_RESULTS_PER_QUERY = 5
 
 # Circuit breaker for upstream DDGS HTTP 500s on Bengali scripts.
 _ddgs_500_streak = 0
-_ddgs_cooldown_until = 0.0
+_ddgs_gate = RateGate()
 DDGS_BACKOFF_S = int(os.environ.get("DDGS_BACKOFF_S", "300"))
 DDGS_500_THRESHOLD = int(os.environ.get("DDGS_500_THRESHOLD", "3"))
 
@@ -194,8 +196,8 @@ async def search_linkedin(
     queries = build_queries(company_name, sector)
 
     for query in queries:
-        global _ddgs_500_streak, _ddgs_cooldown_until
-        if asyncio.get_running_loop().time() < _ddgs_cooldown_until:
+        global _ddgs_500_streak
+        if _ddgs_gate.in_cooldown():
             log.debug("DDGS in cooldown; skipping query: %s", query[:50])
             await asyncio.sleep(REQUEST_DELAY)
             continue
@@ -216,10 +218,7 @@ async def search_linkedin(
             )
             if resp.status_code == 500:
                 _ddgs_500_streak += 1
-                if _ddgs_500_streak >= DDGS_500_THRESHOLD and _ddgs_cooldown_until <= asyncio.get_running_loop().time():
-                    _ddgs_cooldown_until = asyncio.get_running_loop().time() + DDGS_BACKOFF_S
-                    log.warning("DDGS cooldown started: %d consecutive 500s, sleeping %ds",
-                                _ddgs_500_streak, DDGS_BACKOFF_S)
+                _ddgs_gate.record_streak(_ddgs_500_streak, threshold=DDGS_500_THRESHOLD, backoff_s=DDGS_BACKOFF_S)
             elif resp.status_code == 200:
                 _ddgs_500_streak = 0
             if resp.status_code != 200:
@@ -350,60 +349,102 @@ def main():
     parser.add_argument("--stats", action="store_true", help="Show stats only")
     parser.add_argument("--sector", type=str, default=None,
                         help="Filter by sector name (e.g. 'Software')")
+    parser.add_argument("--loop", action="store_true",
+                        help="Re-run in a loop after completion (supervisor-friendly)")
+    parser.add_argument("--loop-gap", type=float, default=60.0,
+                        help="Seconds to sleep between cycles when --loop is set (default: 60)")
     args = parser.parse_args()
 
     pg_config = get_pg_config()
     conn = psycopg.connect(**pg_config)
     conn.autocommit = False
 
+    stop_flag = {"v": False}
     try:
-        if args.stats:
-            show_stats(conn)
-            return
+        import signal
+        def _stop(*_):
+            stop_flag["v"] = True
+        signal.signal(signal.SIGINT, _stop)
+        signal.signal(signal.SIGTERM, _stop)
 
-        # Fetch unprocessed listings (optionally filtered by sector)
-        listings = get_unprocessed_linkedin(conn, limit=args.max)
+        while True:
+            try:
+                # Ensure PG connection is alive (idle-in-transaction timeout
+                # fires after long sleeps; recover by reconnecting).
+                if conn.closed:
+                    log.warning("linkedin_search.reconnect reason=connection_closed")
+                    conn = psycopg.connect(**pg_config)
+                    conn.autocommit = False
 
-        if args.sector:
-            sector_filter = args.sector
-            # Fetch listings with that sector name from PG
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT id, name FROM scraper.gmaps_listings "
-                    "WHERE name IS NOT NULL AND name != '' "
-                    "AND sector_id = (SELECT id FROM scraper.sectors WHERE name = %s) "
-                    "AND NOT EXISTS (SELECT 1 FROM scraper.linkedin_profiles p "
-                    "  WHERE p.listing_id = scraper.gmaps_listings.id "
-                    "  AND p.checked_at > NOW() - INTERVAL '7 days') "
-                    "ORDER BY updated_at DESC LIMIT %s",
-                    (sector_filter, args.max),
+                if args.stats:
+                    show_stats(conn)
+                    if not args.loop or stop_flag["v"]:
+                        return
+                    time.sleep(args.loop_gap)
+                    continue
+
+                # Fetch unprocessed listings (optionally filtered by sector)
+                listings = get_unprocessed_linkedin(conn, limit=args.max)
+
+                if args.sector:
+                    sector_filter = args.sector
+                    # Fetch listings with that sector name from PG
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT id, name FROM scraper.gmaps_listings "
+                            "WHERE name IS NOT NULL AND name != '' "
+                            "AND sector_id = (SELECT id FROM scraper.sectors WHERE name = %s) "
+                            "AND NOT EXISTS (SELECT 1 FROM scraper.linkedin_profiles p "
+                            "  WHERE p.listing_id = scraper.gmaps_listings.id "
+                            "  AND p.checked_at > NOW() - INTERVAL '7 days') "
+                            "ORDER BY updated_at DESC LIMIT %s",
+                            (sector_filter, args.max),
+                        )
+                        rows = cur.fetchall()
+                        listings = [{"id": r[0], "name": r[1]} for r in rows]
+
+                if not listings:
+                    log.info("No unprocessed listings found.")
+                    if args.sector:
+                        log.info("  (filtered by sector: %s)", args.sector)
+                    if not args.loop or stop_flag["v"]:
+                        return
+                    time.sleep(args.loop_gap)
+                    continue
+
+                log.info("Processing %d listing(s) for LinkedIn profiles", len(listings))
+
+                if args.dry_run:
+                    log.info("=== DRY RUN === (no writes)")
+                    for lead in listings[:5]:
+                        log.info("  Would search: '%s' (id=%d)", lead["name"], lead["id"])
+                    if len(listings) > 5:
+                        log.info("  ... and %d more", len(listings) - 5)
+                    if not args.loop or stop_flag["v"]:
+                        return
+                    time.sleep(args.loop_gap)
+                    continue
+
+                processed, found = asyncio.run(
+                    process_batch(conn, listings, args.sector, dry_run=False)
                 )
-                rows = cur.fetchall()
-                listings = [{"id": r[0], "name": r[1]} for r in rows]
 
-        if not listings:
-            log.info("No unprocessed listings found.")
-            if args.sector:
-                log.info("  (filtered by sector: %s)", args.sector)
-            return
+                log.info("Done: searched %d listings, found %d LinkedIn profiles",
+                         processed, found)
 
-        log.info("Processing %d listing(s) for LinkedIn profiles", len(listings))
-
-        if args.dry_run:
-            log.info("=== DRY RUN === (no writes)")
-            for lead in listings[:5]:
-                log.info("  Would search: '%s' (id=%d)", lead["name"], lead["id"])
-            if len(listings) > 5:
-                log.info("  ... and %d more", len(listings) - 5)
-            return
-
-        processed, found = asyncio.run(
-            process_batch(conn, listings, args.sector, dry_run=False)
-        )
-
-        log.info("Done: searched %d listings, found %d LinkedIn profiles",
-                 processed, found)
-
+                if not args.loop or stop_flag["v"]:
+                    return
+                time.sleep(args.loop_gap)
+            except Exception as cycle_err:
+                log.error(f"linkedin_search.cycle_error err={cycle_err}", exc_info=True)
+                if not args.loop or stop_flag["v"]:
+                    raise
+                # Close the broken connection so the top-of-loop reconnect kicks in.
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                time.sleep(args.loop_gap)
     finally:
         conn.close()
 

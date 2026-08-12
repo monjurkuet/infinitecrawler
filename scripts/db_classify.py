@@ -17,6 +17,7 @@ import argparse
 import logging
 import os
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -281,6 +282,10 @@ def main():
                         help="LLM model override")
     parser.add_argument("--retry-failed", action="store_true",
                         help="Retry leads previously classified via fallback_llm_error")
+    parser.add_argument("--loop", action="store_true",
+                        help="Re-run in a loop after completion (supervisor-friendly)")
+    parser.add_argument("--loop-gap", type=float, default=60.0,
+                        help="Seconds to sleep between cycles when --loop is set (default: 60)")
     args = parser.parse_args()
 
     # Health gate: abort with distinct exit code if LLM key missing.
@@ -292,75 +297,107 @@ def main():
     conn = psycopg.connect(**PG_CONFIG)
     conn.autocommit = False
 
+    stop_flag = {"v": False}
     try:
-        if args.stats:
-            stats = get_stats(conn)
-            print(f"Total listings:       {stats['total']:,}")
-            print(f"Qualified (phone+web): {stats['qualified']:,}")
-            print(f"Classified:           {stats['classified']:,}")
-            print(f"Remaining:            {stats['remaining']:,}")
-            print("\nBy sector:")
-            for sid, cnt in sorted(stats['by_sector'].items(), key=lambda x: -x[1]):
-                print(f"  {sid}: {cnt:,}")
-            return
+        import signal
+        def _stop(*_):
+            stop_flag["v"] = True
+        signal.signal(signal.SIGINT, _stop)
+        signal.signal(signal.SIGTERM, _stop)
 
-        if args.retry_failed:
-            # Check for fallback_llm_error leads regardless of remaining
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT COUNT(*) FROM scraper.gmaps_listings "
-                    "WHERE classification_method = 'fallback_llm_error'"
+        while True:
+            try:
+                if args.stats:
+                    stats = get_stats(conn)
+                    print(f"Total listings:       {stats['total']:,}")
+                    print(f"Qualified (phone+web): {stats['qualified']:,}")
+                    print(f"Classified:           {stats['classified']:,}")
+                    print(f"Remaining:            {stats['remaining']:,}")
+                    print("\nBy sector:")
+                    for sid, cnt in sorted(stats['by_sector'].items(), key=lambda x: -x[1]):
+                        print(f"  {sid}: {cnt:,}")
+                    if not args.loop or stop_flag["v"]:
+                        return
+                    time.sleep(args.loop_gap)
+                    continue
+
+                if args.retry_failed:
+                    # Check for fallback_llm_error leads regardless of remaining
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT COUNT(*) FROM scraper.gmaps_listings "
+                            "WHERE classification_method = 'fallback_llm_error'"
+                        )
+                        failed_count = cur.fetchone()[0]
+                    log.info(f"Found {failed_count} fallback_llm_error leads to retry")
+                    if failed_count == 0:
+                        log.info("No fallback_llm_error leads to retry.")
+                        if not args.loop or stop_flag["v"]:
+                            return
+                        time.sleep(args.loop_gap)
+                        continue
+                    stats = get_stats(conn)
+                else:
+                    stats = get_stats(conn)
+                    log.info(
+                        f"DB state: {stats['total']:,} listings, "
+                        f"{stats['qualified']:,} qualified, "
+                        f"{stats['classified']:,} classified, "
+                        f"{stats['remaining']:,} remaining"
+                    )
+
+                    if stats['remaining'] == 0:
+                        log.info("All qualified leads already classified. Nothing to do.")
+                        if not args.loop or stop_flag["v"]:
+                            return
+                        time.sleep(args.loop_gap)
+                        continue
+
+                # Load BPT sectors + training examples
+                sectors = load_sectors()
+                if not sectors:
+                    log.error("No sectors loaded. Check sectors.yaml.")
+                    sys.exit(1)
+
+                existing = load_training_examples()
+
+                # Fetch unclassified (or retry-failed) leads
+                leads = get_unclassified(conn, args.max, retry_failed=args.retry_failed)
+                log.info(f"Fetched {len(leads)} leads {'(retry-failed mode)' if args.retry_failed else ''}")
+
+                if not leads:
+                    log.info("No leads to classify.")
+                    if not args.loop or stop_flag["v"]:
+                        return
+                    time.sleep(args.loop_gap)
+                    continue
+
+                if args.dry_run:
+                    log.info(f"[DRY-RUN] Would classify {len(leads)} leads")
+                    if not args.loop or stop_flag["v"]:
+                        return
+                    time.sleep(args.loop_gap)
+                    continue
+
+                classified, failed = classify_to_db(
+                    conn, leads, sectors, existing, model=args.model, retry_failed=args.retry_failed,
                 )
-                failed_count = cur.fetchone()[0]
-            log.info(f"Found {failed_count} fallback_llm_error leads to retry")
-            if failed_count == 0:
-                log.info("No fallback_llm_error leads to retry.")
-                return
-            stats = get_stats(conn)
-        else:
-            stats = get_stats(conn)
-            log.info(
-                f"DB state: {stats['total']:,} listings, "
-                f"{stats['qualified']:,} qualified, "
-                f"{stats['classified']:,} classified, "
-                f"{stats['remaining']:,} remaining"
-            )
 
-            if stats['remaining'] == 0:
-                log.info("All qualified leads already classified. Nothing to do.")
-                return
+                stats2 = get_stats(conn)
+                log.info(
+                    f"Run complete: {classified} classified, {failed} LLM failures. "
+                    f"Total classified: {stats2['classified']:,}, "
+                    f"Remaining: {stats2['remaining']:,}"
+                )
 
-        # Load BPT sectors + training examples
-        sectors = load_sectors()
-        if not sectors:
-            log.error("No sectors loaded. Check sectors.yaml.")
-            sys.exit(1)
-
-        existing = load_training_examples()
-
-        # Fetch unclassified (or retry-failed) leads
-        leads = get_unclassified(conn, args.max, retry_failed=args.retry_failed)
-        log.info(f"Fetched {len(leads)} leads {'(retry-failed mode)' if args.retry_failed else ''}")
-
-        if not leads:
-            log.info("No leads to classify.")
-            return
-
-        if args.dry_run:
-            log.info(f"[DRY-RUN] Would classify {len(leads)} leads")
-            return
-
-        classified, failed = classify_to_db(
-            conn, leads, sectors, existing, model=args.model, retry_failed=args.retry_failed,
-        )
-
-        stats2 = get_stats(conn)
-        log.info(
-            f"Run complete: {classified} classified, {failed} LLM failures. "
-            f"Total classified: {stats2['classified']:,}, "
-            f"Remaining: {stats2['remaining']:,}"
-        )
-
+                if not args.loop or stop_flag["v"]:
+                    return
+                time.sleep(args.loop_gap)
+            except Exception as cycle_err:
+                log.error(f"classify.cycle_error err={cycle_err}")
+                if not args.loop or stop_flag["v"]:
+                    raise
+                time.sleep(args.loop_gap)
     finally:
         conn.close()
 

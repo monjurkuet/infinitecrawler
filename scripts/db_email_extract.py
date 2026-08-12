@@ -84,14 +84,28 @@ BROWSER_PAGE_TIMEOUT = int(os.environ.get("BROWSER_PAGE_TIMEOUT", "60"))
 
 
 def acquire_lock() -> bool:
-    """Prevent overlapping runs: exit early if a previous instance is alive."""
+    """Prevent overlapping runs: exit early if a previous instance is alive.
+
+    Belt-and-suspenders: OS may have reaped our old PID and reused the number,
+    so also check /proc/<pid>/cmdline matches ``db_email_extract`` before
+    trusting the existence signal.
+    """
     if not PIDFILE.exists():
         return True
     try:
         pid = int(PIDFILE.read_text().strip())
         os.kill(pid, 0)  # signal 0 = existence check only
-        log.warning("Another email-extract instance is running (pid %d) — exiting.", pid)
-        return False
+        # Verify it's actually our process — guards against PID reuse.
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as fh:
+                cmdline = fh.read().decode("utf-8", errors="replace")
+            if "db_email_extract" in cmdline:
+                log.warning("Another email-extract instance is running (pid %d) — exiting.", pid)
+                return False
+            log.warning("Stale pidfile (pid %d reused by non-email-extract process) — proceeding", pid)
+            return True
+        except OSError:
+            return True
     except (ValueError, ProcessLookupError, PermissionError):
         # Stale pidfile (dead process or unreadable) — safe to proceed
         return True
@@ -432,6 +446,8 @@ def main():
                         help="Run continuously: after each batch, claim new unscanned listings and repeat forever")
     parser.add_argument("--loop-gap", type=float, default=30.0,
                         help="Pause seconds between loop cycles (default 30)")
+    parser.add_argument("--burst", type=int, default=1,
+                        help="Run N consecutive cycles with a short 5s gap before honoring --loop-gap (default 1)")
     parser.add_argument("--mode", choices=["http", "browser", "both"], default="http",
                         help="Extraction mode (T2: 'both' runs http first then browser fallback for zero-result listings)")
     parser.add_argument("--force-rescan", action="store_true",
@@ -452,67 +468,96 @@ def main():
 
         try:
             PIDFILE.parent.mkdir(parents=True, exist_ok=True)
+            # The /proc/<pid>/cmdline check in _another_instance_running() above
+            # already guards against PID reuse; a numerical threshold here would
+            # over-reject on hosts with kernel.pid_max raised above the default
+            # 4194304 (AWS/tuned profiles sometimes do this). Trust os.getpid().
             PIDFILE.write_text(str(os.getpid()))
         except OSError as e:
             log.warning("Could not write pidfile %s: %s", PIDFILE, e)
 
         cycle = 0
         while True:
-            cycle += 1
+            try:
+                cycle += 1
 
-            if args.force_rescan:
-                listings = get_all_listings_with_website(conn, limit=args.max)
-                log.info("[cycle %d] --force-rescan: %d listings with website",
-                         cycle, len(listings))
-            else:
-                listings = get_unprocessed_emails(conn, limit=args.max)
-            if not listings:
-                log.info("[cycle %d] No listings with unprocessed emails found.", cycle)
+                # Ensure PG connection is alive (idle-in-transaction timeout
+                # fires after long sleeps; recover by reconnecting).
+                if conn.closed:
+                    log.warning("email_extract.reconnect reason=connection_closed")
+                    conn = psycopg.connect(**pg_config)
+                    conn.autocommit = False
+
+                if args.force_rescan:
+                    listings = get_all_listings_with_website(conn, limit=args.max)
+                    log.info("[cycle %d] --force-rescan: %d listings with website",
+                             cycle, len(listings))
+                else:
+                    listings = get_unprocessed_emails(conn, limit=args.max)
+                if not listings:
+                    log.info("[cycle %d] No listings with unprocessed emails found.", cycle)
+                    if not args.loop:
+                        return
+                    log.info("loop: sleeping %.0fs before next cycle", args.loop_gap)
+                    time.sleep(args.loop_gap)
+                    continue
+
+                log.info("[cycle %d] Found %d listings needing email extraction (limit: %d, mode=%s)",
+                         cycle, len(listings), args.max, args.mode)
+
+                if args.dry_run:
+                    log.info("=== DRY RUN === (no writes)")
+                    for lead in listings[:5]:
+                        log.info("  [%d] %s", lead["id"], lead["website"][:60])
+                    if len(listings) > 5:
+                        log.info("  ... and %d more", len(listings) - 5)
+                    return
+
+                result = asyncio.run(
+                    process_batch(conn, listings, args.concurrency, dry_run=False, mode=args.mode)
+                )
+                if args.mode == "both":
+                    processed, written, browser_q = result  # type: ignore[misc]
+                    log.info("[cycle %d] Done: processed %d / %d listings, wrote %d emails (browser_queue=%d)",
+                             cycle, processed, len(listings), written, browser_q)
+                else:
+                    processed, written = result  # type: ignore[misc]
+                    log.info("[cycle %d] Done: processed %d / %d listings, wrote %d emails",
+                             cycle, processed, len(listings), written)
+
+                # Stamp `email_scanned_at` on every listing we touched this batch
+                # (including zero-result ones) so the perpetual loop does not
+                # re-fetch the same sites on the next 30s cycle. Listings older
+                # than the staleness window (FETCH_UNPROCESSED_EMAILS_SQL) will be
+                # re-scanned for newly published contact pages.
+                ids = [l["id"] for l in listings]
+                if ids and not args.dry_run:
+                    marked = mark_listings_email_scanned(conn, ids)
+                    log.info("[cycle %d] Marked %d listings email_scanned_at=NOW()", cycle, marked)
+
                 if not args.loop:
                     return
-                log.info("loop: sleeping %.0fs before next cycle", args.loop_gap)
+
+                # Burst mode: run N consecutive cycles with a short 5s gap before
+                # honoring --loop-gap. Drains backlogs (e.g. 4,446 listings) faster.
+                if cycle < args.burst:
+                    log.info("burst: cycle %d/%d complete — pausing 5s", cycle, args.burst)
+                    time.sleep(5)
+                    continue
+
+                log.info("loop: cycle %d complete — pausing %.0fs before next batch",
+                         cycle, args.loop_gap)
                 time.sleep(args.loop_gap)
-                continue
-
-            log.info("[cycle %d] Found %d listings needing email extraction (limit: %d, mode=%s)",
-                     cycle, len(listings), args.max, args.mode)
-
-            if args.dry_run:
-                log.info("=== DRY RUN === (no writes)")
-                for lead in listings[:5]:
-                    log.info("  [%d] %s", lead["id"], lead["website"][:60])
-                if len(listings) > 5:
-                    log.info("  ... and %d more", len(listings) - 5)
-                return
-
-            result = asyncio.run(
-                process_batch(conn, listings, args.concurrency, dry_run=False, mode=args.mode)
-            )
-            if args.mode == "both":
-                processed, written, browser_q = result  # type: ignore[misc]
-                log.info("[cycle %d] Done: processed %d / %d listings, wrote %d emails (browser_queue=%d)",
-                         cycle, processed, len(listings), written, browser_q)
-            else:
-                processed, written = result  # type: ignore[misc]
-                log.info("[cycle %d] Done: processed %d / %d listings, wrote %d emails",
-                         cycle, processed, len(listings), written)
-
-            # Stamp `email_scanned_at` on every listing we touched this batch
-            # (including zero-result ones) so the perpetual loop does not
-            # re-fetch the same sites on the next 30s cycle. Listings older
-            # than the staleness window (FETCH_UNPROCESSED_EMAILS_SQL) will be
-            # re-scanned for newly published contact pages.
-            ids = [l["id"] for l in listings]
-            if ids and not args.dry_run:
-                marked = mark_listings_email_scanned(conn, ids)
-                log.info("[cycle %d] Marked %d listings email_scanned_at=NOW()", cycle, marked)
-
-            if not args.loop:
-                return
-
-            log.info("loop: cycle %d complete — pausing %.0fs before next batch",
-                     cycle, args.loop_gap)
-            time.sleep(args.loop_gap)
+            except Exception as cycle_err:
+                log.error(f"email_extract.cycle_error err={cycle_err}", exc_info=True)
+                if not args.loop:
+                    raise
+                # Close the broken connection so the top-of-loop reconnect kicks in.
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                time.sleep(args.loop_gap)
 
     finally:
         release_lock()

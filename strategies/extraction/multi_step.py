@@ -49,15 +49,17 @@ class MultiStepExtractionStrategy(ExtractionStrategy):
                 "navigation", nav_strategy_name, self.browser_manager, self.config
             )
 
-    async def extract_items(self) -> List[Dict]:
+    async def extract_items(self, tab=None) -> List[Dict]:
         """
         Execute extraction pipeline.
         Returns list with single dictionary containing all extracted data.
+        ``tab`` is optional — when provided (listing daemon concurrency),
+        uses that tab instead of the back-compat ``self.browser_manager.tab``.
         """
         data = {}
+        tab = tab or self.browser_manager.tab
         context = {
-            "url": self.browser_manager.tab.url if self.browser_manager.tab else None,
-            "current_section": None,
+            "url": tab.url if tab else None,            "current_section": None,
         }
 
         step_num = 0
@@ -67,7 +69,7 @@ class MultiStepExtractionStrategy(ExtractionStrategy):
 
             try:
                 if action == "extract":
-                    extracted = await self._execute_extract_step(step, context)
+                    extracted = await self._execute_extract_step(step, context, tab)
                     data.update(extracted)
 
                 elif action == "navigate":
@@ -307,7 +309,7 @@ class MultiStepExtractionStrategy(ExtractionStrategy):
         else:
             raise ValueError(f"Unknown extract type: {extract_type}")
 
-    async def _execute_extract_step(self, step: dict, context: dict) -> Dict:
+    async def _execute_extract_step(self, step: dict, context: dict, tab=None) -> Dict:
         """Extract fields using selectors with retry logic.
 
         Optimisation: when all fields define a single primary selector (no
@@ -318,7 +320,7 @@ class MultiStepExtractionStrategy(ExtractionStrategy):
         """
         extracted = {}
         fields = step.get("fields", {})
-        tab = self.browser_manager.tab
+        tab = tab or self.browser_manager.tab
         use_retry = step.get("retry", self.retry_config.get("enabled", True))
 
         # Check if batched optimisation applies: every field must have

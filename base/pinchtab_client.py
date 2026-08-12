@@ -32,6 +32,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -44,6 +45,10 @@ except ImportError as exc:  # pragma: no cover
 
 
 log = logging.getLogger("pinchtab_client")
+
+# Rate-limit the tab-context-drop warning (~30/min on heavy GMaps bursts) → ≤1/60s.
+_last_tab_warn_ts: float = 0.0
+_TAB_WARN_INTERVAL: float = 60.0
 
 
 # ── Element shim ────────────────────────────────────────────────────────────
@@ -153,10 +158,13 @@ class PinchtabTab:
                     or "tab " in err and "not connected" in err
                 )
                 if attempt == 1 and recoverable:
-                    self._client.logger.warning(
-                        "pinchtab: tab context dropped (%s), re-navigating to %s",
-                        err[:80], self.url or "(no URL)",
-                    )
+                    global _last_tab_warn_ts
+                    if time.monotonic() - _last_tab_warn_ts > _TAB_WARN_INTERVAL:
+                        self._client.logger.warning(
+                            "pinchtab: tab context dropped (%s), re-navigating to %s",
+                            err[:80], self.url or "(no URL)",
+                        )
+                        _last_tab_warn_ts = time.monotonic()
                     try:
                         new_tab = await self._client.navigate(self.url or "about:blank")
                         # adopt the new tab id so subsequent ops target the fresh page
@@ -372,6 +380,7 @@ class PinchtabClient:
         self._session: Optional[aiohttp.ClientSession] = None
         self.tab: Optional[PinchtabTab] = None
         self.logger = logging.getLogger("pinchtab_client")
+        self._navigate_lock = asyncio.Lock()
 
     async def _ensure_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -463,28 +472,53 @@ class PinchtabClient:
             raise RuntimeError(f"pinchtab: cannot reach browser instance: {health.get('error')}")
         self.logger.info("pinchtab: connected to %s", self._base())
 
-    async def navigate(self, url: str) -> PinchtabTab:
-        # Pinchtab's Chrome sometimes tears down the CDP context right after a
-        # previous operation — re-navigating once after the always-on supervisor
-        # has restarted the instance resolves it.
-        for attempt in (1, 2):
-            result = await self._post("/navigate", {"url": url})
-            if result.get("code") == "error":
-                err = result.get("error", "")
-                if "context canceled" in err and attempt == 1:
-                    self.logger.warning(
-                        "pinchtab navigate: %s (will retry once after restart)",
-                        err[:80],
-                    )
-                    await asyncio.sleep(3)  # give the supervisor time to restart
-                    continue
-                raise RuntimeError(f"pinchtab navigate failed: {err}")
-            tab_id = result.get("tabId", "")
-            self.tab = PinchtabTab(self, tab_id, url=url)
-            if self.cfg.page_wait_seconds > 0:
-                await asyncio.sleep(self.cfg.page_wait_seconds)
-            return self.tab
-        raise RuntimeError("pinchtab navigate: exhausted retries")
+    async def navigate(self, url: str, tab_id: Optional[str] = None) -> PinchtabTab:
+        # Pinchtab's /navigate endpoint creates a new tab per call and overwrites
+        # ``self.tab``. Concurrent navigations from a tab-pool race: only the
+        # last call wins and earlier callers' returned ``PinchtabTab`` objects
+        # point to tabs that were never actually navigated (the returned
+        # tabId sometimes even points to an about:blank stub). Serialize at
+        # the client level so the listing daemon's worker pool stays correct.
+        #
+        # When ``tab_id`` is provided we use the tab-scoped endpoint
+        # ``/tabs/{id}/navigate`` which reuses the existing tab instead of
+        # allocating a new one — this keeps the daemon's tab pool bounded
+        # and avoids the pinchtab ``maxTabs`` eviction cliff.
+        async with self._navigate_lock:
+            for attempt in (1, 2):
+                if tab_id:
+                    path = f"/tabs/{tab_id}/navigate"
+                    payload = {"url": url}
+                else:
+                    path = "/navigate"
+                    payload = {"url": url}
+                result = await self._post(path, payload)
+                if result.get("code") == "error":
+                    err = result.get("error", "")
+                    if "context canceled" in err and attempt == 1:
+                        self.logger.warning(
+                            "pinchtab navigate: %s (will retry once after restart)",
+                            err[:80],
+                        )
+                        await asyncio.sleep(3)  # give the supervisor time to restart
+                        continue
+                    raise RuntimeError(f"pinchtab navigate failed: {err}")
+                returned_id = result.get("tabId", tab_id or "")
+                tab = PinchtabTab(self, returned_id, url=url)
+                if self.cfg.page_wait_seconds > 0:
+                    await asyncio.sleep(self.cfg.page_wait_seconds)
+                # Refresh URL by querying the live page so the returned tab
+                # reflects what Chrome actually rendered, not what pinchtab
+                # returned before the page settled.
+                try:
+                    live_url = await tab.evaluate("location.href", await_promise=False)
+                    if isinstance(live_url, str) and live_url:
+                        tab.url = live_url
+                except Exception:
+                    pass
+                self.tab = tab
+                return tab
+            raise RuntimeError("pinchtab navigate: exhausted retries")
 
     async def close_tab(self):
         """Reset the current tab to about:blank.

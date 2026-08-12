@@ -121,6 +121,12 @@ async def list_tasks(
     )
 
 
+@router.get("/tasks/active", response_model=list[PipelineTaskResponse])
+async def active_tasks(_user: str = Depends(verify_token)):
+    tasks = await pg_service.get_active_pipeline_tasks()
+    return [PipelineTaskResponse(**t) for t in tasks]
+
+
 @router.get("/tasks/{task_id}", response_model=PipelineTaskResponse)
 async def get_task(
     task_id: str,
@@ -131,12 +137,6 @@ async def get_task(
         from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="Task not found")
     return PipelineTaskResponse(**task)
-
-
-@router.get("/tasks/active", response_model=list[PipelineTaskResponse])
-async def active_tasks(_user: str = Depends(verify_token)):
-    tasks = await pg_service.get_active_pipeline_tasks()
-    return [PipelineTaskResponse(**t) for t in tasks]
 
 
 @router.delete("/tasks/{task_id}")

@@ -11,10 +11,11 @@ class GenericSelectorExtractionStrategy(ExtractionStrategy):
         self.config = config
         self.logger = logging.getLogger(self.__class__.__name__)
 
-    async def extract_items(self) -> List[Dict]:
-        """Extract items using configured selectors"""
+    async def extract_items(self, tab=None) -> List[Dict]:
+        """Extract items using configured selectors.  ``tab`` is optional;
+        falls back to ``self.browser_manager.tab`` for back-compat."""
         try:
-            tab = self.browser_manager.tab
+            tab = tab or self.browser_manager.tab
             if not tab:
                 self.logger.error("No tab available for extraction")
                 return []

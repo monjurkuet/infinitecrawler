@@ -19,9 +19,9 @@ Usage:
 """
 
 import argparse
+import concurrent.futures as cf
 import logging
 import os
-import random
 import re
 import sys
 import threading
@@ -40,12 +40,13 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from utils.linkedin_parser import parse_linkedin as _parse_linkedin  # noqa: E402
 from utils.pg import get_pg_config  # noqa: E402
+from utils.rate_gate import RateGate  # noqa: E402
 from utils.transliterate import bn_to_en, contains_bengali  # noqa: E402
 
 DDGS_BACKOFF_S = int(os.environ.get("DDGS_BACKOFF_S", "300"))
 DDGS_500_THRESHOLD = int(os.environ.get("DDGS_500_THRESHOLD", "3"))
 _ddgs_500_streak = 0
-_ddgs_cooldown_until = 0.0
+_ddgs_gate = RateGate()
 
 log = logging.getLogger("firehose")
 logging.basicConfig(
@@ -64,6 +65,7 @@ log.propagate = False
 DEFAULT_CONFIG = REPO_ROOT / "config" / "linkedin_firehose.yaml"
 SOURCE_TAG = "firehose"
 HEARTBEAT_SEC = 30  # log progress at most every N seconds
+DDGS_PER_CALL_TIMEOUT_S = int(os.environ.get("DDGS_PER_CALL_TIMEOUT_S", "30"))
 
 # One DDGS() instance per worker thread (curl_cffi client is not thread-safe
 # to share across threads, but thread-local reuse avoids per-call bootstrap)
@@ -80,57 +82,8 @@ def load_config(path: Path = DEFAULT_CONFIG) -> dict:
         return yaml.safe_load(f)
 
 
-# ---------------------------------------------------------------------------
-# Query matrix
-# ---------------------------------------------------------------------------
-
-
-def generate_queries(cfg: dict, max_queries: int | None = None) -> list[dict]:
-    """Generate flat list of {query, params: {region}, family} dicts."""
-    families = cfg["query_families"]
-    roles = cfg["roles"]
-    locations = cfg["locations"]
-    industries = cfg["industries"]
-    regions = cfg["regions"]
-    queries: list[dict] = []
-
-    if families.get("role_city", {}).get("enabled", True):
-        tmpl = families["role_city"]["template"]
-        rk = families["role_city"]["region"]
-        for role in roles:
-            for city in locations["bangladesh"]:
-                queries.append({
-                    "query": tmpl.format(role=role, city=city),
-                    "params": {"region": regions[rk]},
-                    "family": "role_city",
-                })
-
-    if families.get("role_city_industry", {}).get("enabled", True):
-        tmpl = families["role_city_industry"]["template"]
-        rk = families["role_city_industry"]["region"]
-        for role in roles:
-            for city in locations["global"]:
-                for industry in industries:
-                    queries.append({
-                        "query": tmpl.format(role=role, city=city, industry=industry),
-                        "params": {"region": regions[rk]},
-                        "family": "role_city_industry",
-                    })
-
-    if families.get("role_only", {}).get("enabled", True):
-        tmpl = families["role_only"]["template"]
-        rk = families["role_only"]["region"]
-        for role in roles:
-            queries.append({
-                "query": tmpl.format(role=role),
-                "params": {"region": regions[rk]},
-                "family": "role_only",
-            })
-
-    if max_queries and len(queries) > max_queries:
-        queries = random.sample(queries, max_queries)
-
-    return queries
+# Query-matrix construction moved to scripts.firehose_queries (B3, 2026-08-12).
+from scripts.firehose_queries import generate_queries  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -251,19 +204,30 @@ def _get_ddgs(timeout: int) -> DDGS:
     return client
 
 
+def _ddgs_call_with_timeout(client, q, region, max_results, backend, timeout):
+    """Bound ddgs.text() with a per-call wall-clock timeout.
+
+    ddgs's constructor timeout doesn't reliably bound slow upstreams.
+    This wraps the call in a 1-worker ThreadPoolExecutor so a stalled
+    upstream can't block a worker thread indefinitely.
+    """
+    with cf.ThreadPoolExecutor(max_workers=1) as ex:
+        return ex.submit(
+            client.text, q, region=region, safesearch="off",
+            max_results=max_results, backend=backend,
+        ).result(timeout=timeout)
+
+
 def _ddgs_should_cooldown() -> bool:
     """True if the global DDGS cooldown window is active."""
-    return time.monotonic() < _ddgs_cooldown_until
+    return _ddgs_gate.in_cooldown()
 
 
 def _ddgs_record_500(count: int) -> None:
     """Increment the 500 streak; trip cooldown at threshold."""
-    global _ddgs_500_streak, _ddgs_cooldown_until
+    global _ddgs_500_streak
     _ddgs_500_streak = count
-    if count >= DDGS_500_THRESHOLD and _ddgs_cooldown_until <= time.monotonic():
-        _ddgs_cooldown_until = time.monotonic() + DDGS_BACKOFF_S
-        log.warning("DDGS cooldown started: %d consecutive 500s, sleeping %ds",
-                    count, DDGS_BACKOFF_S)
+    _ddgs_gate.record_streak(count, threshold=DDGS_500_THRESHOLD, backoff_s=DDGS_BACKOFF_S)
 
 
 def search_one(item: dict, exec_cfg: dict, delay_seconds: float = 0.0) -> tuple[list[dict], bool]:
@@ -299,12 +263,9 @@ def search_one(item: dict, exec_cfg: dict, delay_seconds: float = 0.0) -> tuple[
     try:
         for backend in backends:
             try:
-                results = client.text(
-                    q_dispatched,
-                    region=region,
-                    safesearch="off",
-                    max_results=max_results,
-                    backend=backend,
+                results = _ddgs_call_with_timeout(
+                    client, q_dispatched, region, max_results, backend,
+                    DDGS_PER_CALL_TIMEOUT_S,
                 )
                 profiles = [
                     p for r in results
@@ -312,6 +273,10 @@ def search_one(item: dict, exec_cfg: dict, delay_seconds: float = 0.0) -> tuple[
                 ]
                 if profiles:
                     return profiles, False
+            except cf.TimeoutError:
+                log.debug("DDGS per-call timeout (>%ds) for: %s", DDGS_PER_CALL_TIMEOUT_S, q_dispatched[:60])
+                last_exc = TimeoutError("per-call timeout")
+                continue
             except Exception as exc:
                 last_exc = exc
                 msg = str(exc).lower()
@@ -333,6 +298,29 @@ def search_one(item: dict, exec_cfg: dict, delay_seconds: float = 0.0) -> tuple[
 # ---------------------------------------------------------------------------
 
 
+def _heartbeat_loop(stop_event, t0, total_q, lock, state):
+    """Wall-clock heartbeat — emits even when futures are blocked on slow DDGS reads.
+
+    Runs as a daemon thread; takes a snapshot of counters under ``lock`` then
+    formats the log line outside (to avoid holding the lock during logging).
+    """
+    while not stop_event.is_set():
+        time.sleep(HEARTBEAT_SEC)
+        with lock:
+            snap = dict(state)
+        elapsed = time.monotonic() - t0
+        rate = snap["queries_done"] / max(elapsed, 0.001)
+        pct = snap["queries_done"] / max(total_q, 1) * 100
+        pending = snap["queries_done"] - snap["db_written"] - snap["errors"] - snap["empty_results"]
+        log.info(
+            "status  %d/%d (%.0f%%)  %.1fq/s  +%d profiles  "
+            "err:%d  empty:%d  db:%d  mem:%d  pending=%d",
+            snap["queries_done"], total_q, pct, rate,
+            snap["profiles_new"], snap["errors"], snap["empty_results"],
+            snap["db_written"], snap["seen"], pending,
+        )
+
+
 def run_firehose(
     cfg: dict,
     queries: list[dict],
@@ -350,74 +338,77 @@ def run_firehose(
     exec_cfg = cfg["execution"]
     lock = threading.Lock()
 
-    queries_done = 0
-    errors = 0
-    empty_results = 0
-    profiles_new = 0
-    profiles_dup = 0
-    db_written = 0
+    # Mutable state dict — shared between the main loop and heartbeat thread.
+    state = {
+        "queries_done": 0,
+        "errors": 0,
+        "empty_results": 0,
+        "profiles_new": 0,
+        "profiles_dup": 0,
+        "db_written": 0,
+        "seen": 0,
+    }
     seen_urls: set[str] = set()
     family_new: Counter[str] = Counter()
     family_err: Counter[str] = Counter()
     family_empty: Counter[str] = Counter()
     batch_buffer: list[dict] = []
-    last_heartbeat: float = time.monotonic()
     t0 = time.monotonic()
 
-    with ThreadPoolExecutor(max_workers=concurrency) as executor:
-        futures = {executor.submit(search_one, item, exec_cfg, delay_seconds): item
-                   for item in queries}
+    # Heartbeat daemon thread — emits status every HEARTBEAT_SEC regardless
+    # of whether as_completed is making progress.
+    hb_stop = threading.Event()
+    hb = threading.Thread(
+        target=_heartbeat_loop,
+        args=(hb_stop, t0, len(queries), lock, state),
+        daemon=True,
+    )
+    hb.start()
 
-        for fut in as_completed(futures):
-            item = futures[fut]
-            fam = item["family"]
-            try:
-                profiles, err = fut.result()
-            except Exception:
-                profiles, err = [], True
+    try:
+        with ThreadPoolExecutor(max_workers=concurrency) as executor:
+            futures = {executor.submit(search_one, item, exec_cfg, delay_seconds): item
+                       for item in queries}
 
-            with lock:
-                queries_done += 1
-                if err:
-                    errors += 1
-                    family_err[fam] += 1
-                elif not profiles:
-                    empty_results += 1
-                    family_empty[fam] += 1
-                for p in profiles:
-                    normed = url_norm(p["profile_url"])
-                    if normed in seen_urls:
-                        profiles_dup += 1
-                        continue
-                    seen_urls.add(normed)
-                    batch_buffer.append(p)
-                    profiles_new += 1
-                    if len(batch_buffer) >= batch_commit:
-                        n = save_batch(conn, batch_buffer)
-                        db_written += n
-                        batch_buffer.clear()
-                if profiles:
-                    family_new[fam] += len(profiles)
+            for fut in as_completed(futures):
+                item = futures[fut]
+                fam = item["family"]
+                try:
+                    profiles, err = fut.result()
+                except Exception:
+                    profiles, err = [], True
 
-                # heartbeat (every HEARTBEAT_SEC)
-                now = time.monotonic()
-                if now - last_heartbeat >= HEARTBEAT_SEC and queries_done > 0:
-                    elapsed = now - t0
-                    rate = queries_done / max(elapsed, 0.001)
-                    pct = queries_done / max(len(queries), 1) * 100
-                    log.info(
-                        "status  %d/%d (%.0f%%)  %.1fq/s  +%d profiles  "
-                        "err:%d  empty:%d  db:%d  mem:%d",
-                        queries_done, len(queries), pct, rate,
-                        profiles_new, errors, empty_results, db_written,
-                        len(seen_urls),
-                    )
-                    last_heartbeat = now
+                with lock:
+                    state["queries_done"] += 1
+                    if err:
+                        state["errors"] += 1
+                        family_err[fam] += 1
+                    elif not profiles:
+                        state["empty_results"] += 1
+                        family_empty[fam] += 1
+                    for p in profiles:
+                        normed = url_norm(p["profile_url"])
+                        if normed in seen_urls:
+                            state["profiles_dup"] += 1
+                            continue
+                        seen_urls.add(normed)
+                        batch_buffer.append(p)
+                        state["profiles_new"] += 1
+                        if len(batch_buffer) >= batch_commit:
+                            n = save_batch(conn, batch_buffer)
+                            state["db_written"] += n
+                            batch_buffer.clear()
+                    if profiles:
+                        family_new[fam] += len(profiles)
+                    state["seen"] = len(seen_urls)
+    finally:
+        hb_stop.set()
+        hb.join(timeout=2.0)
 
     # Flush remaining
     if batch_buffer:
         n = save_batch(conn, batch_buffer)
-        db_written += n
+        state["db_written"] += n
 
     conn.close()
 
@@ -425,11 +416,11 @@ def run_firehose(
 
     return {
         "total_queries": len(queries),
-        "profiles_new": profiles_new,
-        "profiles_dup": profiles_dup,
-        "db_written": db_written,
-        "errors": errors,
-        "empty_results": empty_results,
+        "profiles_new": state["profiles_new"],
+        "profiles_dup": state["profiles_dup"],
+        "db_written": state["db_written"],
+        "errors": state["errors"],
+        "empty_results": state["empty_results"],
         "time_seconds": time.monotonic() - t0,
         "families": {
             fam: {

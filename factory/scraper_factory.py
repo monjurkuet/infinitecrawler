@@ -14,11 +14,9 @@ class ScraperFactory:
             from strategies.pagination.infinite_scroll import InfiniteScrollPaginationStrategy
             from strategies.extraction.generic_selector import GenericSelectorExtractionStrategy
             from strategies.extraction.multi_step import MultiStepExtractionStrategy
-            from strategies.output.postgresql import (
-                PostgreSQLListingDetailsUpsertStrategy,
-                PostgreSQLOutputStrategy,
-                PostgreSQLUpsertStrategy,
-            )
+            from strategies.output.listing_details import PostgreSQLListingDetailsUpsertStrategy
+            from strategies.output.postgresql import PostgreSQLOutputStrategy
+            from strategies.output.upsert import PostgreSQLUpsertStrategy
             from strategies.queue.redis_queue import RedisQueueStrategy
             from strategies.navigation.tab_navigator import TabNavigationStrategy
 

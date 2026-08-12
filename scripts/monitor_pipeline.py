@@ -48,6 +48,32 @@ REDIS_DB = int(os.environ.get("REDIS_DB", "0"))
 REDIS_DECODE = os.environ.get("REDIS_DECODE_RESPONSES", "1") == "1"
 REDIS_SOCKET_TIMEOUT_SEC = int(os.environ.get("REDIS_SOCKET_TIMEOUT_SEC", "2"))
 
+# Per-daemon PG-progress staleness thresholds (seconds). When the primary
+# table's newest row is older than this, the daemon is considered stuck even
+# if systemctl says "active". Env-overridable.
+DAEMON_HEALTH_CHECKS = [
+    {
+        "unit": "infinitecrawler-listing.service",
+        "sql": "SELECT EXTRACT(EPOCH FROM NOW() - max(created_at))::int FROM scraper.gmaps_listings",
+        "max_age_s": int(os.environ.get("WATCHDOG_LISTING_MAX_AGE_S", "600")),
+    },
+    {
+        "unit": "infinitecrawler-search.service",
+        "sql": "SELECT EXTRACT(EPOCH FROM NOW() - max(created_at))::int FROM scraper.gmaps_search_results",
+        "max_age_s": int(os.environ.get("WATCHDOG_SEARCH_MAX_AGE_S", "600")),
+    },
+    {
+        "unit": "infinitecrawler-linkedin-firehose-loop.service",
+        "sql": "SELECT EXTRACT(EPOCH FROM NOW() - max(checked_at))::int FROM scraper.linkedin_profiles WHERE source = 'firehose'",
+        "max_age_s": int(os.environ.get("WATCHDOG_FIREHOSE_MAX_AGE_S", "900")),
+    },
+    {
+        "unit": "infinitecrawler-email-extract-loop.service",
+        "sql": "SELECT EXTRACT(EPOCH FROM NOW() - max(discovered_at))::int FROM scraper.emails",
+        "max_age_s": int(os.environ.get("WATCHDOG_EMAIL_MAX_AGE_S", "1800")),
+    },
+]
+
 _redis: redis_lib.Redis | None = None
 
 
@@ -74,7 +100,8 @@ def redis_cmd(cmd: str) -> str:
 
 def pg_query(sql: str) -> str:
     try:
-        cfg = get_pg_config()
+        cfg = dict(get_pg_config())
+        cfg["connect_timeout"] = 10
         with psycopg.connect(**cfg) as conn:
             with conn.cursor() as cur:
                 cur.execute(sql)
@@ -94,7 +121,24 @@ def _systemd_daemon_active(unit: str) -> bool:
         )
         return r.stdout.strip() == "active"
     except Exception:
+        log.debug("monitor_pipeline: systemctl check failed for %s", unit, exc_info=True)
         return False
+
+
+def _last_heartbeat_age_sec(log_path: Path) -> float | None:
+    """Seconds since the most recent `heartbeat ` log line, or None."""
+    try:
+        if not log_path.exists():
+            return None
+        mtime = log_path.stat().st_mtime
+        # We can't cheaply grep-tail a huge rotated log, so the file's mtime
+        # is the most-recent-activity proxy. The heartbeat line lands within
+        # HEARTBEAT_SEC of an active daemon's last write, so this approximates
+        # heartbeat age to within a few seconds.
+        return max(0.0, datetime.now(tz=timezone.utc).timestamp() - mtime)
+    except Exception:
+        log.debug("monitor_pipeline: heartbeat age lookup failed for %s", log_path, exc_info=True)
+        return None
 
 
 def _http_ok(url: str, timeout: int = 5) -> bool:
@@ -314,6 +358,8 @@ def run_checks(restart: bool = False) -> dict:
     )
     email_service_active = _systemd_daemon_active("infinitecrawler-email-extract.service")
     firehose_active = _systemd_daemon_active("infinitecrawler-linkedin-firehose-loop.service")
+    listing_daemon_active = _systemd_daemon_active("infinitecrawler-listing.service")
+    search_daemon_active = _systemd_daemon_active("infinitecrawler-search.service")
     api_ok = _http_ok("http://127.0.0.1:8015/")
 
     # Determine pipeline status
@@ -363,24 +409,36 @@ def run_checks(restart: bool = False) -> dict:
         if moved > 0:
             healed.append(f"Moved {moved} stale processing items to pending")
 
+    # Structured daemon health: restart dead-perpetual or PG-stale services.
+    if restart:
+        for check in DAEMON_HEALTH_CHECKS:
+            unit = check["unit"]
+            is_active = _systemd_daemon_active(unit)
+            age_raw = pg_query(check["sql"])
+            if not is_active:
+                log.warning("watchdog: %s is dead — restarting", unit)
+                if restart_unit(unit):
+                    healed.append(f"Restarted {unit} (dead)")
+                else:
+                    issues.append(f"Restart {unit} failed (dead)")
+            elif age_raw not in ("error", ""):
+                age = int(age_raw)
+                if age > check["max_age_s"]:
+                    log.warning("watchdog: %s alive but PG progress age=%ds > %ds — restarting",
+                                unit, age, check["max_age_s"])
+                    if restart_unit(unit):
+                        healed.append(f"Restarted {unit} (stale {age}s)")
+                    else:
+                        issues.append(f"Restart {unit} failed (stale {age}s)")
+
     if restart and procs == 0 and int(uncrawled or 0) > 0:
+        # Fall back to the legacy crawler restart for the listing/search
+        # queue path (covers cases the PG-progress check doesn't catch).
         success = restart_crawlers()
         if success:
             healed.append("Restarted crawlers for uncrawled URLs")
         else:
             issues.append("Crawler restart failed")
-
-    if restart and not firehose_active:
-        if restart_unit("infinitecrawler-linkedin-firehose-loop"):
-            healed.append("Restarted linkedin firehose-loop service")
-        else:
-            issues.append("Firehose restart failed")
-
-    if restart and email_stale_min not in ("error", "") and int(email_stale_min) > 45:
-        if restart_unit("infinitecrawler-email-extract"):
-            healed.append("Restarted email-extract service (stale)")
-        else:
-            issues.append("Email-extract restart failed")
 
     status = {
         "timestamp": now,
@@ -398,6 +456,18 @@ def run_checks(restart: bool = False) -> dict:
             },
             "linkedin_firehose": {
                 "active": firehose_active,
+            },
+            "listing_daemon": {
+                "active": listing_daemon_active,
+                "last_heartbeat_age_sec": _last_heartbeat_age_sec(
+                    Path("/var/log/infinitecrawler/infinitecrawler-listing.log")
+                ),
+            },
+            "search_daemon": {
+                "active": search_daemon_active,
+                "last_heartbeat_age_sec": _last_heartbeat_age_sec(
+                    Path("/var/log/infinitecrawler/infinitecrawler-search.log")
+                ),
             },
             "api": {
                 "port": 8015,

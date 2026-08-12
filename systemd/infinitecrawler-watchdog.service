@@ -1,0 +1,14 @@
+[Unit]
+Description=InfiniteCrawler pipeline watchdog
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/codebase/vhd/infinitecrawler
+ExecStart=/root/codebase/vhd/infinitecrawler/scripts/watchdog.sh
+StandardOutput=append:/var/log/infinitecrawler/infinitecrawler-watchdog.log
+StandardError=append:/var/log/infinitecrawler/infinitecrawler-watchdog.log
+
+[Install]
+WantedBy=default.target

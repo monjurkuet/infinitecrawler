@@ -13,14 +13,34 @@ systemd unit: ~/.config/systemd/user/infinitecrawler-search.service
 
 import asyncio
 import logging
+import os
 import sys
 import time
 from datetime import datetime, timezone  # noqa: E402
 
 from pathlib import Path
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Optional
 
 from dotenv import load_dotenv
+
+if TYPE_CHECKING:
+    from base.strategies import (
+        ExtractionStrategy,
+        OutputStrategy,
+        PaginationStrategy,
+        QueueStrategy,
+    )
+
+# psutil is optional on minimal envs.  Guard the import once at module load;
+# the heartbeat block skips the mem line when this flag is False instead of
+# raising ImportError inside the eternal loop (which would otherwise trip
+# consecutive_errors and churn browser restarts).
+try:
+    import psutil as _psutil  # noqa: F401
+    _HAS_PSUTIL = True
+except ImportError:
+    _psutil = None  # type: ignore[assignment]
+    _HAS_PSUTIL = False
 
 # ── Project imports ─────────────────────────────────────────────────────────
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -51,6 +71,7 @@ BROWSER_START_TIMEOUT = 30  # Seconds for browser launch
 QUERY_BATCH_SIZE = 50  # How many queries to generate per refill
 STALLED_REQUEUE_INTERVAL = 60  # Check for stalled processing items every N sec
 PG_STALENESS_INTERVAL = 900  # Check PG staleness every 15 min
+HEARTBEAT_SEC = int(os.environ.get("DAEMON_HEARTBEAT_SEC", "300"))  # log heartbeat every N sec
 
 # PG connection (separate from output strategy — used for direct queries)
 _pg = get_pg_config()
@@ -74,10 +95,10 @@ class DaemonState:
 
     def __init__(self):
         self.browser_manager: Optional[BrowserManager] = None
-        self.output_strategy: Optional[Any] = None
-        self.extraction_strategy: Optional[Any] = None
-        self.pagination_strategy: Optional[Any] = None
-        self.queue_strategy: Optional[Any] = None
+        self.output_strategy: Optional[OutputStrategy] = None
+        self.extraction_strategy: Optional[ExtractionStrategy] = None
+        self.pagination_strategy: Optional[PaginationStrategy] = None
+        self.queue_strategy: Optional[QueueStrategy] = None
         self.delay_manager: Optional[DelayManager] = None
         self.query_generator: Optional[InfiniteQueryGenerator] = None
         self.config: dict = {}
@@ -95,6 +116,10 @@ class DaemonState:
 
         # Shutdown flag
         self.shutdown_requested: bool = False
+
+        # Heartbeat tracking
+        self.last_heartbeat_time: float = 0.0
+        self.last_heartbeat_pages: int = 0
 
 
 # ── Browser lifecycle ───────────────────────────────────────────────────────
@@ -353,7 +378,7 @@ async def search_single_query(state: DaemonState, query: str) -> bool:
             try:
                 await state.browser_manager.close_tab()
             except Exception:
-                pass
+                log.debug("search_daemon: tab close failed", exc_info=True)
 
 
 # ── Queue management ────────────────────────────────────────────────────────
@@ -449,6 +474,24 @@ async def eternal_loop(state: DaemonState):
     while not state.shutdown_requested:
         try:
             now = time.monotonic()
+
+            # 0. Heartbeat
+            if now - state.last_heartbeat_time > HEARTBEAT_SEC:
+                elapsed = now - state.last_heartbeat_time
+                delta = state.total_pages_processed - state.last_heartbeat_pages
+                if _HAS_PSUTIL:
+                    mem_mb = _psutil.Process().memory_info().rss // 1048576
+                    log.info(
+                        "heartbeat uptime=%.0fs processed_delta=%d velocity=%d/hr mem=%dMB",
+                        elapsed, delta, int(3600 * delta / elapsed) if elapsed > 0 else 0, mem_mb,
+                    )
+                else:
+                    log.info(
+                        "heartbeat uptime=%.0fs processed_delta=%d velocity=%d/hr",
+                        elapsed, delta, int(3600 * delta / elapsed) if elapsed > 0 else 0,
+                    )
+                state.last_heartbeat_time = now
+                state.last_heartbeat_pages = state.total_pages_processed
 
             # 1. Periodic stalled requeue
             if now - last_stalled_check > STALLED_REQUEUE_INTERVAL:

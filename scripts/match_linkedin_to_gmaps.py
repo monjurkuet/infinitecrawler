@@ -17,6 +17,7 @@ import argparse
 import logging
 import re
 import sys
+import time
 from pathlib import Path
 
 import psycopg
@@ -288,22 +289,56 @@ def main():
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--stats", action="store_true")
     p.add_argument("--min-score", type=float, default=0.5, help="Minimum match score (0-1, default 0.5)")
+    p.add_argument("--loop", action="store_true")
+    p.add_argument("--loop-gap", type=float, default=60.0, help="Seconds between cycles (default 60)")
     args = p.parse_args()
 
     conn = psycopg.connect(**get_pg_config())
     conn.autocommit = True
+    stop_flag = {"v": False}
     try:
-        with conn.cursor() as cur:
-            cur.execute(CREATE_MATCHES_TABLE)
-        if args.stats:
-            show_stats(conn)
-            return
-        matches = match_companies(conn, args.min_score, args.dry_run)
-        if args.dry_run:
-            log.info("Dry run complete")
-        else:
-            w = save_matches(conn, matches)
-            log.info("Saved %d matches (min_score=%.2f)", w, args.min_score)
+        import signal
+        def _stop(*_):
+            stop_flag["v"] = True
+        signal.signal(signal.SIGINT, _stop)
+        signal.signal(signal.SIGTERM, _stop)
+
+        while True:
+            try:
+                # Ensure PG connection is alive (idle-in-transaction timeout
+                # fires after long sleeps; recover by reconnecting).
+                if conn.closed:
+                    log.warning("linkedin_match.reconnect reason=connection_closed")
+                    conn = psycopg.connect(**get_pg_config())
+                    conn.autocommit = True
+
+                with conn.cursor() as cur:
+                    cur.execute(CREATE_MATCHES_TABLE)
+                if args.stats:
+                    show_stats(conn)
+                    if not args.loop or stop_flag["v"]:
+                        return
+                    time.sleep(args.loop_gap)
+                    continue
+                matches = match_companies(conn, args.min_score, args.dry_run)
+                if args.dry_run:
+                    log.info("Dry run complete")
+                else:
+                    w = save_matches(conn, matches)
+                    log.info("Saved %d matches (min_score=%.2f)", w, args.min_score)
+                if not args.loop or stop_flag["v"]:
+                    return
+                time.sleep(args.loop_gap)
+            except Exception as cycle_err:
+                log.error(f"linkedin_match.cycle_error err={cycle_err}", exc_info=True)
+                if not args.loop or stop_flag["v"]:
+                    raise
+                # Close the broken connection so the top-of-loop reconnect kicks in.
+                try:
+                    conn.close()
+                except Exception:
+                    log.debug("match_linkedin: conn close failed", exc_info=True)
+                time.sleep(args.loop_gap)
     finally:
         conn.close()
 

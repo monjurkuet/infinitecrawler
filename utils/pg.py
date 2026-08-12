@@ -8,6 +8,8 @@ import logging
 import os
 from typing import Optional
 
+import psycopg
+
 
 # ---------------------------------------------------------------------------
 # Connection config
@@ -181,7 +183,8 @@ def upsert_emails(conn, emails: list[dict]) -> int:
         try:
             conn.commit()
             return written
-        except Exception:
+        except (psycopg.OperationalError, ConnectionError):
+            # sync retry; caller is non-async
             if attempt < 2:
                 import time
                 time.sleep(0.5 * (attempt + 1))
