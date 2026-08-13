@@ -425,9 +425,22 @@ def main():
                     time.sleep(args.loop_gap)
                     continue
 
-                processed, found = asyncio.run(
-                    process_batch(conn, listings, args.sector, dry_run=False)
-                )
+                try:
+                    processed, found = asyncio.run(
+                        process_batch(conn, listings, args.sector, dry_run=False)
+                    )
+                except (psycopg.OperationalError, psycopg.InterfaceError) as db_err:
+                    log.warning(
+                        "linkedin_search.batch_db_error err=%s; reconnecting",
+                        db_err,
+                    )
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+                    conn = psycopg.connect(**pg_config)
+                    conn.autocommit = False
+                    continue
 
                 log.info("Done: searched %d listings, found %d LinkedIn profiles",
                          processed, found)

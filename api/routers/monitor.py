@@ -45,18 +45,20 @@ _DAEMON_PGREP = {
     "infinitecrawler-linkedin-match": r"match_linkedin_to_gmaps\.py",
 }
 
-# Same commands as scripts/launch_daemons.sh (keep in sync).
-_DAEMON_LAUNCH_CMD = {
-    "infinitecrawler-listing": "uv run python -m daemons.listing_daemon",
-    "infinitecrawler-search": "uv run python -m daemons.search_daemon",
-    "infinitecrawler-email-extract": "uv run python scripts/db_email_extract.py --loop --loop-gap 30 --max 2000 --concurrency 25 --burst 3",
-    "infinitecrawler-linkedin-firehose": "uv run python scripts/db_linkedin_firehose.py --max-queries 8000 --concurrency 8 --loop --loop-gap 60",
-    "infinitecrawler-linkedin-search": "uv run python scripts/db_linkedin_search.py --loop --loop-gap 600 --max 2000",
-    "infinitecrawler-classify": "uv run python scripts/db_classify.py --loop --loop-gap 300 --max 2000",
-    "infinitecrawler-linkedin-match": "uv run python scripts/match_linkedin_to_gmaps.py --loop --loop-gap 900",
+# systemd unit for each daemon (start/restart route through systemctl --user
+# so processes stay tracked in systemd's cgroup; the oneshot units for
+# linkedin-search/classify/linkedin-match are timer-driven and must not be
+# started or restarted on demand).
+_DAEMON_SYSTEMD_UNIT = {
+    "infinitecrawler-listing": "infinitecrawler-listing.service",
+    "infinitecrawler-search": "infinitecrawler-search.service",
+    "infinitecrawler-email-extract": "infinitecrawler-email-extract-loop.service",
+    "infinitecrawler-linkedin-firehose": "infinitecrawler-linkedin-firehose-loop.service",
+    "infinitecrawler-linkedin-search": "infinitecrawler-linkedin-search.service",
+    "infinitecrawler-classify": "infinitecrawler-classify.service",
+    "infinitecrawler-linkedin-match": "infinitecrawler-linkedin-match.service",
 }
 
-_PROJECT_DIR = "/root/codebase/vhd/infinitecrawler"
 _DAEMON_LOGFILE = {
     unit: f"/var/log/infinitecrawler/{unit}.log" for unit in _DAEMON_ALLOWLIST
 }
@@ -282,19 +284,20 @@ def _system_action(unit: str, action: str) -> dict:
                        ("signal sent" if code == 0 else "no matching process"))
             return {"status": "ok" if code == 0 else "error",
                     "message": message, "pid": None}
-        # start / restart: kill first (restart), then spawn via launcher command
+        # start / restart: route through systemctl --user (single source of
+        # truth; no nohup orphans). restart first TERMs the process via systemd.
         if action == "restart":
-            subprocess.run(["pkill", "-TERM", "-f", pattern],
+            subprocess.run(["systemctl", "--user", "kill", "-s", "TERM",
+                            _DAEMON_SYSTEMD_UNIT[unit]],
                            capture_output=True, text=True, timeout=10)
-        cmd = _DAEMON_LAUNCH_CMD[unit]
-        import os
-        with open(os.devnull, "w") as devnull:
-            subprocess.Popen(
-                ["nohup", "bash", "-c", f"cd {_PROJECT_DIR} && exec {cmd}"],
-                stdout=devnull, stderr=devnull,
-                start_new_session=True, cwd=_PROJECT_DIR,
-            )
-        return {"status": "ok", "message": f"{action} initiated", "pid": None}
+        r = subprocess.run(
+            ["systemctl", "--user", action, _DAEMON_SYSTEMD_UNIT[unit]],
+            capture_output=True, text=True, timeout=30,
+        )
+        message = (r.stdout.strip() or r.stderr.strip() or
+                   (f"systemctl {action} returned {r.returncode}"))
+        return {"status": "ok" if r.returncode == 0 else "error",
+                "message": message, "pid": None}
     except KeyError:
         return {"status": "error", "message": f"unknown daemon unit: {unit}", "pid": None}
     except Exception as e:
