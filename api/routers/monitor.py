@@ -32,7 +32,6 @@ _DAEMON_ALLOWLIST = {
     "infinitecrawler-linkedin-firehose",
     "infinitecrawler-linkedin-search",
     "infinitecrawler-classify",
-    "infinitecrawler-linkedin-match",
 }
 
 _DAEMON_PGREP = {
@@ -42,12 +41,11 @@ _DAEMON_PGREP = {
     "infinitecrawler-linkedin-firehose": r"db_linkedin_firehose\.py",
     "infinitecrawler-linkedin-search": r"db_linkedin_search\.py",
     "infinitecrawler-classify": r"db_classify\.py",
-    "infinitecrawler-linkedin-match": r"match_linkedin_to_gmaps\.py",
 }
 
 # systemd unit for each daemon (start/restart route through systemctl --user
 # so processes stay tracked in systemd's cgroup; the oneshot units for
-# linkedin-search/classify/linkedin-match are timer-driven and must not be
+# linkedin-search/classify are timer-driven and must not be
 # started or restarted on demand).
 _DAEMON_SYSTEMD_UNIT = {
     "infinitecrawler-listing": "infinitecrawler-listing.service",
@@ -56,7 +54,6 @@ _DAEMON_SYSTEMD_UNIT = {
     "infinitecrawler-linkedin-firehose": "infinitecrawler-linkedin-firehose-loop.service",
     "infinitecrawler-linkedin-search": "infinitecrawler-linkedin-search.service",
     "infinitecrawler-classify": "infinitecrawler-classify.service",
-    "infinitecrawler-linkedin-match": "infinitecrawler-linkedin-match.service",
 }
 
 _DAEMON_LOGFILE = {

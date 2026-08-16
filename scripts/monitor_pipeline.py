@@ -302,16 +302,7 @@ def run_checks(restart: bool = False) -> dict:
     listings_with_linkedin = pg_query(
         "SELECT COUNT(DISTINCT listing_id) FROM scraper.linkedin_profiles"
     )
-    verified_matches = pg_query(
-        "SELECT COUNT(*) FROM scraper.linkedin_gmaps_matches WHERE is_verified"
-    )
-    verified_matches_1h = pg_query(
-        "SELECT COUNT(*) FROM scraper.linkedin_gmaps_matches "
-        "WHERE is_verified AND matched_at > NOW() - INTERVAL '1 hour'"
-    )
-    emails_1h = pg_query(
-        "SELECT COUNT(*) FROM scraper.emails WHERE discovered_at > NOW() - INTERVAL '1 hour'"
-    )
+    emails_1h = pg_query("SELECT COUNT(*) FROM scraper.emails WHERE discovered_at > NOW() - INTERVAL '1 hour'")
     # T1.x — LinkedIn company enrichment (added 2026-08-09)
     companies_enriched = pg_query("SELECT COUNT(*) FROM scraper.linkedin_companies")
     companies_with_emp = pg_query(
@@ -507,8 +498,6 @@ def run_checks(restart: bool = False) -> dict:
                 "emails_1h": int(emails_1h) if emails_1h != "error" else None,
                 "total_linkedin_profiles": int(total_linkedin) if total_linkedin != "error" else None,
                 "listings_with_linkedin": int(listings_with_linkedin) if listings_with_linkedin != "error" else None,
-                "verified_matches": int(verified_matches) if verified_matches != "error" else None,
-                "verified_matches_1h": int(verified_matches_1h) if verified_matches_1h != "error" else None,
                 "companies_enriched": int(companies_enriched) if companies_enriched != "error" else None,
                 "companies_with_emp": int(companies_with_emp) if companies_with_emp != "error" else None,
                 "companies_with_industry": int(companies_with_industry) if companies_with_industry != "error" else None,
@@ -561,8 +550,6 @@ def main():
             print(f"   Emails: {enrich['total_emails']} total ({enrich['listings_with_email']} listings, {enrich['unprocessed_emails']} pending, {enrich.get('emails_1h', '?')} last 1h)")
         if enrich.get("total_linkedin_profiles") is not None:
             print(f"   LinkedIn profiles: {enrich['total_linkedin_profiles']} ({enrich['listings_with_linkedin']} listings)")
-        if enrich.get("verified_matches") is not None:
-            print(f"   LinkedIn→GMaps matches: {enrich['verified_matches']} verified (score≥0.7; {enrich.get('verified_matches_1h', '?')} last 1h)")
         # T1.x — LinkedIn enrichment depth (2026-08-09)
         if enrich.get("companies_enriched") is not None:
             ce = enrich

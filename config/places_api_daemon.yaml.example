@@ -1,0 +1,26 @@
+# places_api_daemon.yaml.example — Config template for Places API daemon.
+#
+# Copy to places_api_daemon.yaml and fill in your API keys, or set
+# PLACES_API_KEYS env var (comma-separated) to override this list.
+#
+# Get keys from Google Cloud Console → APIs & Services → Credentials.
+# Each key should be from a SEPARATE project for independent daily quotas.
+# Free tier: 200 GetPlace/day + 200 Text Search/day per key.
+
+# API keys — override with PLACES_API_KEYS env var (comma-separated)
+api_keys:
+  - "YOUR_API_KEY_1"
+  - "YOUR_API_KEY_2"
+  - "YOUR_API_KEY_3"
+  - "YOUR_API_KEY_4"
+  - "YOUR_API_KEY_5"
+
+concurrency: 5
+batch_size: 200
+exhausted_sleep: 600
+request_timeout: 15
+
+text_search:
+  enabled: true
+  country_suffix: "Bangladesh"
+  strict_match: false

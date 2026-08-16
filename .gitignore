@@ -46,3 +46,7 @@ Thumbs.db
 backups/*.dump.zst
 backups/*.sql.gz
 backups/MANIFEST.txt
+
+# Configs with API keys — .example templates are tracked, real configs are not
+config/places_api_daemon.yaml
+config/nearby_scanner.yaml

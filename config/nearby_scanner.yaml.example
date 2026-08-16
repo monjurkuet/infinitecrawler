@@ -1,0 +1,28 @@
+# nearby_scanner.yaml.example — Config template for Nearby Search grid-scanner.
+#
+# Copy to nearby_scanner.yaml and fill in your API keys, or set
+# PLACES_API_KEYS env var (comma-separated) to override.
+#
+# Free tier: 200 Nearby Search/day per key × 20 places/call.
+# 5 keys = 1,000 calls/day = 20,000 new listings/day.
+
+# API keys — override with PLACES_API_KEYS env var (comma-separated)
+api_keys:
+  - "YOUR_API_KEY_1"
+  - "YOUR_API_KEY_2"
+  - "YOUR_API_KEY_3"
+  - "YOUR_API_KEY_4"
+  - "YOUR_API_KEY_5"
+
+radius_m: 2000
+concurrency: 5
+cells_per_run: 50
+
+# City bounding boxes (north, south, east, west)
+# Add or remove cities as needed
+cities:
+  - name: "Dhaka"
+    bbox: {north: 23.8967, south: 23.6400, east: 90.5600, west: 90.3200}
+  - name: "Chittagong"
+    bbox: {north: 22.4400, south: 22.1600, east: 91.8800, west: 91.7800}
+  # ... add more cities (see nearby_scanner.yaml for the full list)

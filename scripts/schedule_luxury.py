@@ -4,8 +4,7 @@
 Multi-stage pipeline:
   1. Seed new hotels from gmaps_listings → luxury_targets
   2. DDGS LinkedIn/Facebook discovery → luxury_contacts
-  3. Cross-match LinkedIn profiles to GMaps → linkedin_gmaps_matches
-  4. Export to CSV
+  3. Export to CSV
 
 Usage:
     uv run python scripts/schedule_luxury.py             # run all stages
@@ -52,7 +51,7 @@ def run_script(name: str, *args: str) -> bool:
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--stage", type=int, choices=[1, 2, 3, 4], help="Run single stage")
+    p.add_argument("--stage", type=int, choices=[1, 2, 3], help="Run single stage")
     p.add_argument("--max", type=int, default=50, help="Max targets for stage 2 (default 50)")
     p.add_argument("--dry-run", action="store_true")
     args = p.parse_args()
@@ -64,7 +63,7 @@ def main():
         log.info("DRY RUN — no writes")
         return
 
-    stages = [args.stage] if args.stage else [1, 2, 3, 4]
+    stages = [args.stage] if args.stage else [1, 2, 3]
 
     for stage in stages:
         if stage == 1:
@@ -79,11 +78,7 @@ def main():
             run_script("ddgs_profile_discovery.py")
 
         elif stage == 3:
-            log.info("Stage 3: Cross-match LinkedIn profiles to GMaps listings")
-            run_script("match_linkedin_to_gmaps.py")
-
-        elif stage == 4:
-            log.info("Stage 4: Export leads")
+            log.info("Stage 3: Export leads")
             date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             out_dir = REPO_ROOT / "output" / "leads" / date_str
             out_dir.mkdir(parents=True, exist_ok=True)

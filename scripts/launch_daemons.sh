@@ -10,7 +10,6 @@
 # NOT in scope (managed by their own timers as oneshots):
 #   - infinitecrawler-linkedin-search.service  (4h timer)
 #   - infinitecrawler-classify.service         (daily 03:00 timer)
-#   - infinitecrawler-linkedin-match.service   (4x/day timer)
 #
 # Uses `systemctl --user` so processes live in systemd's cgroup and are
 # tracked/lifecycle-managed by systemd (no nohup orphans).
