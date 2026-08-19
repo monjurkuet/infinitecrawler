@@ -84,11 +84,11 @@ extraction:
           type: text
           transform: clean_phone
         website:
-          selector: a.lcr4fd.S9kvJb[data-value="Website"]
           selectors:
-          - a.lcr4fd.S9kvJb[data-value="Website"]
           - a[data-item-id="authority"]
           - a[aria-label*="Website"]
+          - a[data-tooltip="Open website"]
+          - button[data-item-id^="authority"] a
           type: attribute
           attribute: href
         address:

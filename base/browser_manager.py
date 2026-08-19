@@ -68,8 +68,9 @@ class BrowserManager:
         ``tab_pool_size``.  New tabs land on ``about:blank``; the caller
         navigates to the real URL.  Reused tabs are returned round-robin
         without navigation (avoids double page-loads — the caller navigates
-        in the same step).  Pinchtab 0.15 lacks tab-close, so re-navigation
-        is the only way to "reset" a tab.
+        in the same step).  New tabs are created with the unscoped
+        ``/navigate`` endpoint — never reuse ``self.tab`` here, or every
+        acquire would return the same tab.
         """
         async with self.tab_pool_lock:
             if len(self.tabs) < self.tab_pool_size:
@@ -93,20 +94,23 @@ class BrowserManager:
         self.logger.info("Pinchtab session cleaned up")
 
     async def cleanup_all(self):
-        """Reset every tab in the pool, then tear down the pinchtab session.
+        """Close every tab in the pool via the real pinchtab close endpoint,
+        then tear down the pinchtab session.
 
-        Called by the listing daemon's wall-clock browser restart.  Each tab
-        is navigated to ``about:blank`` to free its underlying page; pinchtab
-        0.15 has no real close API, so this is the strongest reset available.
+        Called by the listing daemon's wall-clock browser restart.  Each
+        pooled tab is closed with ``POST /tabs/{id}/close`` — the previous
+        ``navigate("about:blank")`` reset actually *created* a new tab and
+        dropped the reference, leaking the old pool tabs in Chrome across
+        restarts (3 tabs per 1h restart — a real leak behind the OOM).
         """
         async with self.tab_pool_lock:
             for t in list(self.tabs):
                 try:
-                    await t._client.navigate("about:blank")
+                    await t._client.close_tab(tab=t)
                 except RuntimeError:
                     pass
                 except Exception as e:
-                    self.logger.warning("tab reset error: %s", e)
+                    self.logger.warning("tab close error: %s", e)
             self.tabs.clear()
             self._next_idx = 0
         if self._pinchtab:

@@ -421,7 +421,7 @@ async def process_url(state: DaemonState, url: str, tab, tab_key: int) -> bool:
             # pinchtab ``maxTabs`` eviction cliff that orphans worker tabs
             # under concurrent navigation).
             try:
-                await asyncio.wait_for(
+                tab = await asyncio.wait_for(
                     tab._client.navigate(url, tab_id=tab._tab_id),
                     timeout=URL_NAV_TIMEOUT,
                 )

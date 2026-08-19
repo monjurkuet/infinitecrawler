@@ -224,6 +224,10 @@ async def extract_listing_browser(client, listing: dict) -> list[dict]:
         )
     except Exception as exc:
         log.debug("browser extract failed for %s: %s", website[:60], exc)
+        try:
+            await client.close_tab(tab=tab)
+        except Exception:
+            log.debug("browser tab close failed", exc_info=True)
         return []
 
     text = (page.get("text") or "")[:MAX_HTML_BYTES]
@@ -243,6 +247,11 @@ async def extract_listing_browser(client, listing: dict) -> list[dict]:
 
     found = filter_noise(found)
     found = deduplicate_emails(found)
+
+    try:
+        await client.close_tab(tab=tab)
+    except Exception:
+        log.debug("browser tab close failed", exc_info=True)
 
     return [
         {
@@ -530,7 +539,7 @@ def main():
                 # re-fetch the same sites on the next 30s cycle. Listings older
                 # than the staleness window (FETCH_UNPROCESSED_EMAILS_SQL) will be
                 # re-scanned for newly published contact pages.
-                ids = [l["id"] for l in listings]
+                ids = [item["id"] for item in listings]
                 if ids and not args.dry_run:
                     marked = mark_listings_email_scanned(conn, ids)
                     log.info("[cycle %d] Marked %d listings email_scanned_at=NOW()", cycle, marked)

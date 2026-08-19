@@ -473,17 +473,18 @@ class PinchtabClient:
         self.logger.info("pinchtab: connected to %s", self._base())
 
     async def navigate(self, url: str, tab_id: Optional[str] = None) -> PinchtabTab:
-        # Pinchtab's /navigate endpoint creates a new tab per call and overwrites
-        # ``self.tab``. Concurrent navigations from a tab-pool race: only the
-        # last call wins and earlier callers' returned ``PinchtabTab`` objects
-        # point to tabs that were never actually navigated (the returned
-        # tabId sometimes even points to an about:blank stub). Serialize at
-        # the client level so the listing daemon's worker pool stays correct.
+        # Contract: ``tab_id=None`` allocates a NEW tab via the unscoped
+        # ``/navigate`` endpoint; ``tab_id=<id>`` reuses that tab via the
+        # tab-scoped ``/tabs/{id}/navigate`` endpoint.  The caller decides
+        # which: the listing daemon's worker pool passes explicit tab ids
+        # (keeps the pool bounded), while the search daemon and the
+        # evaluate() recovery path pass None to get a fresh tab.  Never
+        # infer reuse from ``self.tab`` — that would break pool creation
+        # (every acquire_tab() would re-navigate the same tab).
         #
-        # When ``tab_id`` is provided we use the tab-scoped endpoint
-        # ``/tabs/{id}/navigate`` which reuses the existing tab instead of
-        # allocating a new one — this keeps the daemon's tab pool bounded
-        # and avoids the pinchtab ``maxTabs`` eviction cliff.
+        # Concurrent navigations from the listing daemon's worker pool are
+        # serialized at the client level so per-tab navigations stay
+        # deterministic.
         async with self._navigate_lock:
             for attempt in (1, 2):
                 if tab_id:
@@ -520,27 +521,38 @@ class PinchtabClient:
                 return tab
             raise RuntimeError("pinchtab navigate: exhausted retries")
 
-    async def close_tab(self):
-        """Reset the current tab to about:blank.
+    async def close_tab(self, tab: Optional["PinchtabTab"] = None):
+        """Close a tab via the real pinchtab close endpoint.
 
-        Pinchtab 0.15 has no tab-close action (`/action kind=close` returns
-        400 "unknown action kind: close") and `/tabs/:id DELETE` is also
-        rejected (404 page not found), so per-query cleanup was spamming
-        pinchtab with 400s.  Reusing the tab via `navigate("about:blank")`
-        is the documented pinchtab path: the same tabId comes back, the next
-        `navigate()` reuses it, and we never leak tabs beyond pinchtab's own
-        `maxTabs` eviction.
+        Primary: ``POST /tabs/{id}/close``.  Fallback: unscoped
+        ``POST /close`` with ``{"tabId": ...}``.  Closing is idempotent —
+        a tab that already died (eviction / instance restart) reports
+        "not found", which we treat as success.  Tab eviction in Chrome
+        is async (~2s), so do not poll ``/tabs`` immediately afterwards.
+
+        ``tab=None`` closes ``self.tab`` (and clears the reference);
+        pass a specific ``PinchtabTab`` to close a pooled tab (used by
+        BrowserManager.cleanup_all()).
         """
-        if self.tab:
-            try:
-                await self.navigate("about:blank")
-            except RuntimeError:
-                # If the tab already died, just drop the reference.
-                self.logger.debug("close_tab: tab already gone")
+        target = tab or self.tab
+        if target is None:
+            return
+        tab_id = target._tab_id
+        try:
+            result = await self._post(f"/tabs/{tab_id}/close", {})
+            if result.get("code") == "error" and "not found" in (result.get("error") or ""):
+                pass  # already closed/evicted — idempotent
+            elif result.get("code") == "error":
+                await self._post("/close", {"tabId": tab_id})
+        except Exception:
+            self.logger.debug("close_tab: tab already gone", exc_info=True)
+        finally:
+            if tab is None:
                 self.tab = None
 
     async def cleanup(self):
-        """Close the aiohttp HTTP session and underlying TCPConnector.
+        """Close the tracked tab via the real endpoint, then drop the
+        aiohttp HTTP session and underlying TCPConnector.
 
         We intentionally do NOT kill the browser instance — pinchtab manages
         its own lifecycle and the always-on policy will restart it anyway.
