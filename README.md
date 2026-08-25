@@ -183,6 +183,32 @@ Required `pinchtab` config (`~/.pinchtab/config.json`): `server.token` must matc
 
 **Logs:** on this host daemon logs go to `~/.cache/infinitecrawler/logs/` (not `/var/log/infinitecrawler/`).
 
+## OSM Enrichment (OpenStreetMap)
+
+Free, quota-less business discovery/backfill complementary to the Google pipelines. `scripts/osm_import.py` downloads Geofabrik `.osm.pbf` extracts (or queries the Overpass API for US cities), filters business POIs, imports them into PostGIS, and merges them into `scraper.gmaps_listings` with `source_type='osm'` (never collides with Google `source_url`s).
+
+**Prerequisites (system packages):** `osmium-tool`, `osm2pgsql`, and the PostGIS + hstore extensions in PostgreSQL.
+
+**Run a single region (Geofabrik):**
+```bash
+uv run python scripts/osm_import.py --region bangladesh
+# keep the PBF on disk for reuse: add --keep-pbf
+```
+
+**US cities via Overpass (no download, no osm2pgsql):**
+```bash
+uv run python scripts/osm_import.py --overpass-city san-francisco
+```
+
+**Status / what's imported:**
+```bash
+uv run python scripts/osm_import.py --status
+```
+
+**Weekly refresh:** `systemd/infinitecrawler-osm-import.{service,timer}` (runs `scripts/osm_import.py` every Monday 03:00 UTC). Enable with `systemctl --user enable --now infinitecrawler-osm-import.timer`.
+
+> OSM phone/website coverage in South Asia is sparse (~2-3% phone, ~1-2% website) — best used for discovery (name + location + category), not enrichment. The Google Nearby Scanner already covers enrichment better. See `docs/OSM-RESEARCH-2026-08-17.md` for the full analysis.
+
 ## Documentation
 
 - [`AGENTS.md`](AGENTS.md) — Agent operating guide (stack, conventions, gotchas)

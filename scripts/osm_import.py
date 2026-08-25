@@ -205,6 +205,20 @@ def step_download(region_key: str, dest: Path) -> bool:
 
 def step_filter(region_key: str, input_pbf: Path, output_pbf: Path) -> bool:
     """Run osmium tags-filter to keep only shop/office/amenity elements."""
+    # Fail fast with an actionable message if the osmium CLI is unavailable.
+    import shutil
+    if shutil.which("osmium") is None:
+        log.error(
+            "[%s] 'osmium' CLI not found on PATH. Install it to run the Geofabrik "
+            "import path: `sudo pacman -S osmium-tool` (Arch) or "
+            "`sudo apt-get install osmium-tool` (Debian/Ubuntu). "
+            "NOTE: osmium-tool requires boost >= 1.92 at build time; on hosts with "
+            "boost 1.91 the AUR/build may fail to link — use the Overpass path "
+            "(--overpass-city) as a dependency-free alternative, or install a "
+            "prebuilt osmium binary.",
+            region_key,
+        )
+        return False
     cmd = ["osmium", "tags-filter", str(input_pbf)] + OSMIUM_FILTER_TAGS + ["-o", str(output_pbf), "--overwrite"]
     code, stderr = run_subprocess(cmd, f"[{region_key}] osmium filter", timeout=300)
     if code != 0:
