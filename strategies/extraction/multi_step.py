@@ -3,6 +3,7 @@
 import logging
 import re
 import asyncio
+import json
 from typing import Any, Dict, List, Optional
 
 from base.strategies import ExtractionStrategy
@@ -83,6 +84,12 @@ class MultiStepExtractionStrategy(ExtractionStrategy):
                 elif action == "extract_url":
                     url_data = self._execute_extract_url_step(step, context)
                     data.update(url_data)
+
+                elif action == "js_extract":
+                    js_data = await self._execute_js_extract_step(step, context, tab)
+                    for key, value in js_data.items():
+                        if key not in data or data[key] is None:
+                            data[key] = value
 
                 elif action == "transform":
                     data = self._execute_transform_step(step, data)
@@ -447,6 +454,31 @@ class MultiStepExtractionStrategy(ExtractionStrategy):
 
         return extracted
 
+    async def _execute_js_extract_step(self, step: dict, context: dict, tab=None) -> Dict:
+        """Extract fields via JS evaluation as a fallback for missing values."""
+        tab = tab or self.browser_manager.tab
+        script = step.get("script", "")
+        if not script:
+            self.logger.warning("js_extract step missing 'script'")
+            return {}
+
+        try:
+            raw = await tab.evaluate(script)
+            if raw is None:
+                return {}
+            if isinstance(raw, str):
+                try:
+                    raw = json.loads(raw)
+                except json.JSONDecodeError:
+                    self.logger.debug("js_extract returned non-JSON string, ignoring")
+                    return {}
+            if not isinstance(raw, dict):
+                return {}
+            return {k: v for k, v in raw.items() if v is not None}
+        except Exception as e:
+            self.logger.warning(f"JS extract step failed: {e}")
+            return {}
+
     def _execute_transform_step(self, step: dict, data: Dict) -> Dict:
         """Apply transformations to extracted data"""
         field = step.get("field")
@@ -461,6 +493,9 @@ class MultiStepExtractionStrategy(ExtractionStrategy):
         try:
             if operation == "normalize_phone":
                 data[field] = self._normalize_phone(value)
+            elif operation == "clean_address":
+                if value:
+                    data[field] = re.sub(r'^[^\w\u0980-\u09FF]+', '', str(value)).strip()
             elif operation == "strip":
                 data[field] = value.strip() if value else value
             elif operation == "lowercase":

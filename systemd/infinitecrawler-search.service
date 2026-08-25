@@ -1,5 +1,5 @@
 [Unit]
-Description=InfiniteCrawler Nearby Search grid-scanner (multi-key)
+Description=InfiniteCrawler Search Daemon (GMaps browser scroll, pinchtab)
 Documentation=https://github.com/monjurkuet/infinitecrawler
 After=network-online.target
 Wants=network-online.target
@@ -10,7 +10,7 @@ WorkingDirectory=/run/media/growloop/codebase/infinitecrawler
 EnvironmentFile=/run/media/growloop/codebase/infinitecrawler/.env
 Environment=PG_HOST=/var/run/postgresql
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/home/growloop/.hermes/bin/uv run python -m daemons.nearby_scanner_daemon
+ExecStart=/home/growloop/.hermes/bin/uv run python -m daemons.search_daemon
 ExecStop=/bin/kill -TERM $MAINPID
 Restart=always
 RestartSec=10
@@ -18,8 +18,7 @@ StartLimitIntervalSec=0
 StartLimitBurst=0
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=ic-nearby-scanner
-
+SyslogIdentifier=ic-search
 TimeoutStopSec=30
 KillMode=mixed
 KillSignal=SIGTERM

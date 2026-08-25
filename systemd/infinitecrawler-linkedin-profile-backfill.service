@@ -6,9 +6,9 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=%h/codebase/vhd/infinitecrawler
-EnvironmentFile=%h/codebase/vhd/infinitecrawler/.env
-ExecStart=/root/.local/bin/uv run python scripts/db_linkedin_profile_backfill.py --loop --loop-gap 86400 --max 5000
+WorkingDirectory=/run/media/growloop/codebase/infinitecrawler
+EnvironmentFile=/run/media/growloop/codebase/infinitecrawler/.env
+ExecStart=/home/growloop/.hermes/bin/uv run python scripts/db_linkedin_profile_backfill.py --loop --loop-gap 86400 --max 5000
 Restart=always
 RestartSec=600
 StandardOutput=journal

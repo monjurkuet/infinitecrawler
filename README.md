@@ -170,6 +170,19 @@ tail -f /var/log/infinitecrawler/infinitecrawler-nearby-scanner.log
 
 The browser-based daemons (search, listing) connect to an external `pinchtab server` (bridge port 9868). Pinchtab manages Chrome's lifecycle — the daemons only issue HTTP commands. The Places API and Nearby Scanner daemons do NOT use pinchtab — they are pure HTTP.
 
+**Launch (this host):** pinchtab runs as a background `bridge` process, not a systemd unit:
+
+```bash
+export PATH="$HOME/.npm-global/bin:$PATH"
+pinchtab bridge --port 9868
+```
+
+Required `pinchtab` config (`~/.pinchtab/config.json`): `server.token` must match `.env` `PINCHTAB_TOKEN`; `security.allowEvaluate=true`; `security.allowedDomains` must include `google.com`, `www.google.com`, `maps.google.com`.
+
+**CRITICAL — listing daemon URL form:** the listing daemon navigates Google Maps place URLs. Headless Chrome cannot render the `/maps/place/<name>/data=!...` detail view (Google strips the CID and returns a bare map shell, so every selector misses). `daemons/listing_daemon.py` rewrites each queued URL to `https://www.google.com/maps/place/?cid=<decimal>` via `to_cid_url()` — this loads the full panel and populates name/rating/phone/address. Do NOT "fix" this back to the `/place/data=` form.
+
+**Logs:** on this host daemon logs go to `~/.cache/infinitecrawler/logs/` (not `/var/log/infinitecrawler/`).
+
 ## Documentation
 
 - [`AGENTS.md`](AGENTS.md) — Agent operating guide (stack, conventions, gotchas)

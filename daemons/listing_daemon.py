@@ -58,6 +58,33 @@ from daemons.common import (  # noqa: E402
     shutdown_strategies,
 )
 from services.classification import _single_fallback, load_sectors, METHOD_FALLBACK_RULE  # noqa: E402
+import re as _re  # noqa: E402
+
+
+def to_cid_url(url: str) -> str:
+    """Rewrite a Google Maps ``/place/<name>/data=!...:0xAAAA:0xBBBB`` URL into
+    the headless-friendly ``?cid=<decimal>`` form.
+
+    Headless Chrome (pinchtab) cannot render the ``/place/<name>/data=...``
+    detail view — Google strips the CID payload and bounces to a bare map
+    shell, so every selector misses.  Navigating via ``?cid=<decimal>`` loads
+    the full detail panel reliably (name, rating, phone, address, plus code
+    all populate).  Returns the original URL unchanged if no CID is found.
+    """
+    if not url or "?cid=" in url:
+        return url
+    # The place CID is the trailing 0x… feature id, e.g.
+    #   /place/X/data=!…!1s0xAAAA:0xBBBB…   -> use 0xBBBB
+    # Capture the LAST ":0x<hex>" (the feature CID Google keys ?cid on).
+    matches = _re.findall(r":0x([0-9a-fA-F]+)", url)
+    if not matches:
+        return url
+    try:
+        cid = int(matches[-1], 16)
+    except ValueError:
+        return url
+    return f"https://www.google.com/maps/place/?cid={cid}"
+
 
 # ── Config ──────────────────────────────────────────────────────────────────
 
@@ -421,8 +448,9 @@ async def process_url(state: DaemonState, url: str, tab, tab_key: int) -> bool:
             # pinchtab ``maxTabs`` eviction cliff that orphans worker tabs
             # under concurrent navigation).
             try:
+                nav_url = to_cid_url(url)
                 tab = await asyncio.wait_for(
-                    tab._client.navigate(url, tab_id=tab._tab_id),
+                    tab._client.navigate(nav_url, tab_id=tab._tab_id),
                     timeout=URL_NAV_TIMEOUT,
                 )
             except asyncio.TimeoutError:

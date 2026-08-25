@@ -6,6 +6,6 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=%h/codebase/vhd/infinitecrawler/scripts/backup-pg.sh
-WorkingDirectory=%h/codebase/vhd/infinitecrawler
+ExecStart=/run/media/growloop/codebase/infinitecrawler/scripts/backup-pg.sh
+WorkingDirectory=/run/media/growloop/codebase/infinitecrawler
 EnvironmentFile=-%h/.config/infinitecrawler/backup.env

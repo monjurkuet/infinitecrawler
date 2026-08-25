@@ -5,10 +5,10 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/root/codebase/vhd/infinitecrawler
+WorkingDirectory=/run/media/growloop/codebase/infinitecrawler
 Environment=PG_HOST=/var/run/postgresql
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/root/codebase/vhd/infinitecrawler/.venv/bin/python3 -m daemons.places_api_daemon
+ExecStart=/home/growloop/.hermes/bin/uv run python -m daemons.places_api_daemon
 Restart=always
 RestartSec=10
 StandardOutput=append:/var/log/infinitecrawler/places-api-daemon.log
