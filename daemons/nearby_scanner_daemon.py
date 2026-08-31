@@ -314,19 +314,21 @@ class NearbyScannerDaemon:
             self._seen_place_ids = set()
 
     def _fetch_pending_cells(self, limit: int) -> list[dict]:
-        """Fetch pending grid cells, prioritized by city order."""
+        """Fetch pending grid cells, prioritized: BD cities first, then global."""
         self._pg_reconnect()
         if not self.pg_conn:
             return []
+        # BD cities per BPT plan — prioritize these before global discovery
+        bd_cities = ('Dhaka','Chittagong','Sylhet','Rajshahi','Khulna','Barisal','Rangpur','Mymensingh','Comilla','Narayanganj','Gazipur','Nawabganj','Dinajpur','Tangail','Bogra')
         try:
             with self.pg_conn.cursor() as cur:
                 cur.execute("""
                     SELECT id, city, latitude, longitude, radius_m, batch_idx
                     FROM scraper.nearby_scan_grid
                     WHERE status = 'pending'
-                    ORDER BY city, batch_idx, latitude, longitude
+                    ORDER BY CASE WHEN city = ANY(%s) THEN 0 ELSE 1 END, city, batch_idx, latitude, longitude
                     LIMIT %s
-                """, (limit,))
+                """, (list(bd_cities), limit))
                 rows = cur.fetchall()
             return [{"grid_id": r[0], "city": r[1], "lat": r[2], "lng": r[3],
                      "radius": r[4], "batch_idx": r[5]} for r in rows]

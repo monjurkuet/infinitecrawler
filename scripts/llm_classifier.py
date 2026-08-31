@@ -44,13 +44,36 @@ load_dotenv(REPO_ROOT / ".env")
 BPT_DIR = REPO_ROOT.parent / "business-plan-template"
 CLASSIFICATION_DIR = REPO_ROOT / "_system" / "classification"
 
-# LLM settings
+# LLM settings — support both LLM_* and OPENAI_* env vars (bashrc uses OPENAI_*, .env uses LLM_*)
 LLM_BASE_URL = os.environ.get(
-    "LLM_BASE_URL", "https://llm.datasolved.org/v1"
+    "LLM_BASE_URL", os.environ.get("OPENAI_BASE_URL", "https://llm.datasolved.org/v1")
 )
-LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
+# Key: try LLM_API_KEY first, then OPENAI_API_KEY (bashrc) then read ~/.bashrc file directly (systemd doesn't source bashrc)
+def _load_bashrc_key() -> str:
+    try:
+        btxt = Path.home().joinpath(".bashrc").read_text()
+        import re as _re
+        _m = _re.search(r'OPENAI_API_KEY\s*=\s*["\']?([^"\'\n]+)', btxt)
+        return _m.group(1).strip() if _m else ""
+    except Exception:
+        return ""
+_BASHRC_OPENAI_KEY = _load_bashrc_key()
+# Candidates in priority order: LLM_API_KEY (.env/systemd), OPENAI_API_KEY (env), bashrc file
+_LLM_KEY_CANDIDATES = [k for k in [
+    os.environ.get("LLM_API_KEY", ""),
+    os.environ.get("OPENAI_API_KEY", ""),
+    _BASHRC_OPENAI_KEY,
+] if k]
+# unique preserve order
+seen=set(); _LLM_KEYS=[]
+for _k in _LLM_KEY_CANDIDATES:
+    if _k not in seen:
+        seen.add(_k); _LLM_KEYS.append(_k)
+LLM_API_KEY = _LLM_KEYS[0] if _LLM_KEYS else ""
 if not LLM_API_KEY:
     log.warning("LLM_API_KEY is not set — classification will use fallback only")
+else:
+    log.info(f"LLM keys loaded: {len(_LLM_KEYS)} candidate(s), base={LLM_BASE_URL}, primary {LLM_API_KEY[:6]}... len={len(LLM_API_KEY)}")
 LLM_MODEL = os.environ.get(
     "LLM_CLASSIFIER_MODEL", "deepseek-ai/deepseek-v4-flash"
 )
@@ -268,12 +291,8 @@ Return JSON: {{"classifications": [
 
 
 def call_llm(messages: list[dict], retries: int = 2, model: str | None = None) -> dict | None:
-    """Call the LLM API and return parsed JSON."""
+    """Call the LLM API and return parsed JSON. Tries multiple API key candidates on 401."""
     model = model or LLM_MODEL
-    headers = {
-        "Authorization": f"Bearer {LLM_API_KEY}",
-        "Content-Type": "application/json",
-    }
     payload = {
         "model": model,
         "messages": messages,
@@ -282,60 +301,74 @@ def call_llm(messages: list[dict], retries: int = 2, model: str | None = None) -
         "response_format": {"type": "json_object"},
     }
 
-    for attempt in range(retries):
-        resp = None
-        try:
-            with httpx.Client(timeout=LLM_HTTP_TIMEOUT) as client:
-                resp = client.post(
-                    f"{LLM_BASE_URL}/chat/completions",
-                    headers=headers,
-                    json=payload,
+    # try each key sequentially; on 401 move to next key without sleeping
+    for key_idx, api_key in enumerate(_LLM_KEYS if _LLM_KEYS else [LLM_API_KEY]):
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        key_label = f"key {key_idx+1}/{len(_LLM_KEYS)} {api_key[:6]}..."
+
+        for attempt in range(retries):
+            resp = None
+            try:
+                with httpx.Client(timeout=LLM_HTTP_TIMEOUT) as client:
+                    resp = client.post(
+                        f"{LLM_BASE_URL}/chat/completions",
+                        headers=headers,
+                        json=payload,
+                    )
+                    resp.raise_for_status()
+                    resp_text = resp.text.strip()
+                    body = None
+                    for line in resp_text.split("\n"):
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            candidate = json.loads(line)
+                            if "choices" in candidate:
+                                body = candidate
+                                break
+                        except json.JSONDecodeError:
+                            continue
+                    if body is None:
+                        body = json.loads(resp_text.split("\n")[0])
+                    content = body["choices"][0]["message"]["content"]
+                    if key_idx > 0:
+                        log.info(f"LLM succeeded with fallback {key_label}")
+                    return json.loads(content)
+            except httpx.TimeoutException:
+                status_code = resp.status_code if resp else "N/A"
+                resp_len = len(resp.text) if resp else 0
+                log.warning(
+                    f"LLM timeout ({key_label} attempt {attempt + 1}/{retries}) "
+                    f"status={status_code} len={resp_len}"
                 )
-                resp.raise_for_status()
-                resp_text = resp.text.strip()
-                body = None
-                for line in resp_text.split("\n"):
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        candidate = json.loads(line)
-                        if "choices" in candidate:
-                            body = candidate
-                            break
-                    except json.JSONDecodeError:
-                        continue
-                if body is None:
-                    body = json.loads(resp_text.split("\n")[0])
-                content = body["choices"][0]["message"]["content"]
-                return json.loads(content)
-        except httpx.TimeoutException:
-            status_code = resp.status_code if resp else "N/A"
-            resp_len = len(resp.text) if resp else 0
-            log.warning(
-                f"LLM timeout (attempt {attempt + 1}/{retries}) "
-                f"status={status_code} len={resp_len}"
-            )
-            if attempt < retries - 1:
-                sleep_time = 2 ** (attempt + 1)  # 2s, 4s, 8s exponential backoff
-                log.info(f"Retrying after {sleep_time}s backoff...")
-                time.sleep(sleep_time)
-        except httpx.HTTPStatusError as e:
-            log.warning(
-                f"LLM HTTP {e.response.status_code} (attempt {attempt + 1}/{retries}) "
-                f"len={len(e.response.text)}"
-            )
-            if e.response.status_code == 413:
-                log.error("Payload too large — reducing batch size may help")
-                return None  # Don't retry 413 — it won't help
-            if attempt < retries - 1:
-                sleep_time = 5 * (attempt + 1)  # 5s, 10s backoff
-                log.info(f"Retrying after {sleep_time}s backoff...")
-                time.sleep(sleep_time)
-        except (json.JSONDecodeError, KeyError) as e:
-            log.error(f"LLM response parse error: {e}")
-            return None
-    log.error("LLM call failed after all retries")
+                if attempt < retries - 1:
+                    sleep_time = 2 ** (attempt + 1)  # 2s, 4s, 8s exponential backoff
+                    log.info(f"Retrying after {sleep_time}s backoff...")
+                    time.sleep(sleep_time)
+            except httpx.HTTPStatusError as e:
+                log.warning(
+                    f"LLM HTTP {e.response.status_code} ({key_label} attempt {attempt + 1}/{retries}) "
+                    f"len={len(e.response.text)}"
+                )
+                if e.response.status_code == 413:
+                    log.error("Payload too large — reducing batch size may help")
+                    return None  # Don't retry 413 — it won't help
+                if e.response.status_code == 401:
+                    log.error(f"LLM 401 Invalid API key {key_label} — trying next key" if key_idx + 1 < len(_LLM_KEYS) else f"LLM 401 Invalid API key {key_label} — no more keys, using fallback")
+                    break  # try next key, don't sleep
+                if attempt < retries - 1:
+                    sleep_time = 5 * (attempt + 1)  # 5s, 10s backoff
+                    log.info(f"Retrying after {sleep_time}s backoff...")
+                    time.sleep(sleep_time)
+            except (json.JSONDecodeError, KeyError) as e:
+                log.error(f"LLM response parse error: {e}")
+                return None
+        # if this key gave 401, continue to next key outer loop
+    log.error("LLM call failed after all retries and all keys")
     return None
 
 

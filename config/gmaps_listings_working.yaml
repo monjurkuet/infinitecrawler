@@ -3,7 +3,7 @@ content_type: listing_crawler
 browser:
   automation: pinchtab
   headless: true
-  page_wait_seconds: 5.0
+  page_wait_seconds: 6.0
 pinchtab:
   server_url: http://127.0.0.1:9867
   instance_url: http://127.0.0.1:9868
@@ -29,7 +29,7 @@ navigation:
       selector: '[role="tab"][aria-label^="Overview"]'
       required: true
       wait_for_selector: div[role='main']
-      max_wait: 4
+      max_wait: 12
     - name: Reviews
       selector: '[role="tab"][aria-label^="Reviews"]'
       wait_for_selector: div[role='main']
@@ -85,6 +85,8 @@ extraction:
           selector: a[data-item-id='authority']
           selectors:
           - a[data-item-id='authority']
+          - a[data-item-id^='authority']
+          - a[href^='http']:not([href*='google.com']):not([href*='gstatic.com'])
           - a[aria-label*='Website']
           - a[data-tooltip='Open website']
           type: attribute
@@ -121,52 +123,16 @@ extraction:
       field: address
       operation: clean_address
     - action: js_extract
-      script: "(function() {\n  var main = document.querySelector('[role=\"main\"\
-        ]');\n  if (!main) return {};\n  var result = {};\n\n  function normalizeDigits(text)\
-        \ {\n    if (!text) return text;\n    return text.replace(/[০-৯]/g, function(d)\
-        \ {\n      return String.fromCharCode(d.charCodeAt(0) - 0x09E6 + 0x30);\n\
-        \    }).replace(/[٠-٩]/g, function(d) {\n      return String.fromCharCode(d.charCodeAt(0)\
-        \ - 0x0660 + 0x30);\n    });\n  }\n\n  try {\n    var phoneBtn = main.querySelector('button[data-item-id^=\"\
-        phone\"]');\n    if (phoneBtn) {\n      var aria = phoneBtn.getAttribute(\"\
-        aria-label\") || \"\";\n      var text = (phoneBtn.innerText || \"\").trim();\n\
-        \      var combined = normalizeDigits(aria + \" \" + text);\n      var m =\
-        \ combined.match(/(\\+?[\\d\\s-]{7,}\\d|[\\d\\+][\\d\\s-]{7,}\\d)/);\n   \
-        \   if (m) result.phone = m[0].replace(/\\s+/g, \"\").replace(/^-/, \"\");\n\
-        \    }\n  } catch(e) {}\n\n  try {\n    var links = Array.from(main.querySelectorAll('a[href^=\"\
-        http\"]'));\n    for (var i = 0; i < links.length; i++) {\n      var a = links[i];\n\
-        \      var href = a.getAttribute(\"href\") || \"\";\n      if (href.indexOf(\"\
-        google.com\") !== -1) continue;\n      if ((a.innerText || \"\").trim().length\
-        \ > 2) {\n        result.website = href;\n        break;\n      }\n    }\n\
-        \  } catch(e) {}\n\n  try {\n    var addrBtn = main.querySelector('button[data-item-id=\"\
-        address\"]');\n    if (addrBtn) {\n      var text = (addrBtn.innerText ||\
-        \ \"\").trim();\n      result.address = text.replace(/^[^\\w\\u0980-\\u09FF]+/,\
-        \ \"\").trim();\n    }\n  } catch(e) {}\n\n  try {\n    var ratingImg = main.querySelector('div.F7nice\
-        \ [role=\"img\"]');\n    if (ratingImg) {\n      var aria = ratingImg.getAttribute(\"\
-        aria-label\") || \"\";\n      var normalized = normalizeDigits(aria);\n  \
-        \    var m = normalized.match(/(\\d+[.,]\\d+)/);\n      if (m) result.rating\
-        \ = m[1].replace(\",\", \".\");\n    }\n  } catch(e) {}\n\n  try {\n    var\
-        \ reviewEls = main.querySelectorAll('[aria-label], button[jsaction*=\"review\"\
-        ]');\n    for (var i = 0; i < reviewEls.length; i++) {\n      var el = reviewEls[i];\n\
-        \      var aria = el.getAttribute(\"aria-label\") || \"\";\n      var text\
-        \ = (el.innerText || \"\").trim();\n      var combined = normalizeDigits(aria\
-        \ + \" \" + text);\n      if (/\\d+/.test(combined) && /review|পর্যালোচনা|রিভিউ/i.test(combined))\
-        \ {\n        var m = combined.match(/(\\d+)/);\n        if (m) { result.review_count\
-        \ = m[1]; break; }\n      }\n    }\n  } catch(e) {}\n\n  try {\n    var catBtn\
-        \ = main.querySelector('button[jsaction*=\"category\"]');\n    if (catBtn)\
-        \ {\n      result.category = (catBtn.innerText || \"\").trim();\n    }\n \
-        \ } catch(e) {}\n\n  try {\n    var pcBtn = main.querySelector('button[data-item-id=\"\
-        oloc\"]');\n    if (pcBtn) {\n      result.plus_code = (pcBtn.innerText ||\
-        \ \"\").trim();\n    }\n  } catch(e) {}\n\n  try {\n    var canonical = document.querySelector('link[rel=\"\
-        canonical\"]');\n    if (canonical) {\n      var href = canonical.getAttribute(\"\
-        href\") || \"\";\n      var m = href.match(/place\\/([^\\/?]+)/);\n      if\
-        \ (m) result.place_id = m[1];\n    }\n  } catch(e) {}\n\n  return result;\n\
-        })()"
+      script: "(function() {\n  var main = document.querySelector('[role=\"main\"]');\n  if (!main) return {};\n  var result = {};\n\n  function normalizeDigits(text) {\n    if (!text) return text;\n    return text.replace(/[০-৯]/g, function(d) {\n      return String.fromCharCode(d.charCodeAt(0) - 0x09E6 + 0x30);\n    }).replace(/[٠-٩]/g, function(d) {\n      return String.fromCharCode(d.charCodeAt(0) - 0x0660 + 0x30);\n    });\n  }\n\n  try {\n    var phoneBtn = main.querySelector('button[data-item-id^=\"phone\"]');\n    if (phoneBtn) {\n      var aria = phoneBtn.getAttribute(\"aria-label\") || \"\";\n      var text = (phoneBtn.innerText || \"\").trim();\n      var combined = normalizeDigits(aria + \" \" + text);\n      var m = combined.match(/(\\+?[\\d\\s-]{7,}\\d|[\\d\\+][\\d\\s-]{7,}\\d)/);\n      if (m) result.phone = m[0].replace(/\\s+/g, \"\").replace(/^-/, \"\");\n    }\n  } catch(e) {}\n\n  try {\n    var links = Array.from(main.querySelectorAll('a[href^=\"http\"]'));\n    for (var\
+        \ i = 0; i < links.length; i++) {\n      var a = links[i];\n      var href = a.getAttribute(\"href\") || \"\";\n      if (href.indexOf(\"google.com\") !== -1) continue;\n      if ((a.innerText || \"\").trim().length > 2) {\n        result.website = href;\n        break;\n      }\n    }\n  } catch(e) {}\n\n  try {\n    var addrBtn = main.querySelector('button[data-item-id=\"address\"]');\n    if (addrBtn) {\n      var text = (addrBtn.innerText || \"\").trim();\n      result.address = text.replace(/^[^\\w\\u0980-\\u09FF]+/, \"\").trim();\n    }\n  } catch(e) {}\n\n  try {\n    var ratingImg = main.querySelector('div.F7nice [role=\"img\"]');\n    if (ratingImg) {\n      var aria = ratingImg.getAttribute(\"aria-label\") || \"\";\n      var normalized = normalizeDigits(aria);\n      var m = normalized.match(/(\\d+[.,]\\d+)/);\n      if (m) result.rating = m[1].replace(\",\", \".\");\n    }\n  } catch(e) {}\n\n  try {\n    var reviewEls = main.querySelectorAll('[aria-label], button[jsaction*=\"\
+        review\"]');\n    for (var i = 0; i < reviewEls.length; i++) {\n      var el = reviewEls[i];\n      var aria = el.getAttribute(\"aria-label\") || \"\";\n      var text = (el.innerText || \"\").trim();\n      var combined = normalizeDigits(aria + \" \" + text);\n      if (/\\d+/.test(combined) && /review|পর্যালোচনা|রিভিউ/i.test(combined)) {\n        var m = combined.match(/(\\d+)/);\n        if (m) { result.review_count = m[1]; break; }\n      }\n    }\n  } catch(e) {}\n\n  try {\n    var catBtn = main.querySelector('button[jsaction*=\"category\"]');\n    if (catBtn) {\n      result.category = (catBtn.innerText || \"\").trim();\n    }\n  } catch(e) {}\n\n  try {\n    var pcBtn = main.querySelector('button[data-item-id=\"oloc\"]');\n    if (pcBtn) {\n      result.plus_code = (pcBtn.innerText || \"\").trim();\n    }\n  } catch(e) {}\n\n  try {\n    var canonical = document.querySelector('link[rel=\"canonical\"]');\n    if (canonical) {\n      var href = canonical.getAttribute(\"href\"\
+        ) || \"\";\n      var m = href.match(/place\\/([^\\/?]+)/);\n      if (m) result.place_id = m[1];\n    }\n  } catch(e) {}\n\n\n  try {\n    if (!result.latitude || !result.longitude) {\n      var href = window.location.href;\n      var m = href.match(/@(-?\\d+\\.\\d+),(-?\\d+\\.\\d+)/);\n      if (m) { result.latitude = m[1]; result.longitude = m[2]; }\n      else {\n        var html = document.documentElement.innerHTML || \"\";\n        var m2 = html.match(/!3d(-?\\d+\\.\\d+)!4d(-?\\d+\\.\\d+)/);\n        if (m2) { result.latitude = m2[1]; result.longitude = m2[2]; }\n      }\n    }\n  } catch(e) {}\n\n  return result;\n})()"
     - action: extract_url
       fields:
         latitude:
-          pattern: '!3d(-?[0-9.]+)'
+          pattern: (?:!3d|@)(-?[0-9.]+)
         longitude:
-          pattern: '!4d(-?[0-9.]+)'
+          pattern: (?:!4d|,)(-?[0-9.]+)
         place_id:
           pattern: '!1s([A-Za-z0-9_:]+)'
   retry:
@@ -192,14 +158,14 @@ output:
     recreate_table: false
 rate_limiting:
   page_load:
+  - 0.2
   - 0.5
-  - 1.0
   between_requests:
-  - 1
-  - 2
+  - 0.2
+  - 0.5
   between_tabs:
+  - 0.1
   - 0.3
-  - 0.8
   distribution: random
   max_retries: 3
   retry_delay:
@@ -210,6 +176,6 @@ retry:
   delay: 5
   restart_browser: true
 workers:
-  count: 3
+  count: 5
   max_consecutive_errors: 15
-  max_pages_per_session: 100
+  max_pages_per_session: 80

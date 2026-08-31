@@ -10,7 +10,7 @@ WorkingDirectory=/run/media/growloop/codebase/infinitecrawler
 EnvironmentFile=/run/media/growloop/codebase/infinitecrawler/.env
 Environment=PG_HOST=/var/run/postgresql
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/home/growloop/.hermes/bin/uv run python scripts/osm_import.py
+ExecStart=/home/growloop/.venvs/ic/bin/python3 scripts/osm_import.py
 TimeoutStartSec=7200
 StandardOutput=journal
 StandardError=journal

@@ -572,6 +572,11 @@ class PlacesAPIDaemon:
                     await asyncio.sleep(ALL_EXHAUSTED_SLEEP)
                     continue
 
+                # Skip fetch if already exhausted — sleep first
+                if self._all_exhausted("getplace") and self._all_exhausted("text_search"):
+                    log.warning("All keys exhausted for both methods. Sleeping %ds...", ALL_EXHAUSTED_SLEEP)
+                    await asyncio.sleep(ALL_EXHAUSTED_SLEEP)
+                    continue
                 # Fetch a batch of uncrawled URLs
                 records = self._fetch_uncrawled()
                 if not records:

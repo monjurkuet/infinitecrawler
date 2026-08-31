@@ -15,7 +15,7 @@ log = logging.getLogger("daemon.common")
 
 BROWSER_RESTART_INTERVAL_SEC = int(os.environ.get("BROWSER_RESTART_INTERVAL_SEC", "3600"))
 BROWSER_RESTART_PAGES = int(os.environ.get("BROWSER_RESTART_PAGES", "100"))
-QUEUE_LOW_THRESHOLD = int(os.environ.get("QUEUE_LOW_THRESHOLD", "20"))
+QUEUE_LOW_THRESHOLD = int(os.environ.get("QUEUE_LOW_THRESHOLD", "200"))
 
 # ── Signal handling ──────────────────────────────────────────────────────────
 

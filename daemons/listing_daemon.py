@@ -20,6 +20,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
+from urllib.parse import urlparse  # noqa: E402
 
 import psycopg
 from dotenv import load_dotenv
@@ -91,11 +92,11 @@ def to_cid_url(url: str) -> str:
 load_dotenv(REPO_ROOT / ".env")
 
 CONFIG_PATH = REPO_ROOT / "config" / "gmaps_listings_working.yaml"
-URL_FETCH_BATCH = 100  # How many uncrawled URLs to pull from PG per refill
+URL_FETCH_BATCH = 2000  # How many uncrawled URLs to pull from PG per refill (pitfall #9: keep Redis deep so workers never idle; raised from 1000 as backlog still grows ~800/h)
 URL_MAX_RETRIES = 3  # Per-URL retry attempts
 URL_RETRY_DELAY = 5  # Seconds between per-URL retries
-URL_EXTRACTION_TIMEOUT = 35  # Seconds before extraction attempt is aborted (page_wait already gives time to render)
-URL_NAV_TIMEOUT = 120  # Seconds for initial URL navigation (includes page_wait_seconds=45 plus page load)
+URL_EXTRACTION_TIMEOUT = 25  # Seconds before extraction attempt is aborted (page_wait already gives time to render)
+URL_NAV_TIMEOUT = 75  # Seconds for initial URL navigation (was 120; tightened so slow/blank pages fail fast and retry instead of pinning a worker)
 BROWSER_START_TIMEOUT = 30  # Seconds for browser launch
 STALLED_REQUEUE_INTERVAL = 60  # Check for stalled processing items every N sec
 HEARTBEAT_SEC = int(os.environ.get("DAEMON_HEARTBEAT_SEC", "300"))  # log heartbeat every N sec
@@ -184,6 +185,14 @@ class DaemonState:
         self.cycle_retries: int = 0
         self.cycle_processed: int = 0
         self.cycle_last_summary: float = time.monotonic()
+
+        # Phantom queue tracking — URLs that produced a name but NO
+        # phone/website/rating/address/plus_code. These are queue-poison:
+        # they come back through `backfill_pending` (uncrawled PG sweep) or
+        # `retry_stale_failures` and re-render the bare shell again. Routing
+        # them to `gmaps:phantom` lets the phantom-sweeper requeue them once
+        # after a page-wait increase, without blocking the live queue.
+        self.phantom_count: int = 0
 
 
 # ── Browser lifecycle ───────────────────────────────────────────────────────
@@ -346,7 +355,22 @@ def fetch_uncrawled_urls(state: DaemonState) -> list[str]:
             sql = get_uncrawled_urls_sql(limit=URL_FETCH_BATCH)
             cur.execute(sql)
             rows = cur.fetchall()
-        urls = [r[0] for r in rows if r[0]]
+        # Only Google Maps URLs can be extracted by the ?cid= /maps/place/ flow.
+        # Anything else (business URLs leaked into the queue, wrong-domain URLs)
+        # burns retries and never extracts, so drop it at intake.
+        urls = []
+        nonmaps_dropped = 0
+        for r in rows:
+            u = r[0]
+            if not u:
+                continue
+            h = urlparse(u).netloc.lower()
+            if "google." in h and "/maps" in u:
+                urls.append(u)
+            else:
+                nonmaps_dropped += 1
+        if nonmaps_dropped:
+            log.info("prefilter_nonmaps dropped=%d", nonmaps_dropped)
         return urls
     except Exception as e:
         log.error("PG URL fetch failed: %s", e)
@@ -395,7 +419,54 @@ def requeue_stalled(state: DaemonState):
 
 
 def _has_meaningful_data(item: dict) -> bool:
-    return bool(item.get("name"))
+    """Name-only rows are thin extractions (page rendered but phone/website/
+    rating/address all missed). Returning False routes them to the retry loop
+    instead of persisting a bare row and marking the URL complete.
+    Genuinely sparse businesses will exhaust retries and move to failed —
+    better than silently persisting empty rows as 'done'."""
+    return bool(item.get("name")) and any(
+        item.get(k) for k in ("phone", "website", "rating", "address", "plus_code", "category", "review_count")
+    )
+
+
+def _is_phantom_row(row: dict) -> bool:
+    """True if the row has a name but NO contact/rating signals — i.e. the
+    listing detail never rendered (bare shell). Phantom rows come from a
+    tab-throttling render, not from a legitimately sparse business.
+
+    Where possible we mark these *before* they land in DB (via
+    `_mark_phantom_url`), but if they got persisted (partial success), the
+    watchdog's `backfill_phantom()` sweeps them.
+
+    Only name-only rows qualify; any extra field (even an empty string)
+    means real data flowed.
+    """
+    return bool(row.get("name")) and not any(
+        row.get(k) for k in ("phone", "website", "rating", "address", "plus_code")
+    )
+
+
+def _mark_phantom_url(state: DaemonState, url: str) -> None:
+    """Flag a URL so it's retried via the phantom sweep instead of the
+    live queue. Uses the queue_strategy's failover hooks so the phantom URL
+    is invisible to `mark_completed` until it either renders with full data
+    or ages out past `retry_stale_failures`.
+    """
+    if not state.queue_strategy:
+        return
+    try:
+        # We don't reinsert into gmaps:pending because that would block the
+        # cycle — the URL has already been marked completed/failed. Instead
+        # we push to a dedicated phantom list that the phantom-sweeper.service
+        # re-pushes to pending when the page-wait condition has stabilized.
+        client = getattr(state.queue_strategy, "client", None)
+        if client is None:
+            return
+        client.rpush("gmaps:phantom", url)
+        state.phantom_count += 1
+        log.info("Phantom URL queued for backfill: %s (total=%d)", url[:70], state.phantom_count)
+    except Exception as e:
+        log.warning("phantom requeue failed for %s: %s", url[:60], e)
 
 
 async def _restart_locked_get_tab(state: DaemonState, tab_key: int):
@@ -530,9 +601,18 @@ async def process_url(state: DaemonState, url: str, tab, tab_key: int) -> bool:
                     if item.get(field):
                         state.cycle_success[field] += 1
 
+            # Phantom-row detection (pre-write gate): if the page rendered but
+            # contains ONLY a name (no phone/website/rating/address/plus_code),
+            # Google bounced us to the bare mobile view. Don't write the shell
+            # row to PG — requeue it for a later retry after the tab settles.
+            if items and all(_is_phantom_row(it) for it in items):
+                _mark_phantom_url(state, url)
+                state.consecutive_errors += 1
+                # Don't burn more retries — Google is actively bouncing this URL.
+                return False
+
             log.info("Extracted %d fields from %s (attempt %d/%d)",
                      len(items), url[:60], attempt + 1, URL_MAX_RETRIES)
-            # Tab is reused by the pool — no close.
             state.tab_pages[tab_key] = state.tab_pages.get(tab_key, 0) + 1
             return True
 

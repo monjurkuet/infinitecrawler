@@ -13,6 +13,7 @@ Environment=PYTHONUNBUFFERED=1
 ExecStart=/home/growloop/.hermes/bin/uv run python -m daemons.listing_daemon
 ExecStop=/bin/kill -TERM $MAINPID
 Restart=always
+MemoryMax=300M
 RestartSec=10
 StartLimitIntervalSec=0
 StartLimitBurst=0

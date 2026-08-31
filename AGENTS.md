@@ -78,7 +78,8 @@ infinitecrawler/
 5. **Places API quota resets at ~midnight Pacific** (~08:00 UTC). The daemons use a conservative 25h rolling window for auto-reset.
 6. **Nearby Search returns max 20 places/call** — use type batching (3 batches: food, retail, health) to avoid truncating dense areas. Grid circles overlap, so dedup by place_id.
 7. **email_extract has two modes**: `--loop` (perpetual, 30s gap) and one-shot (every 2h safety net). Both must stay enabled.
-8. **Config files with API keys are gitignored** — `config/places_api_daemon.yaml` and `config/nearby_scanner.yaml` are not tracked. Use the `.yaml.example` templates and `PLACES_API_KEYS` env var.
+8. **Phantom-row sweeper**: `scripts/phantom_sweeper.py` runs via `infinitecrawler-phantom-sweeper.timer` (every 30min). It requeues bare-shell rendered URLs from `gmaps:phantom` back to `gmaps:pending`. Health: `LLEN gmaps:phantom` ≤ 50; name-only rows in last-hour gmaps_listing inserts < 5%.
+9. **Config files with API keys are gitignored** — `config/places_api_daemon.yaml` and `config/nearby_scanner.yaml` are not tracked. Use the `.yaml.example` templates and `PLACES_API_KEYS` env var.
 
 ## API Daemon vs Browser Daemon
 

@@ -240,6 +240,12 @@ def get_unprocessed_emails(conn, limit: int = 100) -> list[dict]:
     with conn.cursor() as cur:
         cur.execute(FETCH_UNPROCESSED_EMAILS_SQL + " LIMIT %s", (limit,))
         rows = cur.fetchall()
+    # Commit immediately after the read so the connection does NOT sit
+    # `idle in transaction` while the (minutes-long) HTTP/browser extraction
+    # runs. An open read transaction on a long-lived autocommit=False conn
+    # holds AccessShareLock and blocks concurrent DDL (e.g. ALTER TABLE on
+    # gmaps_listings), which then freezes all listing writes. See pitfall #11.
+    conn.commit()
     return [{"id": r[0], "website": r[1]} for r in rows]
 
 
@@ -286,6 +292,7 @@ def get_all_listings_with_website(conn, limit: int = 100) -> list[dict]:
     with conn.cursor() as cur:
         cur.execute(FETCH_ALL_LISTINGS_WITH_WEBSITE_SQL + " LIMIT %s", (limit,))
         rows = cur.fetchall()
+    conn.commit()  # end the read txn before slow extraction work (pitfall #11)
     return [{"id": r[0], "website": r[1]} for r in rows]
 
 
@@ -308,6 +315,7 @@ def get_unprocessed_linkedin(conn, limit: int = 50) -> list[dict]:
     with conn.cursor() as cur:
         cur.execute(FETCH_UNPROCESSED_LINKEDIN_SQL + " LIMIT %s", (limit,))
         rows = cur.fetchall()
+    conn.commit()  # end the read txn before slow extraction work (pitfall #11)
     return [{"id": r[0], "name": r[1]} for r in rows]
 
 

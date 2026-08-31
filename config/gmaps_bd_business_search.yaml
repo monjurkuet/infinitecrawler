@@ -1,64 +1,55 @@
-name: "Google Maps BD Business Crawl"
-content_type: "dynamic"
+name: Google Maps BD Business Crawl
+content_type: dynamic
 browser:
-  automation: "pinchtab"
+  automation: pinchtab
   headless: true
-  page_wait_seconds: 4.0
+  page_wait_seconds: 6.0
 headless: true
-pagination_strategy: "infinite_scroll"
-extraction_strategy: "generic_selector"
-output_strategy: "postgresql_upsert"
-
-search_url_template: "https://www.google.com/maps/search/{query}/"
-
+pagination_strategy: infinite_scroll
+extraction_strategy: generic_selector
+output_strategy: postgresql_upsert
+search_url_template: https://www.google.com/maps/search/{query}/
 pinchtab:
-  server_url: "http://127.0.0.1:9867"
-  instance_url: "http://127.0.0.1:9868"
+  server_url: http://127.0.0.1:9867
+  instance_url: http://127.0.0.1:9868
   navigate_timeout: 60
-
 selectors:
-  items: "a.hfpxzc"
+  items: a.hfpxzc
   fields:
-    name: "aria-label"
-    url: "href"
-
+    name: aria-label
+    url: href
 pagination:
-  container: "div[role='feed']"
-  scroll_script: "document.querySelector('div[role=\"feed\"]').scrollTo(0, document.querySelector('div[role=\"feed\"]').scrollHeight)"
+  container: div[role='feed']
+  scroll_script: document.querySelector('div[role="feed"]').scrollTo(0, document.querySelector('div[role="feed"]').scrollHeight)
   max_scroll_attempts: 500
-  items_selector: "a.hfpxzc"
-
-
+  items_selector: a.hfpxzc
 queue:
-  strategy: "redis_queue"
+  strategy: redis_queue
   config:
-    host: "localhost"
+    host: localhost
     port: 6379
     db: 0
     keys:
-      pending: "gmaps_bd_business:pending"
-      processing: "gmaps_bd_business:processing"
-      completed: "gmaps_bd_business:completed"
-      failed: "gmaps_bd_business:failed"
+      pending: gmaps_bd_business:pending
+      processing: gmaps_bd_business:processing
+      completed: gmaps_bd_business:completed
+      failed: gmaps_bd_business:failed
     visibility_timeout: 300
     ignore_completed_on_enqueue: true
-
 output:
-  strategy: "postgresql_upsert"
+  strategy: postgresql_upsert
   config:
-    host: "/var/run/postgresql"
+    host: /var/run/postgresql
     port: 5432
     user: postgres
-    database: "infinitecrawler"
-    schema: "scraper"
-    table: "gmaps_search_results"
-    key_field: "url"
-    source_type: "gmaps_search"
+    database: infinitecrawler
+    schema: scraper
+    table: gmaps_search_results
+    key_field: url
+    source_type: gmaps_search
     max_results: 10000
-
-rate_limit: 2
+rate_limit: 4
 proxy_rotation: false
-
 workers:
   count: 3
   max_consecutive_errors: 5

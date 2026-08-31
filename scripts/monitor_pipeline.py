@@ -40,7 +40,7 @@ log = logging.getLogger("monitor_pipeline")
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
-from utils.pg import get_pg_config, get_uncrawled_count_sql  # noqa: E402
+from utils.pg import get_pg_config, get_uncrawled_count_sql, get_uncrawled_urls_sql  # noqa: E402
 
 REDIS_HOST = os.environ.get("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.environ.get("REDIS_PORT", "6379"))
@@ -110,6 +110,20 @@ def pg_query(sql: str) -> str:
     except Exception as e:
         log.warning("PG query failed: %s — %s", sql[:50], e)
         return "error"
+
+
+def pg_query_col(sql: str) -> list:
+    """Return the first column of every row as a list (for URL backfills)."""
+    try:
+        cfg = dict(get_pg_config())
+        cfg["connect_timeout"] = 10
+        with psycopg.connect(**cfg) as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql)
+                return [r[0] for r in cur.fetchall() if r and r[0]]
+    except Exception as e:
+        log.warning("PG col query failed: %s — %s", sql[:50], e)
+        return []
 
 
 def _systemd_daemon_active(unit: str) -> bool:
@@ -197,6 +211,98 @@ def redis_push(item: str, pipe_key: str = "gmaps:pending") -> None:
         _redis_raw().lpush(pipe_key, item)
     except Exception:
         pass
+
+
+def backfill_pending(batch: int = 1000, uncrawled_threshold: int = 1000, pending_threshold: int = 50) -> int:
+    """Pitfall #9 safety net: when PG has a large uncrawled backlog but Redis
+    is nearly empty, push the next batch of uncrawled URLs straight into
+    gmaps:pending so the browser tier never sits idle.
+
+    Mirrors daemons/listing_daemon.py's refill (utils.pg.get_uncrawled_urls_sql):
+      SELECT sr.payload->>'url' FROM scraper.gmaps_search_results sr
+      LEFT JOIN scraper.gmaps_listings gl ON gl.source_url = sr.payload->>'url'
+      WHERE sr.payload->>'url' IS NOT NULL AND gl.source_url IS NULL
+      ORDER BY sr.updated_at DESC LIMIT <batch>;
+    """
+    try:
+        pending = int(redis_cmd("LLEN gmaps:pending") or 0)
+        uncrawled = int(pg_query(get_uncrawled_count_sql()) or 0)
+    except Exception as e:
+        log.warning("backfill_pending: probe failed: %s", e)
+        return 0
+    if uncrawled < uncrawled_threshold or pending >= pending_threshold:
+        return 0
+    try:
+        urls = pg_query_col(get_uncrawled_urls_sql(limit=batch))
+    except Exception as e:
+        log.warning("backfill_pending: fetch failed: %s", e)
+        return 0
+    if not urls:
+        return 0
+    moved = 0
+    for u in urls:
+        redis_push(u)
+        moved += 1
+    log.info("backfill_pending: enqueued %d uncrawled URLs (pending was %d, uncrawled %d)", moved, pending, uncrawled)
+    return moved
+
+
+def backfill_phantom(batch: int = 200, phantom_threshold: int = 20) -> int:
+    """Phantom-row backfill: requeues phantom rows (name-only, no phone/website/
+    rating/address) that landed in gmaps_listings via `_mark_phantom_url`.
+    Called by the watchdog so the sweeper has fresh phantom URLs to retry.
+
+    Why: phantom URLs are queued in gmaps:phantom atomically. Every picket
+    should eventually become a full listing — we just don't block the live
+    queue with URLs that kept rendering as bare shells.
+
+    ALSO sweeps persisted phantom rows from PG (rows with a name but no
+    phone/website/rating/address, created >2h ago) — this catches the
+    pre-fix legacy phantoms.
+    """
+    try:
+        phantom_len = int(redis_cmd("LLEN gmaps:phantom") or 0)
+    except Exception as e:
+        log.warning("backfill_phantom: probe failed: %s", e)
+        return 0
+    if phantom_len < phantom_threshold:
+        return 0
+
+    # Pull the next batch of phantom URLs from Redis.
+    try:
+        import redis as _r
+        client = _r.Redis(host="127.0.0.1", port=6379, db=0, decode_responses=True)
+        urls = client.lrange("gmaps:phantom", 0, batch - 1)
+        if urls:
+            client.ltrim("gmaps:phantom", batch, -1)  # drop processed batch
+    except Exception as e:
+        log.warning("backfill_phantom: redis lpop failed: %s", e)
+        return 0
+
+    # Also sweep persisted phantom rows from PG (created >2h ago so we don't
+    # re-fight URLs currently being retried by the daemon itself).
+    sql = """
+        SELECT DISTINCT source_url FROM scraper.gmaps_listings
+        WHERE source_type='gmaps_listing'
+          AND name IS NOT NULL
+          AND phone IS NULL AND website IS NULL AND rating IS NULL AND address IS NULL
+          AND created_at < now() - interval '2 hours'
+        ORDER BY created_at DESC
+        LIMIT %d
+    """ % batch
+    try:
+        pg_urls = pg_query_col(sql)
+        urls = urls + [u for u in pg_urls if u not in urls]
+    except Exception as e:
+        log.warning("backfill_phantom: PG sweep failed: %s", e)
+        pg_urls = []
+
+    moved = 0
+    for u in urls:
+        redis_push(u)
+        moved += 1
+    log.info("backfill_phantom: requeued %d phantom URLs (phantom_queue=%d, pg_sweep=%d)", moved, phantom_len, len(pg_urls or []))
+    return moved
 
 
 def kill_orphan_chrome():
@@ -430,6 +536,19 @@ def run_checks(restart: bool = False) -> dict:
             healed.append("Restarted crawlers for uncrawled URLs")
         else:
             issues.append("Crawler restart failed")
+
+    # Pitfall #9 — keep Redis deep: backfill uncrawled PG URLs into gmaps:pending
+    # whenever the queue is nearly empty but a large backlog remains.
+    if restart:
+        moved = backfill_pending()
+        if moved > 0:
+            healed.append(f"Backfilled {moved} uncrawled URLs into Redis")
+
+        # Phantom-row sweeper: requeue name-only rows (bare-shell render)
+        # that came back to the top of the backlog.
+        phantom_moved = backfill_phantom()
+        if phantom_moved > 0:
+            healed.append(f"Phantom backfill: requeued {phantom_moved} bare-shell URLs")
 
     status = {
         "timestamp": now,

@@ -19,7 +19,6 @@ class GenericSelectorExtractionStrategy(ExtractionStrategy):
             if not tab:
                 self.logger.error("No tab available for extraction")
                 return []
-
             # Get selectors from config
             selectors_config = self.config.get("selectors", {})
             items_selector = selectors_config.get("items", "a.hfpxzc")
@@ -31,9 +30,19 @@ class GenericSelectorExtractionStrategy(ExtractionStrategy):
             self.logger.debug(f"Items selector: {items_selector}")
             self.logger.debug(f"Fields config: {fields_config}")
 
-            # Find all item elements
+            # Find all item elements (with fallback for GMaps DOM drift)
             item_elements = await tab.select_all(items_selector)
             self.logger.info(f"Found {len(item_elements)} item elements")
+
+            if not item_elements:
+                for fallback in ["a[data-value]", "div[role='feed'] a", "div[role='article']"]:
+                    try:
+                        item_elements = await tab.select_all(fallback)
+                        if item_elements:
+                            self.logger.info(f"Fallback selector '{fallback}' matched {len(item_elements)} items (primary '{items_selector}' was 0)")
+                            break
+                    except Exception:
+                        continue
 
             if not item_elements:
                 self.logger.warning(
@@ -45,11 +54,9 @@ class GenericSelectorExtractionStrategy(ExtractionStrategy):
             for i, element in enumerate(item_elements):
                 try:
                     item = {}
-
                     # Debug: show element attributes
                     if i < 3:  # Only log first 3 for debugging
                         self.logger.debug(f"Element {i} attrs: {dict(element.attrs)}")
-
                     # Extract each field based on configuration
                     for field_name, selector_or_attr in fields_config.items():
                         if selector_or_attr == "text":
@@ -62,26 +69,20 @@ class GenericSelectorExtractionStrategy(ExtractionStrategy):
                             if not value:
                                 # Try getting from element directly
                                 value = getattr(element, selector_or_attr, "")
-
                         item[field_name] = value
-
                     # Debug: show extracted item
                     if i < 3:
                         self.logger.debug(f"Extracted item {i}: {item}")
-
                     # Only add items with at least one field
                     if any(item.values()):
                         items.append(item)
                     else:
                         self.logger.debug(f"Skipping item {i} - no values: {item}")
-
                 except Exception as e:
                     self.logger.warning(f"Error extracting item data: {e}")
                     continue
-
             self.logger.info(f"Returning {len(items)} extracted items")
             return items
-
         except Exception as e:
             self.logger.error(f"Error extracting items: {e}")
             return []

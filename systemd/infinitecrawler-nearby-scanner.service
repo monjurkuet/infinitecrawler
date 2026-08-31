@@ -13,6 +13,7 @@ Environment=PYTHONUNBUFFERED=1
 ExecStart=/home/growloop/.hermes/bin/uv run python -m daemons.nearby_scanner_daemon
 ExecStop=/bin/kill -TERM $MAINPID
 Restart=always
+MemoryMax=250M
 RestartSec=10
 StartLimitIntervalSec=0
 StartLimitBurst=0

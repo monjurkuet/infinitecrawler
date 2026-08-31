@@ -1,15 +1,14 @@
 #!/usr/bin/env bash
-# launch_daemons.sh — start the 4 perpetual pipeline daemons via systemd.
+# launch_daemons.sh — start the perpetual pipeline daemons via systemd.
 #
-# Scope: ONLY the 4 perpetually-looped daemons that have *-loop.service units:
-#   - infinitecrawler-listing.service
-#   - infinitecrawler-search.service
+# Scope: the perpetually-looped daemons that have *-loop/-service units:
+#   - infinitecrawler-listing.service          (browser deep-extraction)
+#   - infinitecrawler-search.service           (GMaps scroll)
+#   - infinitecrawler-places-api.service       (Places API multi-key)
+#   - infinitecrawler-nearby-scanner.service   (Nearby Search grid-scan)
 #   - infinitecrawler-email-extract-loop.service
 #   - infinitecrawler-linkedin-firehose-loop.service
-#
-# NOT in scope (managed by their own timers as oneshots):
-#   - infinitecrawler-linkedin-search.service  (4h timer)
-#   - infinitecrawler-classify.service         (daily 03:00 timer)
+#   - infinitecrawler-classify.service         (LLM classify, --loop)
 #
 # Uses `systemctl --user` so processes live in systemd's cgroup and are
 # tracked/lifecycle-managed by systemd (no nohup orphans).
@@ -34,13 +33,19 @@ ensure_daemon() {
 }
 
 SPAWNED=0
-ensure_daemon listing    'daemons\.listing_daemon' \
+ensure_daemon listing          'daemons\.listing_daemon' \
   'infinitecrawler-listing.service' && SPAWNED=1
-ensure_daemon search     'daemons\.search_daemon' \
+ensure_daemon search           'daemons\.search_daemon' \
   'infinitecrawler-search.service' && SPAWNED=1
-ensure_daemon email-extract 'db_email_extract\.py' \
+ensure_daemon places-api       'daemons\.places_api_daemon' \
+  'infinitecrawler-places-api.service' && SPAWNED=1
+ensure_daemon nearby-scanner   'daemons\.nearby_scanner_daemon' \
+  'infinitecrawler-nearby-scanner.service' && SPAWNED=1
+ensure_daemon email-extract    'db_email_extract\.py' \
   'infinitecrawler-email-extract-loop.service' && SPAWNED=1
 ensure_daemon linkedin-firehose 'db_linkedin_firehose\.py' \
   'infinitecrawler-linkedin-firehose-loop.service' && SPAWNED=1
+ensure_daemon classify         'db_classify\.py' \
+  'infinitecrawler-classify.service' && SPAWNED=1
 
 [[ "$SPAWNED" == "0" ]]

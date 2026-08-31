@@ -56,3 +56,5 @@ _system/lastspawn_*.ts
 
 # Large downloaded datasets (OSM PBF extracts, etc.) — never commit
 data/
+_system/classification/training_examples.jsonl
+_system/lastspawn_*.ts

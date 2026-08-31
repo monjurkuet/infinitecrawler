@@ -170,18 +170,33 @@ tail -f /var/log/infinitecrawler/infinitecrawler-nearby-scanner.log
 
 The browser-based daemons (search, listing) connect to an external `pinchtab server` (bridge port 9868). Pinchtab manages Chrome's lifecycle — the daemons only issue HTTP commands. The Places API and Nearby Scanner daemons do NOT use pinchtab — they are pure HTTP.
 
-**Launch (this host):** pinchtab runs as a background `bridge` process, not a systemd unit:
+**Launch (this host):** pinchtab runs as a systemd user unit (`infinitecrawler-pinchtab.service`, `Restart=always`). **Do NOT run it as a manual background process** — it dies on logout/reboot, silently killing the whole browser tier.
 
 ```bash
-export PATH="$HOME/.npm-global/bin:$PATH"
-pinchtab bridge --port 9868
+systemctl --user enable --now infinitecrawler-pinchtab.service
 ```
 
-Required `pinchtab` config (`~/.pinchtab/config.json`): `server.token` must match `.env` `PINCHTAB_TOKEN`; `security.allowEvaluate=true`; `security.allowedDomains` must include `google.com`, `www.google.com`, `maps.google.com`.
+**Required `~/.pinchtab/config.json` settings:**
+- `server.token` must match `.env` `PINCHTAB_TOKEN`
+- `security.allowEvaluate: true`; `security.allowedDomains` must include `google.com`, `www.google.com`, `maps.google.com`
+- `browser.extraFlags` must include `--disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-renderer-backgrounding` — without these, background tabs throttle and the listing daemon extracts bare shells ("Extracted 1 fields")
+- `instanceDefaults.maxTabs` must be ≥ `LISTING_TAB_POOL + 1` (currently 8) or LRU eviction drops worker tabs mid-batch
 
 **CRITICAL — listing daemon URL form:** the listing daemon navigates Google Maps place URLs. Headless Chrome cannot render the `/maps/place/<name>/data=!...` detail view (Google strips the CID and returns a bare map shell, so every selector misses). `daemons/listing_daemon.py` rewrites each queued URL to `https://www.google.com/maps/place/?cid=<decimal>` via `to_cid_url()` — this loads the full panel and populates name/rating/phone/address. Do NOT "fix" this back to the `/place/data=` form.
 
-**Logs:** on this host daemon logs go to `~/.cache/infinitecrawler/logs/` (not `/var/log/infinitecrawler/`).
+**CRITICAL — page settle time:** even with `?cid=`, the detail panel renders asynchronously. `config/gmaps_listings_working.yaml` sets `browser.page_wait_seconds: 6.0` and `max_wait: 12` on the Overview tab. Lower values extract from the half-rendered shell (name only, no phone/website/rating).
+
+## Self-healing: phantom-row sweeper
+
+Google Maps occasionally bounces headless requests to a bare shell (title="Google Maps", only `name` renders). Before the current fixes these "phantom rows" were 94% of new inserts. Now:
+
+- **Listing daemon** (`daemons/listing_daemon.py`) detects phantom rows (name + no phone/website/rating/address/plus_code/category) and routes the URL to Redis list **`gmaps:phantom`** instead of persisting the bare row or marking it completed.
+- **Phantom sweeper** (`scripts/phantom_sweeper.py`, systemd `infinitecrawler-phantom-sweeper.timer`, every 30min) re-pushes phantom URLs back into `gmaps:pending` and also sweeps legacy PG phantom rows (older than 2h).
+- **Watchdog** (`scripts/monitor_pipeline.py`) calls `backfill_phantom()` each run alongside the existing backlog backfill.
+
+Health check: `redis-cli LLEN gmaps:phantom` should be ≤ 50; `SELECT count(*) FROM scraper.gmaps_listings WHERE source_type='gmaps_listing' AND created_at > now()-interval '1 hour' AND phone IS NULL AND website IS NULL AND rating IS NULL AND address IS NULL` should be < 5% of hourly rows.
+
+**Logs:** on this host daemon logs go to `/var/log/infinitecrawler/` (not `~/.cache/infinitecrawler/logs/`).
 
 ## OSM Enrichment (OpenStreetMap)
 

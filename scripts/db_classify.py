@@ -75,8 +75,7 @@ def get_unclassified(conn, limit: int, retry_failed: bool = False) -> list[dict]
                 SELECT {', '.join(cols)}
                 FROM scraper.gmaps_listings
                 WHERE classification_method = %s
-                  AND phone IS NOT NULL
-                  AND website IS NOT NULL
+                  AND (phone IS NOT NULL OR website IS NOT NULL)
                 ORDER BY updated_at DESC
                 LIMIT %s
                 """,
@@ -88,8 +87,7 @@ def get_unclassified(conn, limit: int, retry_failed: bool = False) -> list[dict]
                 SELECT {', '.join(cols)}
                 FROM scraper.gmaps_listings
                 WHERE sector_id IS NULL
-                  AND phone IS NOT NULL
-                  AND website IS NOT NULL
+                  AND (phone IS NOT NULL OR website IS NOT NULL)
                 ORDER BY updated_at DESC
                 LIMIT %s
                 """,
@@ -124,9 +122,9 @@ def get_stats(conn) -> dict:
             """
             SELECT
                 COUNT(*) AS total,
-                COUNT(*) FILTER (WHERE phone IS NOT NULL AND website IS NOT NULL) AS qualified,
+                COUNT(*) FILTER (WHERE phone IS NOT NULL OR website IS NOT NULL) AS qualified,
                 COUNT(*) FILTER (WHERE sector_id IS NOT NULL) AS classified,
-                COUNT(*) FILTER (WHERE sector_id IS NULL AND phone IS NOT NULL AND website IS NOT NULL) AS remaining
+                COUNT(*) FILTER (WHERE sector_id IS NULL AND (phone IS NOT NULL OR website IS NOT NULL)) AS remaining
             FROM scraper.gmaps_listings
             """
         )
@@ -203,7 +201,11 @@ def classify_to_db(conn, leads: list[dict], sectors: dict,
         f"Fallback: {len(fallback_items)}"
     )
 
-    # Process LLM-classifiable in batches
+    # Process LLM-classifiable in batches — commit any prior tx before LLM call to avoid idle_in_transaction
+    try:
+        conn.commit()
+    except Exception:
+        pass
     for bstart in range(0, len(llm_batch), BATCH_SIZE):
         batch = llm_batch[bstart:bstart + BATCH_SIZE]
         log.info(
@@ -296,6 +298,21 @@ def main():
 
     conn = psycopg.connect(**PG_CONFIG)
     conn.autocommit = False
+    # Note: do NOT send `SET idle_in_transaction_session_timeout = ...` via a bare
+    # cursor here — with autocommit=False the SET itself opens an implicit transaction
+    # that never gets committed, so PG kills the session exactly `timeout` later
+    # (we were cycling every 300s). Run it in autocommit so no txn is held open.
+    try:
+        with psycopg.connect(**PG_CONFIG, autocommit=True) as _setup:
+            _setup.execute("SET idle_in_transaction_session_timeout = '600s'")
+    except Exception:
+        pass
+    # Note: SET without SET SESSION/LOCAL via conn.execute is transaction-scoped by
+    # default in psycopg3 pipeline; the autocommit connection above applies it to
+    # the session but then closes. The safest is: keep the main conn and rely on
+    # commit-before-LLM pattern already implemented in classify_to_db (see #204-208).
+    # No idle transaction is ever held between cycles after the commit at :206.
+
 
     stop_flag = {"v": False}
     try:
@@ -395,6 +412,19 @@ def main():
                 time.sleep(args.loop_gap)
             except Exception as cycle_err:
                 log.error(f"classify.cycle_error err={cycle_err}")
+                # Reconnect PG if connection died (covers idle timeout + admin termination)
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                try:
+                    conn = psycopg.connect(**PG_CONFIG)
+                    conn.autocommit = False
+                    # Don't re-arm the timeout via a bare cursor — that was the bug.
+                    # The commit-before-LLM pattern in classify_to_db already keeps
+                    # the txn idle window small.
+                except Exception as re_e:
+                    log.error(f"classify.reconnect_failed err={re_e}")
                 if not args.loop or stop_flag["v"]:
                     raise
                 time.sleep(args.loop_gap)

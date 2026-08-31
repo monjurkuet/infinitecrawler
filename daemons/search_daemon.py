@@ -68,7 +68,7 @@ QUERY_NAV_TIMEOUT = 30  # Seconds for GMaps search query navigation
 EXTRACTION_TIMEOUT = 25  # Seconds for extraction (prevents browser tab hang)
 SCROLL_TIMEOUT = 15  # Seconds for scroll/load-more operations
 BROWSER_START_TIMEOUT = 30  # Seconds for browser launch
-QUERY_BATCH_SIZE = 50  # How many queries to generate per refill
+QUERY_BATCH_SIZE = 25  # How many queries to generate per refill
 STALLED_REQUEUE_INTERVAL = 60  # Check for stalled processing items every N sec
 PG_STALENESS_INTERVAL = 900  # Check PG staleness every 15 min
 HEARTBEAT_SEC = int(os.environ.get("DAEMON_HEARTBEAT_SEC", "300"))  # log heartbeat every N sec
@@ -461,7 +461,8 @@ def _check_pg_staleness(last_pg_check: float, table: str = "scraper.gmaps_search
                     else:
                         log.info("%s: last PG write %.0f min ago", table, age_s / 60)
     except Exception as e:
-        log.error("PG staleness check failed: %s", e)
+        # Treat as warning not error — PG may be mid-restart after systemd mass restart
+        log.warning("PG staleness check transient failure: %s", e)
     return now
 
 

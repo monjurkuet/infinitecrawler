@@ -10,6 +10,7 @@ Environment=PG_HOST=/var/run/postgresql
 Environment=PYTHONUNBUFFERED=1
 ExecStart=/home/growloop/.hermes/bin/uv run python -m daemons.places_api_daemon
 Restart=always
+MemoryMax=200M
 RestartSec=10
 StandardOutput=append:/var/log/infinitecrawler/places-api-daemon.log
 StandardError=append:/var/log/infinitecrawler/places-api-daemon.log

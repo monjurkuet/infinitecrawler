@@ -7,8 +7,8 @@ execution:
   # Library resolves 'auto' to best available backend each query.
   engine: ddgs
   max_queries: 8000
-  delay_seconds: 0.5
-  concurrency: 8
+  delay_seconds: 1.0
+  concurrency: 4
   max_results_per_query: 10
   batch_commit: 20
   search_timeout: 20
