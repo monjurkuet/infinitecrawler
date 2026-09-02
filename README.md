@@ -72,6 +72,8 @@ uv run python -m api.main
 | `scraper.gmaps_listings` | all 3 listing daemons | Full profile: phone, website, address, rating, coordinates, sector_id |
 | `scraper.emails` | db_email_extract (loop + 2h timer) | Extracted emails from business websites |
 | `scraper.nearby_scan_grid` | nearby-scanner-daemon | Grid cell tracking (city, lat, lng, status) |
+| `scraper.app_users` | premium dashboard | Subscribers (bcrypt+JWT credentials, entitlement) |
+| `scraper.auth_attempts` | premium dashboard | Login audit log + rate-limit source (success/fail per IP+email) |
 
 PostgreSQL on local socket (or TCP 127.0.0.1:5432). Redis on localhost for queue management.
 
@@ -86,6 +88,7 @@ PostgreSQL on local socket (or TCP 127.0.0.1:5432). Redis on localhost for queue
 - **Dedup on overlap** — Nearby Search deduplicates by place_id across overlapping grid circles
 - **Safe coexistence** — All daemons upsert to the same table with `ON CONFLICT (source_url) DO UPDATE`
 - **REST API** — 30+ routes on port 8015 (Bearer auth)
+- **Premium dashboard** — self-serve subscriber SPA on `:5173` + JWT API on `:8016` (see `PREMIUM_DASHBOARD.md`)
 - **Health monitoring** — Pipeline monitor script + systemd watchdog (15min) with auto-heal
 
 ## Places API Daemon (`daemons/places_api_daemon.py`)

@@ -18,6 +18,12 @@ backup/
 _system/*.pid
 .uv/
 .mypy_cache/
+
+# Secrets and local tooling
+.jwt_secret
+.pnpm-store/
+web/node_modules/
+web/dist/
 .pytest_cache/
 *.log
 *.csv

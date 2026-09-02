@@ -58,20 +58,19 @@ log.addHandler(_h)
 log.propagate = False
 
 DEFAULT_MAX_LISTINGS = 2000
-DEFAULT_CONCURRENCY = 25  # parallel httpx fetches
+DEFAULT_CONCURRENCY = 50  # parallel httpx fetches
 FETCH_TIMEOUT = 8  # seconds per website fetch
 MAX_HTML_BYTES = 2 * 1024 * 1024  # cap page size for regex safety
 HEARTBEAT_INTERVAL = 30  # seconds between progress logs
 PIDFILE = REPO_ROOT / "_system" / "email_extract.pid"
 PATH_CANDIDATES = [
-    # English
+    # High-hit contact surfaces (ordered — first page that yields email wins,
+    # so front-load the pages that actually carry one).
     "contact", "contact-us", "contact_us", "contactus", "contacts",
     "about", "about-us", "about_us", "aboutus",
-    "team", "our-team", "our_team", "staff", "people",
-    "get-in-touch", "get_in_touch", "reach-us", "reach_us",
-    "support", "help", "help-center",
-    # Common alt paths
-    "imprint", "impressum", "legal", "company",
+    "imprint", "impressum",
+    "team", "our-team", "staff",
+    "support",
 ]
 MAX_REDIRECTS = 3
 
@@ -161,6 +160,11 @@ async def extract_listing(client: httpx.AsyncClient, listing: dict) -> list[dict
                 })
 
         found.extend(page_emails)
+        # Early-exit: once a page yields emails, stop probing candidates.
+        # Fetches remain best-effort: 404/redirect/timeout `continue` above
+        # never reaches here, so only a real hit truncates the path list.
+        if found:
+            break
 
     # 3. Filter + dedup across all fetched pages
     found = filter_noise(found)

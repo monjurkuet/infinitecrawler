@@ -96,7 +96,7 @@ URL_FETCH_BATCH = 2000  # How many uncrawled URLs to pull from PG per refill (pi
 URL_MAX_RETRIES = 3  # Per-URL retry attempts
 URL_RETRY_DELAY = 5  # Seconds between per-URL retries
 URL_EXTRACTION_TIMEOUT = 25  # Seconds before extraction attempt is aborted (page_wait already gives time to render)
-URL_NAV_TIMEOUT = 75  # Seconds for initial URL navigation (was 120; tightened so slow/blank pages fail fast and retry instead of pinning a worker)
+URL_NAV_TIMEOUT = 45  # Seconds for initial URL navigation (was 75; tightened so dead sites fail fast and retry instead of pinning a worker)
 BROWSER_START_TIMEOUT = 30  # Seconds for browser launch
 STALLED_REQUEUE_INTERVAL = 60  # Check for stalled processing items every N sec
 HEARTBEAT_SEC = int(os.environ.get("DAEMON_HEARTBEAT_SEC", "300"))  # log heartbeat every N sec
@@ -534,6 +534,28 @@ async def process_url(state: DaemonState, url: str, tab, tab_key: int) -> bool:
                         return False
                     continue
                 return False
+            except Exception as nav_exc:
+                # Zombie-tab fast path: pinchtab LRU-evicted / GC'd a pooled
+                # worker tab ("tab not found") — the tab is gone, ALL retries
+                # on it are pointless.  Recreate once and finish the attempt on
+                # the fresh tab instead of burning URL_MAX_RETRIES × NAV_TIMEOUT.
+                if "not found" in str(nav_exc).lower():
+                    log.warning("Tab gone (zombie) for %s — fast re-acquire", url[:60])
+                    if attempt < URL_MAX_RETRIES - 1:
+                        tab = await _restart_locked_get_tab(state, tab_key)
+                        if tab is None:
+                            return False
+                        continue
+                    return False
+                last_failure_kind = "nav_exception"
+                log.warning("Navigation failed for %s (attempt %d/%d): %s",
+                            url[:60], attempt + 1, URL_MAX_RETRIES, nav_exc)
+                if attempt < URL_MAX_RETRIES - 1:
+                    tab = await _restart_locked_get_tab(state, tab_key)
+                    if tab is None:
+                        return False
+                    continue
+                return False
             if state.delay_manager:
                 await state.delay_manager.apply_delay("page_load")
 
@@ -574,11 +596,11 @@ async def process_url(state: DaemonState, url: str, tab, tab_key: int) -> bool:
                 # attempt is treated as failure (was previously phantom-success,
                 # which inflated the listing count with empty rows).
                 state.consecutive_errors += 1
-                if attempt == URL_MAX_RETRIES - 1:
-                    break
-                state.cycle_retries += 1
-                await asyncio.sleep(URL_RETRY_DELAY)
-                continue
+                # Empty/shell extract: requeue immediately via phantom queue
+                # instead of burning 2 more retries on the same dead URL.
+                # The phantom sweeper will bring it back after a settle.
+                _mark_phantom_url(state, url)
+                return False
 
             # Write to PG
             for item in items:

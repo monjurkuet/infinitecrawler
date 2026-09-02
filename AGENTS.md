@@ -10,7 +10,8 @@
 - **Redis** on `6379` (queue + transient state)
 - **FastAPI** dashboard/API at `:8015` (`uv run python -m api.main`)
 - **Google Places API (New)** — multi-key rotation, `PLACES_API_KEYS` env var (comma-separated)
-- `max_results` cap = 100,000
+-- `max_results` cap = 100,000
+- **Premium dashboard** (JWT paywall, port 8016) — see `PREMIUM_DASHBOARD.md`. Auth/signup is self-serve (`scraper.app_users`), endpoint root `/premium/*`. React SPA in `web/` (`:5173` dev). Runbook: `systemctl --user status infinitecrawler-premium-api.service infinitecrawler-web.service`.
 
 ## Architecture
 

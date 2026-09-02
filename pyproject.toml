@@ -17,6 +17,9 @@ dependencies = [
     "psutil>=5.9.0",
     "ddgs>=9.14.4",
     "indic-transliteration>=2.3.82",
+    "bcrypt>=5.0.0",
+    "pyjwt>=2.13.0",
+    "pydantic[email]>=2.0.0",
 ]
 
 [dependency-groups]
