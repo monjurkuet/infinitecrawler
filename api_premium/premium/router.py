@@ -145,7 +145,8 @@ async def get_lead(
                     COALESCE(
                         (SELECT array_agg(row_to_json(p)) FROM (
                             SELECT profile_url, full_name, profile_title, company_name,
-                                profile_location, headline, checked_at
+                                profile_location, profile_country, connections_count,
+                                headline, checked_at
                             FROM scraper.linkedin_profiles WHERE listing_id = l.id
                             ORDER BY checked_at DESC
                         ) p), '{}'

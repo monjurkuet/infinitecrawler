@@ -49,15 +49,31 @@ export default function LeadDrawer({ id, onClose }: Props) {
                 <div key={em} className="font-mono text-emerald-300">{em}</div>
               ))}
             </Section>
-            <Section title="LinkedIn">
-              {lead.linkedin_url ? (
-                <a href={lead.linkedin_url} target="_blank" rel="noreferrer" className="text-indigo-400 hover:underline">
-                  {lead.linkedin_title || lead.linkedin_url}
-                </a>
+            <Section title={`LinkedIn (${lead.linkedin_profiles?.length ?? 0})`}>{
+              (lead.linkedin_profiles && lead.linkedin_profiles.length > 0) ? (
+                <div className="space-y-2">
+                  {lead.linkedin_profiles.slice(0, 3).map(p => (
+                    <div key={String(p.profile_url)} className="rounded bg-slate-950 p-2">
+                      <a href={String(p.profile_url)} target="_blank" rel="noreferrer" className="text-indigo-400 hover:underline">
+                        {String(p.full_name || p.profile_title || p.profile_url)}
+                      </a>
+                      <div className="text-xs text-slate-400 mt-0.5 space-x-2">
+                        {!!p.profile_title && <span>{String(p.profile_title)}</span>}
+                        {!!p.company_name && <span>@ {String(p.company_name)}</span>}
+                        {!!p.profile_location && <span>· {String(p.profile_location)}</span>}
+                        {!!p.profile_country && <span>{String(p.profile_country)}</span>}
+                        {!!p.connections_count && <span>· {String(p.connections_count)} connections</span>}
+                      </div>
+                    </div>
+                  ))}
+                  {(lead.linkedin_profiles ?? []).length > 3 && (
+                    <p className="text-xs text-slate-500">+{(lead.linkedin_profiles?.length ?? 0) - 3} more</p>
+                  )}
+                </div>
               ) : (
-                <p className="text-slate-500">no profile linked</p>
-              )}
-            </Section>
+                <p className="text-slate-500">no profiles linked</p>
+              )
+            }</Section>
             <Section title="Google Maps">
               {lead.source_url && (
                 <a href={lead.source_url} target="_blank" rel="noreferrer" className="text-indigo-400 break-all hover:underline">

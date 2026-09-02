@@ -20,6 +20,7 @@ dependencies = [
     "bcrypt>=5.0.0",
     "pyjwt>=2.13.0",
     "pydantic[email]>=2.0.0",
+    "requests>=2.31.0",
 ]
 
 [dependency-groups]
