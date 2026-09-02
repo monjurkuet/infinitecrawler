@@ -10,12 +10,28 @@ def build_where(
     min_rating: float | None,
     has_email: bool | None,
     q: str | None,
+    country: str | None = None,
 ) -> tuple[str, list[Any]]:
     where = ["l.source_type='gmaps_listing'"]
     params: list[Any] = []
+    if country:
+        patterns = COUNTRY_PATTERNS.get(country)
+        if patterns:
+            if isinstance(patterns, str):
+                patterns = [patterns]
+            ors = " OR ".join("l.address ILIKE %s" for _ in patterns)
+            where.append(f"({ors})")
+            params.extend(patterns)
     if city:
-        where.append("l.address ILIKE %s")
-        params.append(f"%{city}%")
+        alias_group = BD_CITY_ALIASES.get(city)
+        if alias_group:
+            ors = " OR ".join("l.address ILIKE %s" for _ in alias_group)
+            where.append(f"({ors})")
+            for v in alias_group:
+                params.append(f"%{v}%")
+        else:
+            where.append("l.address ILIKE %s")
+            params.append(f"%{city}%")
     if category:
         where.append("l.category ILIKE %s")
         params.append(f"%{category}%")
@@ -48,6 +64,32 @@ SELECT l.id, l.place_id, l.source_url, l.source_type, l.name, l.category, l.rati
          WHERE lp.listing_id = l.id ORDER BY lp.checked_at DESC LIMIT 1) AS linkedin_title
 FROM scraper.gmaps_listings l
 """
+
+# City aliases — one canonical label maps to all spellings we've seen in the
+# data (English + Bengali + transliterations). Keys are the UI dropdown values;
+# values are SQL patterns ORed in the WHERE clause.
+BD_CITY_ALIASES = {
+    "Dhaka": ["Dhaka", "ঢাকা"],
+    "Chattogram": ["Chattogram", "Chittagong", "চট্টগ্রাম"],
+    "Sylhet": ["Sylhet", "সিলেট"],
+    "Rajshahi": ["Rajshahi", "রাজশাহী"],
+    "Khulna": ["Khulna", "খুলনা"],
+    "Barisal": ["Barisal", "Barishal", "বরিশাল"],
+    "Rangpur": ["Rangpur", "রংপুর"],
+    "Mymensingh": ["Mymensingh", "ময়মনসিংহ"],
+    "Gazipur": ["Gazipur", "গাজীপুর"],
+    "Narayanganj": ["Narayanganj", "নারায়ণগঞ্জ"],
+}
+
+# Countries we actually have meaningful volumes for. Anything else falls into
+# the India/UK/USA style ILIKE-of-address filter (good enough at current scale).
+COUNTRY_PATTERNS = {
+    "Bangladesh": "%Bangladesh%",
+    "India": "%India%",
+    "Canada": "%Canada%",
+    "United Kingdom": ["%United Kingdom%", "%UK%"],
+    "United States": ["%United States%", "%USA%"],
+}
 
 
 DETAIL_SELECT = """

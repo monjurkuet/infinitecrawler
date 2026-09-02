@@ -4,11 +4,12 @@ import { api, getToken, type LeadListResponse, type Stats } from '../api'
 import FilterBar, { type Filters } from '../components/FilterBar'
 import LeadDrawer from '../components/LeadDrawer'
 
-const EMPTY: Filters = { city: '', category: '', minRating: '', hasEmail: false, q: '' }
+const EMPTY: Filters = { country: 'Bangladesh', city: '', category: '', minRating: '', hasEmail: false, q: '' }
 const SIZE = 50
 
 function toParams(f: Filters, page: number): URLSearchParams {
   const p = new URLSearchParams()
+  if (f.country) p.set('country', f.country)
   if (f.city) p.set('city', f.city)
   if (f.category) p.set('category', f.category)
   if (f.minRating) p.set('min_rating', f.minRating)

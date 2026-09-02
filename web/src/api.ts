@@ -87,6 +87,12 @@ export interface Stats {
   rows_limit: number | null
 }
 
+export interface FilterOptions {
+  categories: string[]
+  countries: string[]
+  cities_by_country: Record<string, string[]>
+}
+
 export const api = {
   register: (email: string, password: string) =>
     request<{ token: string; user: User }>('/auth/register', {
@@ -103,5 +109,6 @@ export const api = {
     request<LeadListResponse>(`/premium/leads?${params.toString()}`),
   leadDetail: (id: number) => request<LeadDetail>(`/premium/leads/${id}`),
   stats: () => request<Stats>('/premium/stats'),
+  filters: () => request<FilterOptions>('/premium/filters'),
   exportCsvUrl: (params: URLSearchParams) => `/premium/export.csv?${params.toString()}`,
 }

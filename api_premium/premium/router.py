@@ -39,6 +39,27 @@ def _row_to_item(row: tuple) -> dict:
     return dict(zip(_LIST_COLS, row))
 
 
+@router.get("/filters")
+async def filters(pool=Depends(get_pg_pool), user: dict = Depends(get_current_user)):
+    """Distinct categories + canonical city/country lists for the dropdowns."""
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT DISTINCT category FROM scraper.gmaps_listings "
+                "WHERE source_type='gmaps_listing' AND category IS NOT NULL AND category<>'' "
+                "ORDER BY category LIMIT 500"
+            )
+            cats = [r[0] for r in await cur.fetchall()]
+    from api_premium.premium.repo import BD_CITY_ALIASES, COUNTRY_PATTERNS
+    return {
+        "categories": cats,
+        "countries": sorted(COUNTRY_PATTERNS.keys()),
+        "cities_by_country": {
+            "Bangladesh": sorted(BD_CITY_ALIASES.keys()),
+        },
+    }
+
+
 @router.get("/leads", response_model=LeadListResponse)
 async def list_leads(
     pool=Depends(get_pg_pool),
@@ -48,10 +69,11 @@ async def list_leads(
     min_rating: float | None = Query(None, ge=0, le=5),
     has_email: bool | None = Query(None),
     q: str | None = Query(None),
+    country: str | None = Query(None),
     page: int = Query(1, ge=1),
     size: int = Query(50, ge=1, le=200),
 ):
-    where_sql, params = build_where(city, category, min_rating, has_email, q)
+    where_sql, params = build_where(city, category, min_rating, has_email, q, country=country)
     base = LIST_SELECT
 
     total_sql = f"SELECT count(*) FROM scraper.gmaps_listings l WHERE {where_sql}"
@@ -152,9 +174,10 @@ async def export_csv(
     min_rating: float | None = Query(None, ge=0, le=5),
     has_email: bool | None = Query(None),
     q: str | None = Query(None),
+    country: str | None = Query(None),
 ):
     """Full-row CSV export. No row cap (unlimited pro tier)."""
-    where_sql, params = build_where(city, category, min_rating, has_email, q)
+    where_sql, params = build_where(city, category, min_rating, has_email, q, country=country)
     sql = f"{LIST_SELECT} WHERE {where_sql} ORDER BY l.created_at DESC"
 
     async with pool.connection() as conn:
