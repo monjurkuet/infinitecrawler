@@ -72,6 +72,8 @@ uv run python -m api.main
 | `scraper.gmaps_listings` | all 3 listing daemons | Full profile: phone, website, address, rating, coordinates, sector_id |
 | `scraper.emails` | db_email_extract (loop + 2h timer) | Extracted emails from business websites |
 | `scraper.nearby_scan_grid` | nearby-scanner-daemon | Grid cell tracking (city, lat, lng, status) |
+| `scraper.linkedin_profiles` | firehose + search + backfill | DDGS-discovered LinkedIn profiles (name, title, company, location, connections, headline) |
+| `scraper.linkedin_companies` | company enrichment loop | Company cards: industry, size, employees, followers, HQ, website, founded, specialties, logo |
 | `scraper.app_users` | premium dashboard | Subscribers (bcrypt+JWT credentials, entitlement) |
 | `scraper.auth_attempts` | premium dashboard | Login audit log + rate-limit source (success/fail per IP+email) |
 
@@ -89,7 +91,20 @@ PostgreSQL on local socket (or TCP 127.0.0.1:5432). Redis on localhost for queue
 - **Safe coexistence** — All daemons upsert to the same table with `ON CONFLICT (source_url) DO UPDATE`
 - **REST API** — 30+ routes on port 8015 (Bearer auth)
 - **Premium dashboard** — self-serve subscriber SPA on `:5173` + JWT API on `:8016` (see `PREMIUM_DASHBOARD.md`)
+- **LinkedIn enrichment** — three loops: profile backfill (6h, re-parses DDGS snippets for location/country/connections/headline), company loop (30min, slug → public-page → industry/size/employees/followers/HQ/website), firehose (decision-maker discovery)
 - **Health monitoring** — Pipeline monitor script + systemd watchdog (15min) with auto-heal
+
+## LinkedIn loops (systemd, no API key)
+
+```
+# profiles: re-parse DDGS snippets every 6h → location/country/connections/headline
+infinitecrawler-linkedin-backfill.service
+
+# companies: resolve slug → fetch public page → industry/size/employees/followers
+infinitecrawler-linkedin-company-loop.service   # 30min, batch=500
+```
+
+Both log into `/var/log/infinitecrawler/` and respect `Restart=on-failure`.
 
 ## Places API Daemon (`daemons/places_api_daemon.py`)
 
