@@ -243,7 +243,16 @@ async def list_daemons(_user: str = Depends(verify_token)):
     result = []
     for unit in sorted(_DAEMON_ALLOWLIST):
         info = _daemon_info(unit)
-        result.append(DaemonUnit(**info))
+        result.append(
+            DaemonUnit(
+                **info,
+                active_state=info["active"],
+                sub_state=info["sub"],
+                description=unit.replace("infinitecrawler-", "").replace(".service", ""),
+                memory_current=int(info["memory_mb"] * 1024 * 1024) if info.get("memory_mb") is not None else None,
+                main_pid=info.get("pid"),
+            )
+        )
     return result
 
 

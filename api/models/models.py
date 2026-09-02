@@ -317,6 +317,15 @@ class DaemonUnit(BaseModel):
     uptime_seconds: Optional[float] = None
     memory_mb: Optional[float] = None
 
+    # Admin SPA fields (same data, friendlier names)
+    active_state: Optional[str] = None
+    sub_state: Optional[str] = None
+    description: Optional[str] = None
+    n_restarts: Optional[int] = None
+    memory_current: Optional[int] = None
+    main_pid: Optional[int] = None
+    last_state_change: Optional[str] = None
+
 
 # ─── Dashboard ───────────────────────────────────────────────────────────────
 
