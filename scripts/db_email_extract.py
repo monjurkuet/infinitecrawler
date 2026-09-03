@@ -203,6 +203,11 @@ async def extract_listing_browser(client, listing: dict) -> list[dict]:
     obfuscation scripts (Cloudflare email-decoder, [at]/[dot] rewrites,
     mailto: anchors built at runtime) are visible.  Returns the same dict
     shape as `extract_listing` so downstream `upsert_emails` is unchanged.
+
+    Mirrors the HTTP path's PATH_CANDIDATES: walks the homepage then the top
+    contact/about URLs until one yields an email.  Homepages alone surface a
+    contact email only a sliver of the time — /contact* carries ~80% of the
+    yield for BD SMBs, which is why the previous homepage-only pass returned 0.
     """
     import re
 
@@ -211,51 +216,62 @@ async def extract_listing_browser(client, listing: dict) -> list[dict]:
     if not website.startswith(("http://", "https://")):
         website = f"https://{website}"
 
-    try:
-        tab = await asyncio.wait_for(
-            client.navigate(website), timeout=BROWSER_PAGE_TIMEOUT,
-        )
-    except Exception as exc:
-        log.debug("browser nav failed for %s: %s", website[:60], exc)
-        return []
+    base = website.split("/")[0] + "//" + website.split("/")[2] if "://" in website else website
+    urls_to_try = [website] + [
+        f"{base.rstrip('/')}/{p}" for p in PATH_CANDIDATES[:6]  # contact*, about*, imprint — top-6 only (browser is slow)
+    ]
 
-    if BROWSER_NAV_DELAY:
-        await asyncio.sleep(BROWSER_NAV_DELAY)
+    found: list[dict] = []
+    tab = None
+    for url in urls_to_try:
+        if found:  # one page yielded — short-circuit
+            break
+        try:
+            # First nav allocates a fresh tab; subsequent ones reuse it via tab_id.
+            tab = await asyncio.wait_for(
+                client.navigate(url, tab_id=(tab._tab_id if tab else None)),
+                timeout=BROWSER_PAGE_TIMEOUT,
+            )
+        except Exception as exc:
+            log.debug("browser nav failed for %s: %s", url[:60], exc)
+            continue
 
-    try:
-        page = await asyncio.wait_for(
-            tab.extract_emails_from_page(), timeout=BROWSER_PAGE_TIMEOUT,
-        )
-    except Exception as exc:
-        log.debug("browser extract failed for %s: %s", website[:60], exc)
+        if BROWSER_NAV_DELAY:
+            await asyncio.sleep(BROWSER_NAV_DELAY)
+
+        try:
+            page = await asyncio.wait_for(
+                tab.extract_emails_from_page(), timeout=BROWSER_PAGE_TIMEOUT,
+            )
+        except Exception as exc:
+            log.debug("browser extract failed for %s: %s", url[:60], exc)
+            continue
+
+        text = (page.get("text") or "")[:MAX_HTML_BYTES]
+        mailto = page.get("mailto_hrefs") or []
+        page_found = scan_text_for_emails(text)
+        for href in mailto:
+            m = re.search(r"mailto:([^?\"'>]+)", href, re.I)
+            if not m:
+                continue
+            addr = m.group(1)
+            if not any(e["email"] == addr for e in page_found):
+                page_found.append({
+                    "email": addr,
+                    "is_obfuscated": False,
+                    "context_snippet": f"mailto:{addr}",
+                })
+
+        page_found = filter_noise(page_found)
+        page_found = deduplicate_emails(page_found)
+        if page_found:
+            found = page_found
+
+    if tab is not None:
         try:
             await client.close_tab(tab=tab)
         except Exception:
             log.debug("browser tab close failed", exc_info=True)
-        return []
-
-    text = (page.get("text") or "")[:MAX_HTML_BYTES]
-    mailto = page.get("mailto_hrefs") or []
-    found = scan_text_for_emails(text)
-    for href in mailto:
-        m = re.search(r"mailto:([^?\"'>]+)", href, re.I)
-        if not m:
-            continue
-        addr = m.group(1)
-        if not any(e["email"] == addr for e in found):
-            found.append({
-                "email": addr,
-                "is_obfuscated": False,
-                "context_snippet": f"mailto:{addr}",
-            })
-
-    found = filter_noise(found)
-    found = deduplicate_emails(found)
-
-    try:
-        await client.close_tab(tab=tab)
-    except Exception:
-        log.debug("browser tab close failed", exc_info=True)
 
     return [
         {

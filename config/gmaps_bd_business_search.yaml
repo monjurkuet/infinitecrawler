@@ -3,7 +3,7 @@ content_type: dynamic
 browser:
   automation: pinchtab
   headless: true
-  page_wait_seconds: 6.0
+  page_wait_seconds: 4.5
 headless: true
 pagination_strategy: infinite_scroll
 extraction_strategy: generic_selector

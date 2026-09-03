@@ -3,7 +3,7 @@ content_type: listing_crawler
 browser:
   automation: pinchtab
   headless: true
-  page_wait_seconds: 6.0
+  page_wait_seconds: 4.5
 pinchtab:
   server_url: http://127.0.0.1:9867
   instance_url: http://127.0.0.1:9868
@@ -116,6 +116,13 @@ extraction:
             enabled: true
             attempts: 1
             delay: 0
+        booking_url:
+          selector: 'a[data-item-id*="reserve"], a[href*="reserve.google"], a[href*="/booking"], button[aria-label*="Reserve"], a[aria-label*="Book"]'
+          type: attribute
+          attribute: href
+    # NOTE: is_claimed deliberately NOT extracted — Google Maps only exposes
+    # claim status to the listing owner logged into Google Business; the
+    # public /maps/place page has no DOM marker for it.
     - action: transform
       field: phone
       operation: normalize_phone

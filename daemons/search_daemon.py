@@ -113,6 +113,7 @@ class DaemonState:
         self.max_consecutive_errors: int = 10
         self.url_retries: dict[str, int] = {}
         self.zero_item_streak: dict[str, int] = {}  # query → consecutive zero-item runs
+        self.saturated_grid: dict[str, int] = {}  # grid cell → zero-new query streak
 
         # Shutdown flag
         self.shutdown_requested: bool = False
@@ -542,6 +543,20 @@ async def eternal_loop(state: DaemonState):
                 await asyncio.sleep(5)
                 continue
 
+            # Map lat/lng into a coarse grid so we can skip queries already saturated.
+            query_latlng_key: Optional[str] = None
+            if query.startswith("/maps/search/"):
+                # global queries
+                query_latlng_key = query[17:41]  # slice lng/lat portion only
+            else:
+                # BD/local: extract lat/lng from KEYWORD|LAT|LNG
+                import re as _re_q
+                m = _re_q.search(r"(\d{2,3}\.\d+)\|(\d{2,3}\.\d+)$", query)
+                if m:
+                    lat, lng = m.group(1), m.group(2)
+                    # Snap to ~1km grid (4 decimal places ≈ 11m)
+                    query_latlng_key = f"{float(lat):.4f}|{float(lng):.4f}"
+
             # 7. Process the query
             success, items_extracted = await search_single_query(state, query)
             if success:
@@ -581,8 +596,25 @@ async def eternal_loop(state: DaemonState):
                     )
                 state.consecutive_errors += 1
 
-            # 8. Jitter delay
+            # 8. After first zero-item run, mark this lat/lng grid cell as
+            # "saturated" so the next query for the same grid skips it early.
+            if items_extracted == 0 and query_latlng_key is not None:
+                state.saturated_grid[query_latlng_key] = state.saturated_grid.get(query_latlng_key, 0) + 1
+                log.debug("Grid saturation tracker: %s now %d", query_latlng_key, state.saturated_grid[query_latlng_key])
+
+            # 9. Jitter delay
             await state.delay_manager.apply_delay("between_requests")
+
+            # 10. Early exit if this grid is saturated (Google already returned
+            # 120/120 items with 0 new on 3 consecutive queries).
+            if query_latlng_key and state.saturated_grid.get(query_latlng_key, 0) >= 3:
+                log.info(
+                    "Grid saturated (3 zero-new queries) — forcing dequeue: %s",
+                    query_latlng_key,
+                )
+                # Mark current query completed early and skip further work in this grid.
+                state.queue_strategy.mark_completed(query)
+                continue
 
         except Exception as e:
             log.error("Loop iteration failed: %s", e, exc_info=True)

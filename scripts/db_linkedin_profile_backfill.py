@@ -75,9 +75,14 @@ def main():
             log.info("[cycle %d] Backfilling %d profiles", cycle, len(profiles))
             updated = 0
             any_field = 0
+            no_yield = 0
             for p in profiles:
                 parsed = parse_profile_snippet(p["snippet"], p.get("profile_title"))
                 if not any(parsed.values()):
+                    no_yield += 1
+                    # Mark the row as "inspected" so it doesn't come back in
+                    # the next 60-day window — the snippet is exhausted.
+                    update_profile_enrichment(conn, p["profile_url"])
                     continue
                 any_field += 1
                 # update_profile_enrichment is a no-op when every field is
@@ -94,8 +99,8 @@ def main():
                 )
                 updated += n
             log.info(
-                "[cycle %d] Done: %d profiles with parseable fields, %d rows updated",
-                cycle, any_field, updated,
+                "[cycle %d] Done: %d profiles with parseable fields, %d rows updated, %d no-yield (marked inspected)",
+                cycle, any_field, updated, no_yield,
             )
             if not args.loop:
                 return

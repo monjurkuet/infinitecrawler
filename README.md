@@ -93,6 +93,7 @@ PostgreSQL on local socket (or TCP 127.0.0.1:5432). Redis on localhost for queue
 - **Premium dashboard** — self-serve subscriber SPA on `:5173` + JWT API on `:8016` (see `PREMIUM_DASHBOARD.md`)
 - **LinkedIn enrichment** — three loops: profile backfill (6h, re-parses DDGS snippets for location/country/connections/headline), company loop (30min, slug → public-page → industry/size/employees/followers/HQ/website), firehose (decision-maker discovery)
 - **Health monitoring** — Pipeline monitor script + systemd watchdog (15min) with auto-heal
+- **Ops dashboard (admin)** — static SPA on `:8015/admin` (units, queues, tables, services)
 
 ## LinkedIn loops (systemd, no API key)
 
@@ -196,7 +197,8 @@ systemctl --user enable --now infinitecrawler-pinchtab.service
 
 **Required `~/.pinchtab/config.json` settings:**
 - `server.token` must match `.env` `PINCHTAB_TOKEN`
-- `security.allowEvaluate: true`; `security.allowedDomains` must include `google.com`, `www.google.com`, `maps.google.com`
+- `security.allowEvaluate: true`; `security.allowedDomains` must include `google.com`, `www.google.com`, `maps.google.com` for the listing/search daemons
+- **For the email browser pass** (`scripts/db_email_extract.py --mode both`) the allowlist must be widened: `idpi.enabled=false` and `allowedDomains=[]` (or include BD/CTG/common TLDs) — otherwise the fallback extracts 0 emails because the bridge refuses to navigate to non-Google domains.
 - `browser.extraFlags` must include `--disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-renderer-backgrounding` — without these, background tabs throttle and the listing daemon extracts bare shells ("Extracted 1 fields")
 - `instanceDefaults.maxTabs` must be ≥ `LISTING_TAB_POOL + 1` (currently 8) or LRU eviction drops worker tabs mid-batch
 
