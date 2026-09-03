@@ -244,6 +244,29 @@ uv run python scripts/osm_import.py --status
 
 > OSM phone/website coverage in South Asia is sparse (~2-3% phone, ~1-2% website) — best used for discovery (name + location + category), not enrichment. The Google Nearby Scanner already covers enrichment better. See `docs/OSM-RESEARCH-2026-08-17.md` for the full analysis.
 
+## Backup (DB → Mega)
+
+The `infinitecrawler` PG database is backed up by the sibling **`data-archive`** codebase, 4× per day, and uploaded to Mega cloud.
+
+- **Tool**: `/run/media/growloop/codebase/data-archive/backup_all.sh` (runs PG + MongoDB + Hermes + OpenCode, then `mega_sync.sh`)
+- **Schedule**: systemd user timer `data-archive.timer` — 0/6/12/18 UTC daily (Persistent=true)
+- **Local cache**: `data-archive/database/postgresql/localhost/localhost_infinitecrawler_full_*.dump.zst` (7-day retention)
+- **Cloud archive**: `/backups/postgresql/localhost/YYYY-MM-DD/` on Mega
+
+Restore:
+```bash
+zstd -d /run/media/growloop/codebase/data-archive/database/postgresql/localhost/localhost_infinitecrawler_full_<TS>.dump.zst -o /tmp/ic.dump
+sudo -u postgres pg_restore -d infinitecrawler --no-owner -1 /tmp/ic.dump  # drop -c to preserve
+```
+
+Manual trigger:
+```bash
+bash /run/media/growloop/codebase/data-archive/backup_all.sh          # normal cycle
+bash /run/media/growloop/codebase/data-archive/backup_all.sh --full   # force all PG DBs
+```
+
+The legacy `backups/ic_pg_*.dump.zst` files at the repo root are an outdated manual format — superseded by `data-archive` and not uploaded; safe to ignore (or `rm`).
+
 ## Documentation
 
 - [`AGENTS.md`](AGENTS.md) — Agent operating guide (stack, conventions, gotchas)
