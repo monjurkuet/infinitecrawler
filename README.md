@@ -60,9 +60,16 @@ systemctl --user enable --now infinitecrawler-search infinitecrawler-listing \
 systemctl --user enable --now infinitecrawler-email-extract.timer \
     infinitecrawler-classify.timer
 
-# 5. Start dashboard
-uv run python -m api.main
+# 5. Dashboards (all systemd user units, auto-start on boot via linger)
+systemctl --user enable --now infinitecrawler-api          # internal API :8015
+systemctl --user enable --now infinitecrawler-premium-api  # JWT API :8016
+systemctl --user enable --now infinitecrawler-web          # subscriber SPA :5173
+systemctl --user enable --now infinitecrawler-web-admin    # ops SPA :5174
 ```
+
+Boot persistence: every unit has `WantedBy=default.target`, `Restart=on-failure`,
+and `RequiresMountsFor=/run/media/growloop/codebase/infinitecrawler`; with
+`loginctl enable-linger $USER` they start at boot before any login.
 
 ## Storage
 
@@ -93,7 +100,9 @@ PostgreSQL on local socket (or TCP 127.0.0.1:5432). Redis on localhost for queue
 - **Premium dashboard** — self-serve subscriber SPA on `:5173` + JWT API on `:8016` (see `PREMIUM_DASHBOARD.md`)
 - **LinkedIn enrichment** — three loops: profile backfill (6h, re-parses DDGS snippets for location/country/connections/headline), company loop (30min, slug → public-page → industry/size/employees/followers/HQ/website), firehose (decision-maker discovery)
 - **Health monitoring** — Pipeline monitor script + systemd watchdog (15min) with auto-heal
-- **Ops dashboard (admin)** — static SPA on `:8015/admin` (units, queues, tables, services)
+- **Ops dashboard (admin)** — Vite + React SPA `web-admin/` on `:5174` (`infinitecrawler-web-admin.service`):
+  Bearer login against the internal `:8015` API, Overview/Daemons/Queues/Logs pages.
+  Units, queues, tables, services. (Older static SPA on `:8015/admin` is the fallback.)
 
 ## LinkedIn loops (systemd, no API key)
 

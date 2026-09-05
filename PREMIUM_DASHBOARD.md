@@ -53,14 +53,24 @@ All under `/premium/*`, JWT required, unlimited rows on `pro`:
 
 ## Deployment (this host)
 
-Two user services (installed to `~/.config/systemd/user/`):
+- Premium API (`api_premium/`): FastAPI on `:8016`, JWT auth (`/auth/*`),
+  paywalled `/premium/*`, `JWT_SECRET` from `./.jwt_secret` (0600).
+- Subscriber SPA (`web/`): Vite + React + Tailwind on `:5173`, proxies
+  `/auth/*` + `/premium/*` → :8016 in dev.
+- Admin ops SPA (`web-admin/`): Vite + React on `:5174` (see `README.md` →
+  admin), logs into the internal `:8015` API with the `INFINITECRAWLER_API_TOKEN` Bearer.
 
-- `infinitecrawler-premium-api.service` — uvicorn on 127.0.0.1:8016,
-  `RequiresMountsFor=/run/media/growloop/codebase/infinitecrawler`,
-  `JWT_SECRET` from `./.jwt_secret` (auto-generated on first start, 0600).
-- `infinitecrawler-web.service` — `pnpm dev` on :5173 (dev flow). For
-  production serve `web/dist/` statically via Nginx/Caddy and proxy
-  `/auth` + `/premium` to :8016.
+`systemd/` (installed under `~/.config/systemd/user/`, all `enabled`,
+external-drive-safe via `RequiresMountsFor=/run/media/growloop/`):
+
+- `infinitecrawler-premium-api.service` — `uvicorn` + env from `./.env`, `MemoryMax=500M`
+- `infinitecrawler-web.service` — `pnpm dev` for the subscriber SPA
+- `infinitecrawler-web-admin.service` — `pnpm dev` for the ops SPA
+
+With `loginctl enable-linger` (already set on this host) all three start at
+boot and auto-restart on failure. For production serve `web/{dist}` (and
+`web-admin/dist`) statically via Nginx/Caddy, proxying `/auth`+`/premium` to
+:8016 and `/admin/*` to :8015.
 
 Logs: `/var/log/infinitecrawler/infinitecrawler-premium-api.log` and
 `infinitecrawler-web.log`.
