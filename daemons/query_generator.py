@@ -27,6 +27,8 @@ log = logging.getLogger("query_generator")
 from daemons.query_keywords import (  # noqa: E402
     BD_CITIES,
     BD_COORD,
+    FAIRBURY_ANCHORS,
+    FAIRBURY_NICHE_KEYWORDS,
     FALLBACK_SECTOR_CONFIG,
     INTERNATIONAL_MARKETS,
 )
@@ -47,6 +49,12 @@ NATIONAL_ZOOM = 7
 GLOBAL_ZOOM = 5
 
 MIX_RATIO = {"bd_local": 0.70, "bd_national": 0.10, "global": 0.20}
+
+# Small but guaranteed slice of every batch goes to the user-priority niche:
+# Fairbury NE handyman + REO preservation.  Spinning up now so tier coverage
+# is explicit and inspectable, instead of leaving the niche to luck-of-shuffle
+# across a 24k+ global pool with a 20% bucket.
+FAIRBURY_NICHE_SHARE = 2  # queries per next_batch(n) (QUERY_BATCH_SIZE=25 → ~8%)
 
 # All queries use KEYWORD|LAT|LNG format.  This seed sentinel string must
 # appear in every query — the daemon uses it to detect coordinated queries.
@@ -192,7 +200,7 @@ def _build_global(keyword: str) -> list[str]:
 
 def _build_full_cycle(sectors: dict) -> dict[str, list[str]]:
     """Build all query pools. Returns {pool_name: [query_strings]}."""
-    pools = {"bd_local": [], "bd_national": [], "global": []}
+    pools = {"bd_local": [], "bd_national": [], "global": [], "fairbury_niche": []}
 
     for sector_id, sc in sectors.items():
         keywords = _extract_keywords(sc)
@@ -219,6 +227,12 @@ def _build_full_cycle(sectors: dict) -> dict[str, list[str]]:
             # Global: only for export-eligible keywords
             if _is_global_eligible(kw_norm, sector_id):
                 pools["global"].extend(_build_global(kw_norm))
+
+    # Every keyword × every Fairbury-area anchor — population small, so the
+    # niche pool gets a guaranteed share of every batch (see FAIRBURY_NICHE_SHARE).
+    for _name, lat, lng in FAIRBURY_ANCHORS:
+        for kw in FAIRBURY_NICHE_KEYWORDS:
+            pools["fairbury_niche"].append(f"{kw}|{lat:.4f}|{lng:.4f}")
 
     # Deduplicate each pool
     for pool_name in pools:
@@ -283,6 +297,16 @@ class InfiniteQueryGenerator:
         Falls back to available pools if a pool is empty.
         """
         batch = []
+
+        # Guaranteed niche slice: Fairbury NE handyman + REO preservation.
+        # Taken off the top so the generic 70/10/20 split can't crowd it out
+        # with rounding-fallback behavior.
+        fairbury_n = min(FAIRBURY_NICHE_SHARE, n)
+        for _ in range(fairbury_n):
+            q = self._next_from_pool("fairbury_niche")
+            if q:
+                batch.append(q)
+
         # Determine how many from each pool per batch
         per_pool = {}
         for pool_name, ratio in MIX_RATIO.items():

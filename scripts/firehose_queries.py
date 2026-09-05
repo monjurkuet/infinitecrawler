@@ -11,13 +11,32 @@ import random
 
 
 def generate_queries(cfg: dict, max_queries: int | None = None) -> list[dict]:
-    """Generate flat list of {query, params: {region}, family} dicts."""
+    """Generate flat list of {query, params: {region}, family} dicts.
+
+    Fairbury niche is ALWAYS included in full when enabled (user-priority),
+    even when max_queries caps the rest.  Generic families are sampled.
+    """
     families = cfg["query_families"]
     roles = cfg["roles"]
     locations = cfg["locations"]
     industries = cfg["industries"]
     regions = cfg["regions"]
     queries: list[dict] = []
+    niche_queries: list[dict] = []
+
+    if families.get("fairbury_niche", {}).get("enabled", True):
+        tmpl = families["fairbury_niche"]["template"]
+        rk = families["fairbury_niche"]["region"]
+        niche_roles = cfg.get("fairbury_niche_roles") or roles
+        niche_industries = cfg.get("fairbury_niche_industries") or industries
+        for role in niche_roles:
+            for city in locations.get("fairbury_nebraska", []):
+                for industry in niche_industries:
+                    niche_queries.append({
+                        "query": tmpl.format(role=role, city=city, industry=industry),
+                        "params": {"region": regions[rk]},
+                        "family": "fairbury_niche",
+                    })
 
     if families.get("role_city", {}).get("enabled", True):
         tmpl = families["role_city"]["template"]
@@ -55,4 +74,5 @@ def generate_queries(cfg: dict, max_queries: int | None = None) -> list[dict]:
     if max_queries and len(queries) > max_queries:
         queries = random.sample(queries, max_queries)
 
-    return queries
+    # Niche queries always come first (priority over the generic matrix).
+    return niche_queries + queries

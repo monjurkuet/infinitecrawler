@@ -137,6 +137,34 @@ locations:
     - Sydney
     - Hong Kong
 
+  # Fairbury, Nebraska niche — handyman / REO property preservation crews
+  # (user-priority target, added 2026-09-06). Fairbury itself is tiny;
+  # Lincoln/Omaha queries pull the wholesalers who contract preservation work.
+  fairbury_nebraska:
+    - Fairbury
+    - Lincoln
+    - Omaha
+
+fairbury_niche_industries:
+  - Handyman
+  - "Property Preservation"
+  - "REO Property Preservation"
+  - "Foreclosure Cleanup"
+  - "Property Maintenance"
+  - "Home Repair"
+  - "General Contractor"
+  - "Building Maintenance"
+
+fairbury_niche_roles:
+  - Owner
+  - President
+  - Founder
+  - "Operations Manager"
+  - "Managing Member"
+  - Partner
+  - "Field Supervisor"
+  - Contractor
+
 industries:
   - Technology
   - Fintech
@@ -162,6 +190,11 @@ industries:
 # Controls which query dimensions to use
 # Set enabled: false to skip an entire query family
 query_families:
+  fairbury_niche:
+    enabled: true
+    description: "owner/operator + industry + Fairbury/Lincoln/Omaha Nebraska (region=global)"
+    template: 'site:linkedin.com/in/ "{role}" "{industry}" "{city}" Nebraska'
+    region: global
   role_city:
     enabled: true
     description: "role + bangladesh city (region=bd-bn)"

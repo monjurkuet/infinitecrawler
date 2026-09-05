@@ -28,6 +28,49 @@ BD_CITIES = [
 
 # National / international coordinates (lat, lng, zoom) per market.
 # Used to build region-anchored searches; format: KEYWORD|lat|lng|zoom
+# Fairbury, Nebraska region (user-requested niche market 2026-09-06)
+# Niche: handyman + REO (real-estate-owned) property preservation crews.
+# Coverage: Jefferson County + surrounding trade area — Fairbury itself is
+# tiny (pop ~4k); preservation crews for the county are sourced from the
+# anchor towns below (county seats, regional hubs, metro wholesalers).
+FAIRBURY_ANCHORS = [
+    # Jefferson County towns (the actual target territory)
+    ("Fairbury", 40.1372, -97.1806),   # county seat
+    ("Endicott", 40.0817, -97.0962),
+    ("Diller", 40.1094, -96.9398),
+    ("Plymouth", 40.3025, -96.9894),
+    ("Jansen", 40.1806, -97.0831),
+    ("Steele City", 40.0375, -97.0228),
+    # Neighboring county seats & trade hubs (crews come FROM here)
+    ("Beatrice", 40.2683, -96.7467),   # Gage County seat
+    ("Wilber", 40.4811, -96.9606),     # Saline County seat
+    ("Hebron", 40.1686, -97.5857),     # Thayer County seat
+    ("Geneva", 40.5267, -97.5961),     # Fillmore County seat
+    ("Crete", 40.6278, -96.9614),
+    ("York", 40.8670, -97.5920),
+    ("Hastings", 40.5863, -98.3899),   # regional hub
+    ("Lincoln", 40.8136, -96.7026),    # state capital / metro
+    ("Omaha", 41.2565, -95.9345),      # metro wholesalers
+]
+# Kept for back-compat: primary anchor.
+FAIRBURY_COORD = (40.1372, -97.1806)
+
+# Handyman + REO preservation keywords (county-scale maps niche, not CITY niche).
+FAIRBURY_NICHE_KEYWORDS = [
+    "handyman",
+    "handyman services",
+    "property preservation",
+    "REO property preservation",
+    "REO preservation contractor",
+    "foreclosure cleanup",
+    "property maintenance company",
+    "home repair services",
+    "general contractor",
+    "remodeling contractor",
+    "property preservation services",
+    "field services contractor",
+]
+
 BD_COORD = (23.685, 90.3563, 7)
 INTERNATIONAL_MARKETS = [
     ("USA", 37.0902, -95.7129, 5),
