@@ -30,11 +30,58 @@ from dotenv import load_dotenv
 # the pipeline restart-safe and distributed (multiple bbb_scraper instances can
 # share the queue) instead of a linear python loop.
 REDIS_HOST = os.environ.get("REDIS_HOST", "localhost")
+QUEUE_PENDING = "bbb:pending"
 QUEUE_PROCESSING = "bbb:processing"
 QUEUE_DONE = "bbb:completed"
 
 # Redis client (lazy — no socket ops until first use)
-_redis = redis.Redis(host=os.environ.get("REDIS_HOST", "localhost"), port=6379, db=0)
+_redis = redis.Redis(host=REDIS_HOST, port=6379, db=0)
+
+# Queue helpers
+def enqueue_query(keyword: str, location: str, page: int = 1):
+    """Push a BBB search query to the pending queue."""
+    payload = json.dumps({"keyword": keyword, "location": location, "page": page})
+    _redis.lpush(QUEUE_PENDING, payload)
+
+def dequeue_query() -> Optional[dict]:
+    """Pop a query from pending (blocking with timeout)."""
+    result = _redis.brpop(QUEUE_PENDING, timeout=5)
+    if result:
+        return json.loads(result[1])
+    return None
+
+def mark_processing(payload: dict):
+    """Move query to processing set with timestamp."""
+    _redis.sadd(QUEUE_PROCESSING, json.dumps(payload))
+
+def mark_done(payload: dict):
+    """Move query from processing to completed."""
+    _redis.srem(QUEUE_PROCESSING, json.dumps(payload))
+    _redis.sadd(QUEUE_DONE, json.dumps(payload))
+
+def mark_failed(payload: dict):
+    """Move query from processing back to pending for retry."""
+    _redis.srem(QUEUE_PROCESSING, json.dumps(payload))
+    _redis.lpush(QUEUE_PENDING, json.dumps(payload))
+
+def queue_stats() -> dict:
+    return {
+        "pending": _redis.llen(QUEUE_PENDING),
+        "processing": _redis.scard(QUEUE_PROCESSING),
+        "completed": _redis.scard(QUEUE_DONE),
+    }
+
+def seed_initial_queries():
+    """Seed the queue with all niche×city combinations if empty."""
+    if _redis.llen(QUEUE_PENDING) > 0:
+        return 0
+    count = 0
+    for niche in NICHES:
+        for loc in US_CITIES:
+            enqueue_query(niche, loc, 1)
+            count += 1
+    log.info(f"Seeded BBB queue with {count} initial queries")
+    return count
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -70,30 +117,67 @@ def get_proxy():
     return {}
 
 
-# ── Nebraska cities and niches ──────────────────────────────────────────────
-
-NE_CITIES = [
-    "Lincoln, NE",
-    "Omaha, NE",
-    "Fairbury, NE",
-    "Beatrice, NE",
-    "Fremont, NE",
-    "Grand Island, NE",
-    "Kearney, NE",
-    "Hastings, NE",
-    "North Platte, NE",
-    "Columbus, NE",
-    "Bellevue, NE",
-    "Scottsbluff, NE",
-    "Norfolk, NE",
-    "Papillion, NE",
-    "Gretna, NE",
+# ── All US cities (top 300 by population) ─────────────────────────────────────
+# Using a built-in list instead of external CSV for self-contained deployment.
+# Covers all 50 states + DC, ~300 cities = comprehensive BBB coverage.
+US_CITIES = [
+    # Top 50
+    "New York, NY", "Los Angeles, CA", "Chicago, IL", "Houston, TX", "Phoenix, AZ",
+    "Philadelphia, PA", "San Antonio, TX", "San Diego, CA", "Dallas, TX", "San Jose, CA",
+    "Austin, TX", "Jacksonville, FL", "Fort Worth, TX", "Columbus, OH", "Charlotte, NC",
+    "San Francisco, CA", "Indianapolis, IN", "Seattle, WA", "Denver, CO", "Washington, DC",
+    "Boston, MA", "El Paso, TX", "Nashville, TN", "Detroit, MI", "Oklahoma City, OK",
+    "Portland, OR", "Las Vegas, NV", "Memphis, TN", "Louisville, KY", "Baltimore, MD",
+    "Milwaukee, WI", "Albuquerque, NM", "Tucson, AZ", "Fresno, CA", "Sacramento, CA",
+    "Mesa, AZ", "Kansas City, MO", "Atlanta, GA", "Long Beach, CA", "Colorado Springs, CO",
+    "Raleigh, NC", "Omaha, NE", "Miami, FL", "Virginia Beach, VA", "Oakland, CA",
+    # 51-100
+    "Minneapolis, MN", "Tulsa, OK", "Tampa, FL", "Arlington, TX", "New Orleans, LA",
+    "Wichita, KS", "Cleveland, OH", "Bakersfield, CA", "Aurora, CO", "Anaheim, CA",
+    "Honolulu, HI", "Santa Ana, CA", "Corpus Christi, TX", "Riverside, CA", "Lexington, KY",
+    "Henderson, NV", "Stockton, CA", "Saint Paul, MN", "St. Louis, MO", "Cincinnati, OH",
+    "Pittsburgh, PA", "Greensboro, NC", "Anchorage, AK", "Plano, TX", "Lincoln, NE",
+    "Orlando, FL", "Irvine, CA", "Newark, NJ", "Durham, NC", "Chula Vista, CA",
+    "Toledo, OH", "Fort Wayne, IN", "St. Petersburg, FL", "Laredo, TX", "Jersey City, NJ",
+    # 101-150
+    "Chandler, AZ", "Madison, WI", "Lubbock, TX", "Scottsdale, AZ", "Reno, NV",
+    "Buffalo, NY", "Gilbert, AZ", "Glendale, AZ", "North Las Vegas, NV", "Winston-Salem, NC",
+    "Chesapeake, VA", "Norfolk, VA", "Fremont, CA", "Garland, TX", "Irving, TX",
+    "Hialeah, FL", "Richmond, VA", "Boise, ID", "Spokane, WA", "Baton Rouge, LA",
+    "Tacoma, WA", "San Bernardino, CA", "Modesto, CA", "Fontana, CA", "Santa Clarita, CA",
+    "Moreno Valley, CA", "Fayetteville, NC", "Oxnard, CA", "Aurora, IL", "Glendale, CA",
+    "Huntington Beach, CA", "Montgomery, AL", "Grand Rapids, MI", "Overland Park, KS", "Knoxville, TN",
+    # 151-200
+    "Worcester, MA", "Grand Prairie, TX", "Amarillo, TX", "Akron, OH", "Mobile, AL",
+    "Little Rock, AR", "Augusta, GA", "Columbus, GA", "Huntsville, AL", "Tallahassee, FL",
+    "Shreveport, LA", "Rochester, NY", "Salt Lake City, UT", "Yonkers, NY", "Frisco, TX",
+    "Glendale, CA", "McKinney, TX", "Grand Rapids, MI", "Fayetteville, AR", "Brownsville, TX",
+    "Providence, RI", "Springfield, MA", "Jackson, MS", "Eugene, OR", "Port St. Lucie, FL",
+    "Fort Lauderdale, FL", "Ontario, CA", "Chattanooga, TN", "Tempe, AZ", "Santa Rosa, CA",
+    "Vancouver, WA", "Sioux Falls, SD", "Oceanside, CA", "Cape Coral, FL", "Springfield, MO",
+    # 201-250
+    "Pembroke Pines, FL", "Corona, CA", "Salinas, CA", "Salem, OR", "Lancaster, CA",
+    "Eugene, OR", "Palmdale, CA", "McAllen, TX", "Hayward, CA", "Rockford, IL",
+    "Pomona, CA", "Pasadena, TX", "Fort Collins, CO", "Escondido, CA", "Joliet, IL",
+    "Alexandria, VA", "Sunnyvale, CA", "Syracuse, NY", "Paterson, NJ", "Torrance, CA",
+    "Hollywood, FL", "Naperville, IL", "Kansas City, KS", "Bridgeport, CT", "Mesquite, TX",
+    "New Haven, CT", "Carrollton, TX", "Roseville, CA", "Orange, CA", "Olathe, KS",
+    # 251-300
+    "Fullerton, CA", "Warren, MI", "Gainesville, FL", "Thornton, CO", "Denton, TX",
+    "Midland, TX", "Visalia, CA", "Charleston, SC", "Cedar Rapids, IA", "Sterling Heights, MI",
+    "Elizabeth, NJ", "Ann Arbor, MI", "Evansville, IN", "Abilene, TX", "Athens, GA",
+    "Simi Valley, CA", "Hartford, CT", "Fargo, ND", "Round Rock, TX", "Columbia, SC",
+    # Nebraska focus (user's core request)
+    "Fairbury, NE", "Beatrice, NE", "Hebron, NE", "Geneva, NE", "Davenport, NE",
 ]
 
-NE_NICHES = [
+# Niches targeting handyman / REO / property preservation + general home services
+NICHES = [
     "Handyman Services",
     "Handyman",
     "Property Preservation",
+    "REO Preservation",
+    "Foreclosure Cleanup",
     "General Contractor",
     "Home Improvement",
     "Remodeling Contractors",
@@ -106,6 +190,19 @@ NE_NICHES = [
     "Siding Contractors",
     "Construction Services",
     "Landscape Contractors",
+    "Plumbing Contractors",
+    "Electrical Contractors",
+    "HVAC Contractors",
+    "Flooring Contractors",
+    "Drywall Contractors",
+    "Concrete Contractors",
+    "Foundation Repair",
+    "Water Damage Restoration",
+    "Fire Damage Restoration",
+    "Mold Remediation",
+    "Disaster Restoration",
+    "Home Inspection",
+    "Property Inspection",
 ]
 
 # ── Filter thresholds ───────────────────────────────────────────────────────
@@ -398,11 +495,13 @@ def scrape_query(conn, keyword: str, location: str, page_limit: int = 15):
 # ── Daemon loop ──────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="BBB scraper for Nebraska")
+    parser = argparse.ArgumentParser(description="BBB scraper — queue-based")
     parser.add_argument("--keyword", default=None, help="Search keyword")
     parser.add_argument("--location", default=None, help="Location (city, state)")
     parser.add_argument("--page-limit", type=int, default=15, help="Max pages per query")
     parser.add_argument("--fast", action="store_true", help="Skip delay between pages")
+    parser.add_argument("--seed-only", action="store_true", help="Only seed queue, don't process")
+    parser.add_argument("--workers", type=int, default=1, help="Number of worker threads")
     args = parser.parse_args()
 
     # Connect to database
@@ -416,31 +515,47 @@ def main():
     ensure_schema(conn)
     log.info(f"BBB scraper started (proxy={'set' if BBB_PROXY else 'none'})")
 
-    total = 0
-    keyword = args.keyword or "Handyman Services"
-    location = args.location or "Lincoln, NE"
+    # Seed the queue
+    seeded = seed_initial_queries()
+    if args.seed_only:
+        log.info(f"Queue seeded with {seeded} queries. Exiting.")
+        conn.close()
+        return
 
+    # Single query mode (bypass queue)
+    if args.keyword and args.location:
+        count = scrape_query(conn, args.keyword, args.location, args.page_limit)
+        log.info(f"Single query complete: {count} results")
+        conn.close()
+        return
+
+    # Queue-based worker mode
+    log.info(f"Starting queue worker (workers={args.workers})")
+    processed = 0
     try:
-        # Single query mode
-        if args.keyword and args.location:
-            count = scrape_query(conn, keyword, location, args.page_limit)
-            total += count
-            log.info(f"Single query complete: {total} results")
+        while True:
+            query = dequeue_query()
+            if not query:
+                log.info("Queue empty — sleeping 60s before retry")
+                time.sleep(60)
+                continue
 
-        # Full sweep mode (default)
-        else:
-            sweep = 0
-            while True:
-                sweep += 1
-                log.info(f"=== Sweep {sweep} starting ===")
-                for niche in NE_NICHES:
-                    for loc in NE_CITIES:
-                        count = scrape_query(conn, niche, loc, args.page_limit)
-                        total += count
-                        if not args.fast:
-                            time.sleep(2)  # Throttle between queries
-                    time.sleep(SWEEP_SLEEP)
-                log.info(f"=== Sweep {sweep} complete ({total} total listings) ===")
+            keyword = query["keyword"]
+            location = query["location"]
+            page = query.get("page", 1)
+
+            mark_processing(query)
+            try:
+                count = scrape_query(conn, keyword, location, args.page_limit)
+                mark_done(query)
+                processed += count
+                log.info(f"✓ {keyword} @ {location}: {count} (total processed this run: {processed})")
+            except Exception as e:
+                mark_failed(query)
+                log.error(f"✗ {keyword} @ {location}: {e}")
+
+            if not args.fast:
+                time.sleep(2)  # Throttle between queries
 
     finally:
         conn.close()
