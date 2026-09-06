@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react'
-import { api } from '../api'
+import { api, type BbbStats } from '../api'
 import { useAdmin } from '../auth'
 
 export default function Overview() {
   const { token } = useAdmin()
   const [status, setStatus] = useState<any>(null)
   const [throughput, setThroughput] = useState<any[]>([])
+  const [bbb, setBbb] = useState<BbbStats | null>(null)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
@@ -13,9 +14,11 @@ export default function Overview() {
     Promise.all([
       api.status(),
       api.throughput(),
-    ]).then(([s, th]) => {
+      api.bbbStats().catch(() => null),
+    ]).then(([s, th, b]) => {
       setStatus(s)
       setThroughput(th.series ?? [])
+      setBbb(b)
       setLoading(false)
     })
   }, [token])
@@ -25,6 +28,7 @@ export default function Overview() {
   const cards = [
     { label: 'Total listings', value: status.database?.total_listings ?? '—' },
     { label: 'Search results', value: status.database?.total_search_results ?? '—' },
+    { label: 'BBB listings', value: bbb?.total ?? '—' },
     { label: 'Running crawlers', value: status.crawlers_running },
     { label: 'Pending queue', value: status.queues?.reduce((a: number, q: any) => a + (q.pending ?? 0), 0) ?? 0 },
   ]
@@ -74,6 +78,40 @@ export default function Overview() {
           </table>
         </div>
       </div>
+
+      {bbb && (
+        <div className="rounded-xl border border-slate-800 bg-slate-900 p-4 text-sm">
+          <h2 className="font-semibold mb-4">BBB pipeline — {bbb.total.toLocaleString()} listings</h2>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <h3 className="text-xs uppercase tracking-wide text-slate-500 mb-2">Top states</h3>
+              <table className="w-full text-left">
+                <tbody>
+                  {Object.entries(bbb.by_state ?? {}).map(([st, n]) => (
+                    <tr key={st} className="border-t border-slate-800">
+                      <td className="py-1 font-mono text-xs">{st}</td>
+                      <td className="py-1 text-right">{(n as number).toLocaleString()}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div>
+              <h3 className="text-xs uppercase tracking-wide text-slate-500 mb-2">Top niches</h3>
+              <table className="w-full text-left">
+                <tbody>
+                  {Object.entries(bbb.by_source ?? {}).slice(0, 8).map(([s, n]) => (
+                    <tr key={s} className="border-t border-slate-800">
+                      <td className="py-1 text-xs">{s}</td>
+                      <td className="py-1 text-right">{(n as number).toLocaleString()}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

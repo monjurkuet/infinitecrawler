@@ -99,6 +99,12 @@ export interface DaemonLogs {
   error?: string
 }
 
+export interface BbbStats {
+  total: number
+  by_state: Record<string, number>
+  by_source: Record<string, number>
+}
+
 export const api = {
   overview: () => request<Overview>('/admin/overview'),
   throughput: () => request<{ series: ThroughputPoint[] }>('/admin/throughput'),
@@ -114,4 +120,6 @@ export const api = {
     if (filter) params.set('filter', filter)
     return request<DaemonLogs>(`/admin/daemons/${unit}/logs?${params}`)
   },
+  bbbStats: () => request<BbbStats>('/api/bbb/stats'),
+  bbbJobs: () => request<any[]>('/api/bbb/jobs'),
 }
