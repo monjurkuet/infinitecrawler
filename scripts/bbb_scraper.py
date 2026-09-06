@@ -332,10 +332,16 @@ def enrich_profile(profile_url: str) -> dict:
                     items = ld if isinstance(ld, list) else [ld]
                     for item in items:
                         if isinstance(item, dict):
-                            # Website from JSON-LD (but only if not bbb.org)
+                            # Website from JSON-LD (skip BBB self-links and social/share URLs)
                             if not result.get("website") and item.get("url"):
                                 url = item["url"]
-                                if "bbb.org" not in url:
+                                if "bbb.org" not in url and not any(
+                                    d in url for d in (
+                                        "x.com", "twitter.com", "facebook.com",
+                                        "instagram.com", "linkedin.com",
+                                        "youtube.com", "tiktok.com", "yelp.com",
+                                    )
+                                ):
                                     result["website"] = url
                             # Email from JSON-LD
                             if not result.get("email") and item.get("email"):
@@ -343,12 +349,27 @@ def enrich_profile(profile_url: str) -> dict:
                             # Phone from JSON-LD
                             if not result.get("phone") and item.get("telephone"):
                                 result["phone"] = item["telephone"]
-                            # Years in business
+                            # Years in business (foundingDate may be YYYY-MM-DD or MM/DD/YYYY)
                             if not result.get("years_in_business") and item.get("foundingDate"):
-                                result["years_in_business"] = str(2024 - int(item["foundingDate"][:4]))
+                                try:
+                                    fd = str(item["foundingDate"])
+                                    year = re.search(r"(19|20)\d{2}", fd)
+                                    if year:
+                                        result["years_in_business"] = str(2024 - int(year.group(0)))
+                                except (ValueError, TypeError):
+                                    pass
                 except json.JSONDecodeError:
                     continue
             
+            # Primary: BBB profile header contact block ("Visit Website" link,
+            # e.g. <div class="bpr-header-contact"><a href="https://biz.com/" ...>Visit Website</a>)
+            if not result.get("website"):
+                m = re.search('<div class="bpr-header-contact">(.*?)</div>', text, re.DOTALL | re.IGNORECASE)
+                if m:
+                    w = re.search('<a[^>]+href="([^"]+)"[^>]*>.*?Visit Website</a>', m.group(1), re.DOTALL | re.IGNORECASE)
+                    if w and w.group(1).startswith("http"):
+                        result["website"] = w.group(1)
+
             # Fallback: extract all anchor tags and find business website
             if not result.get("website"):
                 # Find all external links in anchor tags (handling nested HTML like SVG icons)
@@ -362,7 +383,13 @@ def enrich_profile(profile_url: str) -> dict:
                     'cloudflare.com', 'jsdelivr.net', 'unpkg.com', 'fonts.googleapis.com',
                     'gstatic.com', 'adobedtm.com', 'bbbaihub.org', 'bbbmarketplacetrust.org',
                     'give.org', 'bbbprograms.org', 'schema.org', 'livechatinc.com',
-                    'assets.adobedtm.com', 'www.gstatic.com', 'yelp.com'
+                    'assets.adobedtm.com', 'www.gstatic.com', 'yelp.com',
+                    'x.com', 'twitter.com', 'instagram.com', 'thumbtack.com',
+                    'linkedin.com', 'youtube.com', 'tiktok.com',
+                    'angieslist.com', 'homeadvisor.com', 'porch.com', 'houzz.com',
+                    'nextdoor.com', 'mapquest.com', 'yellowpages.com', 'whitepages.com',
+                    'superpages.com', 'dexknows.com', 'manta.com', 'merchantcircle.com',
+                    'citysearch.com', 'insiderpages.com', 'judysbook.com',
                 }
                 for _, href in anchors:
                     if not any(bad in href for bad in excluded):
