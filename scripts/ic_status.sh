@@ -125,8 +125,8 @@ render() {
   mapfile -t B < <(q "
     SELECT 'bbb listings total',     (SELECT count(*) FROM scraper.bbb_listings),
                                         (SELECT count(*) FROM scraper.bbb_listings WHERE created_at>=now()-interval '24 hours')
-    UNION ALL SELECT 'bbb listings last 1h',    (SELECT count(*) FROM scraper.bbb_listings WHERE created_at>=now()-interval '1 hour'),
-                                        (SELECT count(*) FROM scraper.bbb_listings WHERE created_at>=now()-interval '24 hours')
+    UNION ALL SELECT 'bbb listings last 1h',    (SELECT count(*) FROM scraper.bbb_listings WHERE updated_at>=now()-interval '1 hour'),
+                                        (SELECT count(*) FROM scraper.bbb_listings WHERE updated_at>=now()-interval '24 hours')
     UNION ALL SELECT 'scrape jobs done 1h',    (SELECT count(*) FROM scraper.scrape_jobs WHERE status='done' AND completed_at>=now()-interval '1 hour'),
                                         (SELECT count(*) FROM scraper.scrape_jobs WHERE status='done' AND completed_at>=now()-interval '24 hours')
     UNION ALL SELECT 'scrape jobs running',    (SELECT count(*) FROM scraper.scrape_jobs WHERE status='running'),
