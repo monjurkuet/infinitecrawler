@@ -59,3 +59,31 @@ class StatsOut(BaseModel):
     rows_exported: int
     searches_run: int
     rows_limit: int | None = None
+
+
+class BbbLeadItem(BaseModel):
+    id: int
+    business_id: str | None = None
+    business_name: str | None = None
+    address: str | None = None
+    city: str | None = None
+    state: str | None = None
+    zip: str | None = None
+    phone: str | None = None
+    rating: str | None = None
+    accredited: bool | None = None
+    profile_url: str | None = None
+    email: str | None = None
+    website: str | None = None
+    years_in_business: str | None = None
+    social_links: Any | None = None
+    source_query: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class BbbLeadListResponse(BaseModel):
+    total: int
+    page: int
+    size: int
+    items: list[BbbLeadItem]

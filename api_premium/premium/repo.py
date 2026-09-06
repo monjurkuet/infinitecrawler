@@ -40,7 +40,9 @@ def build_where(
         params.append(min_rating)
     if has_email is True:
         where.append(
-            "EXISTS (SELECT 1 FROM scraper.emails e WHERE e.listing_id = l.id)"
+            "EXISTS (SELECT 1 FROM scraper.emails e WHERE e.listing_id = l.id "
+            "OR (e.source='unified' AND l.website IS NOT NULL AND l.website != '' "
+            "AND e.website_url = l.website))"
         )
     if q:
         where.append("(l.name ILIKE %s OR l.address ILIKE %s OR l.category ILIKE %s)")
@@ -56,7 +58,10 @@ SELECT l.id, l.place_id, l.source_url, l.source_type, l.name, l.category, l.rati
        l.created_at, l.updated_at, l.email_scanned_at,
        COALESCE(
            (SELECT array_agg(DISTINCT e.email ORDER BY e.email)
-              FROM scraper.emails e WHERE e.listing_id = l.id), '{}'
+              FROM scraper.emails e
+             WHERE e.listing_id = l.id
+                OR (e.source='unified' AND l.website IS NOT NULL AND l.website != ''
+                    AND e.website_url = l.website)), '{}'
        ) AS emails,
        (SELECT lp.profile_url FROM scraper.linkedin_profiles lp
          WHERE lp.listing_id = l.id ORDER BY lp.checked_at DESC LIMIT 1) AS linkedin_url,
@@ -98,6 +103,12 @@ SELECT l.*, l.payload,
            (SELECT array_agg(row_to_json(e)) FROM (
                SELECT email, is_obfuscated, extraction_method, discovered_at
                FROM scraper.emails WHERE listing_id = l.id ORDER BY discovered_at DESC
+               UNION
+               SELECT email, is_obfuscated, extraction_method, discovered_at
+               FROM scraper.emails
+               WHERE source='unified' AND listing_id != l.id
+                 AND l.website IS NOT NULL AND l.website != ''
+                 AND website_url = l.website
            ) e), '{}'
        ) AS emails_full,
        COALESCE(
@@ -118,3 +129,50 @@ CSV_COLUMNS = [
     "phone", "website", "emails", "linkedin_url", "latitude", "longitude",
     "plus_code", "is_claimed", "sector_id", "created_at", "updated_at",
 ]
+
+
+# ── BBB leads (Better Business Bureau pipeline) ──────────────────────────────
+
+BBB_LIST_SELECT = """
+SELECT l.id, l.business_id, l.business_name, l.address, l.city, l.state,
+       l.zip, l.phone, l.rating, l.accredited, l.profile_url, l.email,
+       l.website, l.years_in_business, l.social_links, l.source_query,
+       l.created_at, l.updated_at
+FROM scraper.bbb_listings l
+"""
+
+BBB_CSV_COLUMNS = [
+    "id", "business_id", "business_name", "address", "city", "state",
+    "zip", "phone", "rating", "accredited", "email", "website",
+    "years_in_business", "profile_url", "created_at", "updated_at",
+]
+
+
+def build_bbb_where(
+    state: str | None,
+    q: str | None,
+    accredited: bool | None,
+    has_website: bool | None,
+    has_email: bool | None,
+) -> tuple[str, list[Any]]:
+    where = ["1=1"]
+    params: list[Any] = []
+    if state:
+        where.append("l.state = %s")
+        params.append(state.upper())
+    if q:
+        where.append("(l.business_name ILIKE %s OR l.city ILIKE %s OR l.source_query ILIKE %s)")
+        params.extend([f"%{q}%", f"%{q}%", f"%{q}%"])
+    if accredited is True:
+        where.append("l.accredited IS TRUE")
+    elif accredited is False:
+        where.append("l.accredited IS NOT TRUE")
+    if has_website is True:
+        where.append("l.website IS NOT NULL AND l.website != ''")
+    elif has_website is False:
+        where.append("(l.website IS NULL OR l.website = '')")
+    if has_email is True:
+        where.append("l.email IS NOT NULL AND l.email != ''")
+    elif has_email is False:
+        where.append("(l.email IS NULL OR l.email = '')")
+    return " AND ".join(where), params

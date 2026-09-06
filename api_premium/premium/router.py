@@ -10,17 +10,28 @@ from fastapi.responses import StreamingResponse
 from api.dependencies import get_pg_pool
 from api_premium.deps import get_current_user
 from api_premium.premium.repo import (
+    BBB_CSV_COLUMNS,
+    BBB_LIST_SELECT,
     CSV_COLUMNS,
     DETAIL_SELECT,
     LIST_SELECT,
+    build_bbb_where,
     build_where,
 )
 from api_premium.premium.schemas import (
+    BbbLeadListResponse,
     LeadDetailResponse,
     LeadListItem,
     LeadListResponse,
     StatsOut,
 )
+
+_BBB_COLS = [
+    "id", "business_id", "business_name", "address", "city", "state",
+    "zip", "phone", "rating", "accredited", "profile_url", "email",
+    "website", "years_in_business", "social_links", "source_query",
+    "created_at", "updated_at",
+]
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/premium", tags=["premium"])
@@ -261,4 +272,87 @@ async def stats(
         rows_exported=user["rows_exported"],
         searches_run=user["searches_run"],
         rows_limit=None,
+    )
+
+
+@router.get("/bbb-leads", response_model=BbbLeadListResponse)
+async def list_bbb_leads(
+    pool=Depends(get_pg_pool),
+    user: dict = Depends(get_current_user),
+    state: str | None = Query(None),
+    q: str | None = Query(None),
+    accredited: bool | None = Query(None),
+    has_website: bool | None = Query(None),
+    has_email: bool | None = Query(None),
+    page: int = Query(1, ge=1),
+    size: int = Query(50, ge=1, le=200),
+):
+    """BBB pipeline leads (US trades), same auth + usage accounting as /leads."""
+    where_sql, params = build_bbb_where(state, q, accredited, has_website, has_email)
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"SELECT count(*) FROM scraper.bbb_listings l WHERE {where_sql}", params
+            )
+            total = (await cur.fetchone())[0]
+            await cur.execute(
+                f"{BBB_LIST_SELECT} WHERE {where_sql} "
+                "ORDER BY l.updated_at DESC OFFSET %s LIMIT %s",
+                params + [(page - 1) * size, size],
+            )
+            rows = await cur.fetchall()
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE scraper.app_users SET searches_run = searches_run + 1 WHERE id=%s",
+                (user["id"],),
+            )
+            await conn.commit()
+    return BbbLeadListResponse(
+        total=total, page=page, size=size,
+        items=[dict(zip(_BBB_COLS, r)) for r in rows],
+    )
+
+
+@router.get("/bbb-leads/export.csv")
+async def export_bbb_csv(
+    pool=Depends(get_pg_pool),
+    user: dict = Depends(get_current_user),
+    state: str | None = Query(None),
+    q: str | None = Query(None),
+    accredited: bool | None = Query(None),
+    has_website: bool | None = Query(None),
+    has_email: bool | None = Query(None),
+):
+    """Full-row BBB CSV export (unlimited pro tier)."""
+    where_sql, params = build_bbb_where(state, q, accredited, has_website, has_email)
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"{BBB_LIST_SELECT} WHERE {where_sql} ORDER BY l.updated_at DESC", params
+            )
+            rows = await cur.fetchall()
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE scraper.app_users SET rows_exported = rows_exported + %s WHERE id=%s",
+                (len(rows), user["id"]),
+            )
+            await conn.commit()
+
+    def _generate():
+        out = io.StringIO()
+        writer = csv.writer(out)
+        writer.writerow(BBB_CSV_COLUMNS)
+        yield out.getvalue()
+        for r in rows:
+            item = dict(zip(_BBB_COLS, r))
+            out = io.StringIO()
+            w = csv.writer(out)
+            w.writerow([item.get(c) for c in BBB_CSV_COLUMNS])
+            yield out.getvalue()
+
+    log.info("BBB CSV export user=%s rows=%d", user["email"], len(rows))
+    return StreamingResponse(
+        _generate(),
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="ic-bbb-leads.csv"'},
     )
