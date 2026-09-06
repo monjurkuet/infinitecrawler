@@ -149,6 +149,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 load_dotenv(REPO_ROOT / ".env")
 
+from utils.urls import is_social_url, normalize_website  # noqa: E402
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -500,10 +502,21 @@ def mark_enriched(conn, business_id: str, fields: dict):
                 (fields["email"], business_id),
             )
         if fields.get("website"):
-            cur.execute(
-                "UPDATE scraper.bbb_listings SET website=%s, updated_at=NOW() WHERE business_id=%s",
-                (fields["website"], business_id),
-            )
+            clean = normalize_website(fields["website"])
+            if clean:
+                cur.execute(
+                    "UPDATE scraper.bbb_listings SET website=%s, updated_at=NOW() WHERE business_id=%s",
+                    (clean, business_id),
+                )
+            elif is_social_url(fields["website"]):
+                # Business's only link is a social profile — keep it, but not as website
+                cur.execute(
+                    """UPDATE scraper.bbb_listings
+                       SET social_links = COALESCE(social_links,'[]'::jsonb) || jsonb_build_array(%s),
+                           updated_at = NOW()
+                       WHERE business_id=%s AND NOT (COALESCE(social_links,'[]'::jsonb) @> jsonb_build_array(%s))""",
+                    (fields["website"], business_id, fields["website"]),
+                )
         if fields.get("years_in_business"):
             cur.execute(
                 "UPDATE scraper.bbb_listings SET years_in_business=%s, updated_at=NOW() WHERE business_id=%s",

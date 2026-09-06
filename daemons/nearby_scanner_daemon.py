@@ -50,6 +50,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from utils.pg import get_pg_config  # noqa: E402
+from utils.urls import normalize_website  # noqa: E402
 from daemons.common import install_signal_handlers  # noqa: E402
 
 load_dotenv(REPO_ROOT / ".env")
@@ -465,6 +466,7 @@ class NearbyScannerDaemon:
             self._pg_reconnect()
             if not self.pg_conn:
                 return False
+        item["website"] = normalize_website(item.get("website"))
         try:
             with self.pg_conn.cursor() as cur:
                 cur.execute("""
