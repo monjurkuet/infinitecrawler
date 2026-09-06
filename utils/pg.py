@@ -145,11 +145,15 @@ def get_uncrawled_urls_sql(limit: int = 100) -> str:
 
 UPSERT_EMAIL_SQL = """
     INSERT INTO scraper.emails
-        (listing_id, email, extraction_method, is_obfuscated, context_snippet)
-    VALUES (%s, %s, %s, %s, %s)
+        (listing_id, email, extraction_method, is_obfuscated, context_snippet,
+         website_url, email_type, source)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
     ON CONFLICT (listing_id, email) DO UPDATE SET
         extraction_method   = EXCLUDED.extraction_method,
         context_snippet     = COALESCE(EXCLUDED.context_snippet, scraper.emails.context_snippet),
+        website_url         = COALESCE(EXCLUDED.website_url, scraper.emails.website_url),
+        email_type          = COALESCE(EXCLUDED.email_type, scraper.emails.email_type),
+        source              = EXCLUDED.source,
         discovered_at       = NOW()
 """
 
@@ -158,7 +162,8 @@ def upsert_emails(conn, emails: list[dict]) -> int:
     """Upsert email records into scraper.emails.
 
     Each dict must have keys: listing_id, email.
-    Optional: extraction_method, is_obfuscated, context_snippet.
+    Optional: extraction_method, is_obfuscated, context_snippet,
+    website_url, email_type, source.
     Returns number of rows written.
     """
     if not emails:
@@ -174,6 +179,9 @@ def upsert_emails(conn, emails: list[dict]) -> int:
                     e.get("extraction_method", "http"),
                     e.get("is_obfuscated", False),
                     e.get("context_snippet"),
+                    e.get("website_url"),
+                    e.get("email_type", "general"),
+                    e.get("source", "gmaps"),
                 ))
                 written += cur.rowcount or 1
                 cur.execute("RELEASE SAVEPOINT sv_row")
@@ -325,7 +333,9 @@ def get_unprocessed_websites(conn, limit: int = 100) -> list[dict]:
 
 MARK_WEBSITE_SCANNED_SQL = """
     UPDATE scraper.websites
-       SET email_scanned_at = NOW()
+       SET email_scanned_at = NOW(),
+           last_crawl_attempt = NOW(),
+           crawl_status = 'scanned'
      WHERE id = ANY(%s)
 """
 

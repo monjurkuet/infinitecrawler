@@ -83,6 +83,11 @@ BROWSER_CONCURRENCY = int(os.environ.get("BROWSER_CONCURRENCY", "3"))
 BROWSER_NAV_DELAY = float(os.environ.get("BROWSER_NAV_DELAY", "0.2"))
 BROWSER_PAGE_TIMEOUT = int(os.environ.get("BROWSER_PAGE_TIMEOUT", "60"))
 
+# Source tag stamped on every email row this process writes. Main loop sets
+# it to "unified" when --unified is passed (listing_id then refers to
+# scraper.websites.id, not scraper.gmaps_listings.id).
+EMAIL_SOURCE = "gmaps"
+
 
 def acquire_lock() -> bool:
     """Prevent overlapping runs: exit early if a previous instance is alive.
@@ -182,6 +187,7 @@ async def extract_listing(client: httpx.AsyncClient, listing: dict) -> list[dict
             "extraction_method": "http",
             "is_obfuscated": e["is_obfuscated"],
             "context_snippet": e.get("context_snippet", "")[:200],
+            "source": EMAIL_SOURCE,
         })
 
     if results:
@@ -284,6 +290,7 @@ async def extract_listing_browser(client, listing: dict) -> list[dict]:
             "extraction_method": "browser",
             "is_obfuscated": e["is_obfuscated"],
             "context_snippet": e.get("context_snippet", "")[:200],
+            "source": EMAIL_SOURCE,
         }
         for e in found
     ]
@@ -498,6 +505,10 @@ def main():
         if args.stats:
             show_stats(conn)
             return
+
+        global EMAIL_SOURCE
+        if args.unified:
+            EMAIL_SOURCE = "unified"
 
         try:
             PIDFILE.parent.mkdir(parents=True, exist_ok=True)

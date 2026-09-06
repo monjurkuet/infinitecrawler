@@ -1,0 +1,15 @@
+[Unit]
+Description=InfiniteCrawler websites sync (gmaps+bbb → unified websites table)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/run/media/growloop/codebase/infinitecrawler
+EnvironmentFile=/run/media/growloop/codebase/infinitecrawler/.env
+Environment=PG_HOST=/var/run/postgresql
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/growloop/.venvs/ic/bin/python3 scripts/websites_sync.py --minutes 40
+TimeoutStartSec=1800
+StandardOutput=journal
+StandardError=journal
