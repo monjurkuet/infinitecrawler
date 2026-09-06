@@ -29,7 +29,7 @@ async def create_pool() -> AsyncConnectionPool:
     pool = AsyncConnectionPool(
         dsn,
         min_size=1,
-        max_size=5,
+        max_size=10,
         open=True,
         kwargs={"connect_timeout": 10},
     )

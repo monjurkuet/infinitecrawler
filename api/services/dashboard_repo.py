@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 
 from api.services.pg_pool import get_pool
 from utils.pg import get_uncrawled_count_sql
@@ -16,7 +17,17 @@ async def _one(sql: str):
             return (await cur.fetchone())[0]
 
 
+_OVERVIEW_CACHE: dict = {}
+_OVERVIEW_TTL_S = 60
+
+
 async def get_dashboard_overview() -> dict:
+    # Dashboard numbers don't need to be realtime; cache for 60s so
+    # concurrent panel loads don't stampede the 1M-row counts.
+    now = time.monotonic()
+    hit = _OVERVIEW_CACHE.get("data")
+    if hit and now - hit[0] < _OVERVIEW_TTL_S:
+        return hit[1]
     # The 8 counts each scan large tables — run them concurrently on
     # separate pool connections instead of sequentially on one.
     (total_listings, total_search_results, uncrawled, emails, linkedin,
@@ -33,7 +44,7 @@ async def get_dashboard_overview() -> dict:
     uncrawled = uncrawled or 0
     classified_pct = round(classified / total_listings * 100, 1) if total_listings > 0 else 0.0
 
-    return {
+    data = {
         "total_listings": total_listings,
         "total_search_results": total_search_results,
         "uncrawled_urls": uncrawled,
@@ -43,6 +54,8 @@ async def get_dashboard_overview() -> dict:
         "last_listing_activity": last_listing.isoformat() if hasattr(last_listing, "isoformat") else (str(last_listing) if last_listing else None),
         "last_search_activity": last_search.isoformat() if hasattr(last_search, "isoformat") else (str(last_search) if last_search else None),
     }
+    _OVERVIEW_CACHE["data"] = (time.monotonic(), data)
+    return data
 
 
 async def get_throughput(period_hours: int = 24) -> dict:
