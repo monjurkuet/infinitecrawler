@@ -84,6 +84,67 @@ def seed_initial_queries():
     return count
 
 
+# ── Load US cities from CSV (22K+ city/state combos) ──────────────────────────
+
+def load_us_cities(repo_root: Path):
+    """Load city, state pairs from the downloaded CSV."""
+    csv_path = repo_root / "data" / "us_cities.csv"
+    cities = []
+    if not csv_path.exists():
+        log.warning(f"CSV not found at {csv_path}, using fallback list")
+        return US_CITIES_FALLBACK
+    
+    import csv
+    with open(csv_path, 'r') as f:
+        reader = csv.DictReader(f, delimiter='|')
+        seen = set()
+        for row in reader:
+            city = row['City'].strip()
+            state = row['State short'].strip()
+            # Filter: valid city names (not acronyms, not internal, proper case)
+            if (city and state and 
+                not city.startswith('Internal') and 
+                len(city) > 2 and 
+                not city.isupper() and
+                city[0].isupper()):
+                combo = f"{city}, {state}"
+                if combo not in seen:
+                    seen.add(combo)
+                    cities.append(combo)
+    log.info(f"Loaded {len(cities)} US cities from CSV")
+    return cities
+
+
+# Fallback list (top 100 by population) if CSV unavailable
+US_CITIES_FALLBACK = [
+    "New York, NY", "Los Angeles, CA", "Chicago, IL", "Houston, TX", "Phoenix, AZ",
+    "Philadelphia, PA", "San Antonio, TX", "San Diego, CA", "Dallas, TX", "San Jose, CA",
+    "Austin, TX", "Jacksonville, FL", "Fort Worth, TX", "Columbus, OH", "Charlotte, NC",
+    "San Francisco, CA", "Indianapolis, IN", "Seattle, WA", "Denver, CO", "Washington, DC",
+    "Boston, MA", "El Paso, TX", "Nashville, TN", "Detroit, MI", "Oklahoma City, OK",
+    "Portland, OR", "Las Vegas, NV", "Memphis, TN", "Louisville, KY", "Baltimore, MD",
+    "Milwaukee, WI", "Albuquerque, NM", "Tucson, AZ", "Fresno, CA", "Sacramento, CA",
+    "Mesa, AZ", "Kansas City, MO", "Atlanta, GA", "Long Beach, CA", "Colorado Springs, CO",
+    "Raleigh, NC", "Omaha, NE", "Miami, FL", "Virginia Beach, VA", "Oakland, CA",
+    "Minneapolis, MN", "Tulsa, OK", "Tampa, FL", "Arlington, TX", "New Orleans, LA",
+    "Wichita, KS", "Cleveland, OH", "Bakersfield, CA", "Aurora, CO", "Anaheim, CA",
+    "Honolulu, HI", "Santa Ana, CA", "Corpus Christi, TX", "Riverside, CA", "Lexington, KY",
+    "Henderson, NV", "Stockton, CA", "Saint Paul, MN", "St. Louis, MO", "Cincinnati, OH",
+    "Pittsburgh, PA", "Greensboro, NC", "Anchorage, AK", "Plano, TX", "Lincoln, NE",
+    "Orlando, FL", "Irvine, CA", "Newark, NJ", "Durham, NC", "Chula Vista, CA",
+    "Toledo, OH", "Fort Wayne, IN", "St. Petersburg, FL", "Laredo, TX", "Jersey City, NJ",
+    "Chandler, AZ", "Madison, WI", "Lubbock, TX", "Scottsdale, AZ", "Reno, NV",
+    "Buffalo, NY", "Gilbert, AZ", "Glendale, AZ", "North Las Vegas, NV", "Winston-Salem, NC",
+    "Chesapeake, VA", "Norfolk, VA", "Fremont, CA", "Garland, TX", "Irving, TX",
+    "Hialeah, FL", "Richmond, VA", "Boise, ID", "Spokane, WA", "Baton Rouge, LA",
+    "Tacoma, WA", "San Bernardino, CA", "Modesto, CA", "Fontana, CA", "Santa Clarita, CA",
+    "Moreno Valley, CA", "Fayetteville, NC", "Oxnard, CA", "Aurora, IL", "Glendale, CA",
+    "Huntington Beach, CA", "Montgomery, AL", "Grand Rapids, MI", "Overland Park, KS", "Knoxville, TN",
+]
+
+# US_CITIES will be loaded after REPO_ROOT is defined
+US_CITIES = []
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 load_dotenv(REPO_ROOT / ".env")
@@ -93,6 +154,9 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 log = logging.getLogger("bbb_scraper")
+
+# Load US cities from CSV (after logger is configured)
+US_CITIES = load_us_cities(REPO_ROOT)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -116,60 +180,6 @@ def get_proxy():
         return {"proxy": BBB_PROXY}
     return {}
 
-
-# ── All US cities (top 300 by population) ─────────────────────────────────────
-# Using a built-in list instead of external CSV for self-contained deployment.
-# Covers all 50 states + DC, ~300 cities = comprehensive BBB coverage.
-US_CITIES = [
-    # Top 50
-    "New York, NY", "Los Angeles, CA", "Chicago, IL", "Houston, TX", "Phoenix, AZ",
-    "Philadelphia, PA", "San Antonio, TX", "San Diego, CA", "Dallas, TX", "San Jose, CA",
-    "Austin, TX", "Jacksonville, FL", "Fort Worth, TX", "Columbus, OH", "Charlotte, NC",
-    "San Francisco, CA", "Indianapolis, IN", "Seattle, WA", "Denver, CO", "Washington, DC",
-    "Boston, MA", "El Paso, TX", "Nashville, TN", "Detroit, MI", "Oklahoma City, OK",
-    "Portland, OR", "Las Vegas, NV", "Memphis, TN", "Louisville, KY", "Baltimore, MD",
-    "Milwaukee, WI", "Albuquerque, NM", "Tucson, AZ", "Fresno, CA", "Sacramento, CA",
-    "Mesa, AZ", "Kansas City, MO", "Atlanta, GA", "Long Beach, CA", "Colorado Springs, CO",
-    "Raleigh, NC", "Omaha, NE", "Miami, FL", "Virginia Beach, VA", "Oakland, CA",
-    # 51-100
-    "Minneapolis, MN", "Tulsa, OK", "Tampa, FL", "Arlington, TX", "New Orleans, LA",
-    "Wichita, KS", "Cleveland, OH", "Bakersfield, CA", "Aurora, CO", "Anaheim, CA",
-    "Honolulu, HI", "Santa Ana, CA", "Corpus Christi, TX", "Riverside, CA", "Lexington, KY",
-    "Henderson, NV", "Stockton, CA", "Saint Paul, MN", "St. Louis, MO", "Cincinnati, OH",
-    "Pittsburgh, PA", "Greensboro, NC", "Anchorage, AK", "Plano, TX", "Lincoln, NE",
-    "Orlando, FL", "Irvine, CA", "Newark, NJ", "Durham, NC", "Chula Vista, CA",
-    "Toledo, OH", "Fort Wayne, IN", "St. Petersburg, FL", "Laredo, TX", "Jersey City, NJ",
-    # 101-150
-    "Chandler, AZ", "Madison, WI", "Lubbock, TX", "Scottsdale, AZ", "Reno, NV",
-    "Buffalo, NY", "Gilbert, AZ", "Glendale, AZ", "North Las Vegas, NV", "Winston-Salem, NC",
-    "Chesapeake, VA", "Norfolk, VA", "Fremont, CA", "Garland, TX", "Irving, TX",
-    "Hialeah, FL", "Richmond, VA", "Boise, ID", "Spokane, WA", "Baton Rouge, LA",
-    "Tacoma, WA", "San Bernardino, CA", "Modesto, CA", "Fontana, CA", "Santa Clarita, CA",
-    "Moreno Valley, CA", "Fayetteville, NC", "Oxnard, CA", "Aurora, IL", "Glendale, CA",
-    "Huntington Beach, CA", "Montgomery, AL", "Grand Rapids, MI", "Overland Park, KS", "Knoxville, TN",
-    # 151-200
-    "Worcester, MA", "Grand Prairie, TX", "Amarillo, TX", "Akron, OH", "Mobile, AL",
-    "Little Rock, AR", "Augusta, GA", "Columbus, GA", "Huntsville, AL", "Tallahassee, FL",
-    "Shreveport, LA", "Rochester, NY", "Salt Lake City, UT", "Yonkers, NY", "Frisco, TX",
-    "Glendale, CA", "McKinney, TX", "Grand Rapids, MI", "Fayetteville, AR", "Brownsville, TX",
-    "Providence, RI", "Springfield, MA", "Jackson, MS", "Eugene, OR", "Port St. Lucie, FL",
-    "Fort Lauderdale, FL", "Ontario, CA", "Chattanooga, TN", "Tempe, AZ", "Santa Rosa, CA",
-    "Vancouver, WA", "Sioux Falls, SD", "Oceanside, CA", "Cape Coral, FL", "Springfield, MO",
-    # 201-250
-    "Pembroke Pines, FL", "Corona, CA", "Salinas, CA", "Salem, OR", "Lancaster, CA",
-    "Eugene, OR", "Palmdale, CA", "McAllen, TX", "Hayward, CA", "Rockford, IL",
-    "Pomona, CA", "Pasadena, TX", "Fort Collins, CO", "Escondido, CA", "Joliet, IL",
-    "Alexandria, VA", "Sunnyvale, CA", "Syracuse, NY", "Paterson, NJ", "Torrance, CA",
-    "Hollywood, FL", "Naperville, IL", "Kansas City, KS", "Bridgeport, CT", "Mesquite, TX",
-    "New Haven, CT", "Carrollton, TX", "Roseville, CA", "Orange, CA", "Olathe, KS",
-    # 251-300
-    "Fullerton, CA", "Warren, MI", "Gainesville, FL", "Thornton, CO", "Denton, TX",
-    "Midland, TX", "Visalia, CA", "Charleston, SC", "Cedar Rapids, IA", "Sterling Heights, MI",
-    "Elizabeth, NJ", "Ann Arbor, MI", "Evansville, IN", "Abilene, TX", "Athens, GA",
-    "Simi Valley, CA", "Hartford, CT", "Fargo, ND", "Round Rock, TX", "Columbia, SC",
-    # Nebraska focus (user's core request)
-    "Fairbury, NE", "Beatrice, NE", "Hebron, NE", "Geneva, NE", "Davenport, NE",
-]
 
 # Niches targeting handyman / REO / property preservation + general home services
 NICHES = [
