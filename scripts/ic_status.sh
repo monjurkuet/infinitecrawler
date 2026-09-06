@@ -142,8 +142,8 @@ render() {
 
   # BBB queue status
   BBBP=$(redis-cli LLEN bbb:pending 2>/dev/null || echo 0)
-  BBBR=$(redis-cli LLEN bbb:processing 2>/dev/null || echo 0)
-  BBBD=$(redis-cli LLEN bbb:completed 2>/dev/null || echo 0)
+  BBBR=$(redis-cli SCARD bbb:processing 2>/dev/null || echo 0)
+  BBBD=$(redis-cli SCARD bbb:completed 2>/dev/null || echo 0)
   row "$NA" "bbb queue pending/processing/completed" "$BBBP / $BBBR / $BBBD"
 
   # ===================== 3. DATA QUALITY (24h browser rows) ============
