@@ -311,7 +311,7 @@ def parse_search_results(response: dict) -> list:
 # ── Profile enrichment (via proxy) ──────────────────────────────────────────
 
 def enrich_profile(profile_url: str) -> dict:
-    """Fetch BBB profile page via proxy and extract extra data."""
+    """Fetch BBB profile page via proxy and extract extra data from JSON-LD."""
     if not profile_url or not BBB_PROXY:
         return {}
     try:
@@ -321,22 +321,58 @@ def enrich_profile(profile_url: str) -> dict:
                 return {}
             text = r.text
             result = {}
-            # Phone
-            m = re.search(r'\(?(\d{3}\.?\)?[\s.-]*\d{3}[\s.-]*\d{4})', text)
-            if m:
-                result["phone"] = m.group(1)
-            # Email
-            m = re.search(r'mailto:([\w.+-]+@[\w-]+\.[\w.]+)', text)
-            if m:
-                result["email"] = m.group(1)
-            # Website
-            m = re.search(r'https?://(?:www\.)?([a-z0-9-]+\.(?:com|org|net|info))', text, re.I)
-            if m:
-                result["website"] = m.group(1)
-            # Years in business
-            m = re.search(r'(\d+)\+?\s*years?\s*in\s*business', text, re.I)
-            if m:
-                result["years_in_business"] = m.group(1)
+            
+            # Try JSON-LD first (structured data)
+            import json
+            import re
+            ld_matches = re.findall(r'<script type="application/ld\+json">(.*?)</script>', text, re.DOTALL)
+            for ld_text in ld_matches:
+                try:
+                    ld = json.loads(ld_text.strip())
+                    # Handle both single object and array
+                    items = ld if isinstance(ld, list) else [ld]
+                    for item in items:
+                        if isinstance(item, dict):
+                            # Website from JSON-LD
+                            if not result.get("website") and item.get("url"):
+                                result["website"] = item["url"]
+                            # Email from JSON-LD
+                            if not result.get("email") and item.get("email"):
+                                result["email"] = item["email"]
+                            # Phone from JSON-LD
+                            if not result.get("phone") and item.get("telephone"):
+                                result["phone"] = item["telephone"]
+                            # Years in business
+                            if not result.get("years_in_business") and item.get("foundingDate"):
+                                result["years_in_business"] = str(2024 - int(item["foundingDate"][:4]))
+                except json.JSONDecodeError:
+                    continue
+            
+            # Fallback: regex on HTML if JSON-LD didn't yield
+            if not result.get("phone"):
+                m = re.search(r'\(?(\d{3}\.?\)?[\s.-]*\d{3}[\s.-]*\d{4})', text)
+                if m:
+                    result["phone"] = m.group(1)
+            if not result.get("email"):
+                m = re.search(r'mailto:([\w.+-]+@[\w-]+\.[\w.]+)', text)
+                if m:
+                    result["email"] = m.group(1)
+            if not result.get("website"):
+                # Look for business website link (not tracking/ad domains)
+                # BBB typically has a "Website" link with rel="noopener" or similar
+                m = re.search(r'Website[^>]*href=["\'](https?://[^"\']+)', text, re.I)
+                if not m:
+                    m = re.search(r'rel=["\']noopener["\'][^>]*href=["\'](https?://[^"\']+)', text, re.I)
+                if m:
+                    url = m.group(1)
+                    # Filter out known tracking/ad domains
+                    excluded = {'google.com', 'googletagmanager.com', 'facebook.com', 'doubleclick.net', 'google-analytics.com'}
+                    if not any(ex in url for ex in excluded):
+                        result["website"] = url
+            if not result.get("years_in_business"):
+                m = re.search(r'(\d+)\+?\s*years?\s*in\s*business', text, re.I)
+                if m:
+                    result["years_in_business"] = m.group(1)
             return result
     except Exception as e:
         log.debug(f"Profile enrich failed for {profile_url}: {e}")
