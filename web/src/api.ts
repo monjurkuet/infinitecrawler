@@ -93,6 +93,34 @@ export interface FilterOptions {
   cities_by_country: Record<string, string[]>
 }
 
+export interface BbbLead {
+  id: number
+  business_id: string | null
+  business_name: string | null
+  address: string | null
+  city: string | null
+  state: string | null
+  zip: string | null
+  phone: string | null
+  rating: string | null
+  accredited: boolean | null
+  profile_url: string | null
+  email: string | null
+  website: string | null
+  years_in_business: string | null
+  social_links: unknown
+  source_query: string | null
+  created_at: string | null
+  updated_at: string | null
+}
+
+export interface BbbLeadListResponse {
+  total: number
+  page: number
+  size: number
+  items: BbbLead[]
+}
+
 export const api = {
   register: (email: string, password: string) =>
     request<{ token: string; user: User }>('/auth/register', {
@@ -111,4 +139,6 @@ export const api = {
   stats: () => request<Stats>('/premium/stats'),
   filters: () => request<FilterOptions>('/premium/filters'),
   exportCsvUrl: (params: URLSearchParams) => `/premium/export.csv?${params.toString()}`,
+  bbbLeads: (params: URLSearchParams) =>
+    request<BbbLeadListResponse>(`/premium/bbb-leads?${params.toString()}`),
 }

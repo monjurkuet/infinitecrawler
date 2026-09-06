@@ -33,6 +33,21 @@ _BBB_COLS = [
     "created_at", "updated_at",
 ]
 
+
+def _bbb_item(r: tuple) -> dict:
+    import json as _json
+
+    item = dict(zip(_BBB_COLS, r))
+    phone = item.get("phone")
+    if isinstance(phone, str) and phone.startswith("["):
+        try:
+            parts = _json.loads(phone)
+            if isinstance(parts, list):
+                item["phone"] = ", ".join(str(p) for p in parts)
+        except Exception:
+            pass
+    return item
+
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/premium", tags=["premium"])
 
@@ -309,7 +324,7 @@ async def list_bbb_leads(
             await conn.commit()
     return BbbLeadListResponse(
         total=total, page=page, size=size,
-        items=[dict(zip(_BBB_COLS, r)) for r in rows],
+        items=[_bbb_item(r) for r in rows],
     )
 
 
@@ -344,7 +359,7 @@ async def export_bbb_csv(
         writer.writerow(BBB_CSV_COLUMNS)
         yield out.getvalue()
         for r in rows:
-            item = dict(zip(_BBB_COLS, r))
+            item = _bbb_item(r)
             out = io.StringIO()
             w = csv.writer(out)
             w.writerow([item.get(c) for c in BBB_CSV_COLUMNS])
