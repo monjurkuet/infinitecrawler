@@ -2,48 +2,47 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from api.services.pg_pool import get_pool
 from utils.pg import get_uncrawled_count_sql
 
 
-async def get_dashboard_overview() -> dict:
+async def _one(sql: str):
     pool = await get_pool()
     async with pool.connection() as conn:
         async with conn.cursor() as cur:
-            await cur.execute("SELECT count(*) FROM scraper.gmaps_listings")
-            total_listings = (await cur.fetchone())[0]
+            await cur.execute(sql)
+            return (await cur.fetchone())[0]
 
-            await cur.execute("SELECT count(*) FROM scraper.gmaps_search_results")
-            total_search_results = (await cur.fetchone())[0]
 
-            await cur.execute(get_uncrawled_count_sql())
-            uncrawled = (await cur.fetchone())[0] or 0
+async def get_dashboard_overview() -> dict:
+    # The 8 counts each scan large tables — run them concurrently on
+    # separate pool connections instead of sequentially on one.
+    (total_listings, total_search_results, uncrawled, emails, linkedin,
+     classified, last_listing, last_search) = await asyncio.gather(
+        _one("SELECT count(*) FROM scraper.gmaps_listings"),
+        _one("SELECT count(*) FROM scraper.gmaps_search_results"),
+        _one(get_uncrawled_count_sql()),
+        _one("SELECT count(*) FROM scraper.emails"),
+        _one("SELECT count(*) FROM scraper.linkedin_profiles"),
+        _one("SELECT count(*) FROM scraper.gmaps_listings WHERE sector_id IS NOT NULL"),
+        _one("SELECT max(created_at) FROM scraper.gmaps_listings"),
+        _one("SELECT max(created_at) FROM scraper.gmaps_search_results"),
+    )
+    uncrawled = uncrawled or 0
+    classified_pct = round(classified / total_listings * 100, 1) if total_listings > 0 else 0.0
 
-            await cur.execute("SELECT count(*) FROM scraper.emails")
-            emails = (await cur.fetchone())[0]
-
-            await cur.execute("SELECT count(*) FROM scraper.linkedin_profiles")
-            linkedin = (await cur.fetchone())[0]
-
-            await cur.execute("SELECT count(*) FROM scraper.gmaps_listings WHERE sector_id IS NOT NULL")
-            classified = (await cur.fetchone())[0]
-            classified_pct = round(classified / total_listings * 100, 1) if total_listings > 0 else 0.0
-
-            await cur.execute("SELECT max(created_at) FROM scraper.gmaps_listings")
-            last_listing = (await cur.fetchone())[0]
-            await cur.execute("SELECT max(created_at) FROM scraper.gmaps_search_results")
-            last_search = (await cur.fetchone())[0]
-
-            return {
-                "total_listings": total_listings,
-                "total_search_results": total_search_results,
-                "uncrawled_urls": uncrawled,
-                "emails_extracted": emails,
-                "linkedin_profiles": linkedin,
-                "classified_pct": classified_pct,
-                "last_listing_activity": last_listing.isoformat() if hasattr(last_listing, "isoformat") else (str(last_listing) if last_listing else None),
-                "last_search_activity": last_search.isoformat() if hasattr(last_search, "isoformat") else (str(last_search) if last_search else None),
-            }
+    return {
+        "total_listings": total_listings,
+        "total_search_results": total_search_results,
+        "uncrawled_urls": uncrawled,
+        "emails_extracted": emails,
+        "linkedin_profiles": linkedin,
+        "classified_pct": classified_pct,
+        "last_listing_activity": last_listing.isoformat() if hasattr(last_listing, "isoformat") else (str(last_listing) if last_listing else None),
+        "last_search_activity": last_search.isoformat() if hasattr(last_search, "isoformat") else (str(last_search) if last_search else None),
+    }
 
 
 async def get_throughput(period_hours: int = 24) -> dict:

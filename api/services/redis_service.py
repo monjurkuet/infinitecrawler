@@ -60,10 +60,26 @@ async def get_queue_names() -> list[str]:
 
 async def get_queue_stats(key: str) -> dict:
     client = get_client()
-    pending = client.llen(f"{key}:pending")
-    processing = client.llen(f"{key}:processing")
-    completed = client.scard(f"{key}:completed")
-    failed = client.hlen(f"{key}:failed") if client.type(f"{key}:failed") == "hash" else 0
+
+    def _len(k: str, list_fn, set_fn) -> int:
+        try:
+            t = client.type(k)
+        except Exception:
+            return 0
+        try:
+            if t == "set":
+                return set_fn(k)
+            return list_fn(k)
+        except Exception:
+            return 0
+
+    pending = _len(f"{key}:pending", client.llen, client.scard)
+    processing = _len(f"{key}:processing", client.llen, client.scard)
+    completed = _len(f"{key}:completed", client.llen, client.scard)
+    try:
+        failed = client.hlen(f"{key}:failed") if client.type(f"{key}:failed") == "hash" else 0
+    except Exception:
+        failed = 0
     return {
         "key": key,
         "pending": pending,
