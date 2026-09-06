@@ -512,9 +512,9 @@ def mark_enriched(conn, business_id: str, fields: dict):
                 # Business's only link is a social profile — keep it, but not as website
                 cur.execute(
                     """UPDATE scraper.bbb_listings
-                       SET social_links = COALESCE(social_links,'[]'::jsonb) || jsonb_build_array(%s),
+                       SET social_links = COALESCE(social_links,'[]'::jsonb) || jsonb_build_array(%s::text),
                            updated_at = NOW()
-                       WHERE business_id=%s AND NOT (COALESCE(social_links,'[]'::jsonb) @> jsonb_build_array(%s))""",
+                       WHERE business_id=%s AND NOT (COALESCE(social_links,'[]'::jsonb) @> jsonb_build_array(%s::text))""",
                     (fields["website"], business_id, fields["website"]),
                 )
         if fields.get("years_in_business"):
@@ -552,6 +552,7 @@ def finish_job(conn, job_id: int, rows: int, status: str, err: str = ""):
 
 def scrape_query(conn, keyword: str, location: str, page_limit: int = 15):
     """Scrape all pages for a keyword/location combo."""
+    conn.rollback()  # reset any poisoned transaction from a previous query
     job_id = record_job(conn, keyword, location)
     total = 0
     try:
@@ -585,6 +586,10 @@ def scrape_query(conn, keyword: str, location: str, page_limit: int = 15):
         log.info(f"✓ {keyword} @ {location}: {total} stored")
         return total
     except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
         finish_job(conn, job_id, total, "failed", str(e))
         log.error(f"✗ {keyword} @ {location}: {e}")
         return 0
