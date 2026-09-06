@@ -120,6 +120,32 @@ render() {
     row2 "$st" "$k" "$(num "$v1")" "${GR}$v24${X}"
   done
 
+  # ===================== BBB ACTIVITY ================================
+  sec "BBB ACTIVITY — Nebraska handyman / REO"
+  mapfile -t B < <(q "
+    SELECT 'bbb listings total',     (SELECT count(*) FROM scraper.bbb_listings),
+                                        (SELECT count(*) FROM scraper.bbb_listings WHERE created_at>=now()-interval '24 hours')
+    UNION ALL SELECT 'bbb listings last 1h',    (SELECT count(*) FROM scraper.bbb_listings WHERE created_at>=now()-interval '1 hour'),
+                                        (SELECT count(*) FROM scraper.bbb_listings WHERE created_at>=now()-interval '24 hours')
+    UNION ALL SELECT 'scrape jobs done 1h',    (SELECT count(*) FROM scraper.scrape_jobs WHERE status='done' AND completed_at>=now()-interval '1 hour'),
+                                        (SELECT count(*) FROM scraper.scrape_jobs WHERE status='done' AND completed_at>=now()-interval '24 hours')
+    UNION ALL SELECT 'scrape jobs running',    (SELECT count(*) FROM scraper.scrape_jobs WHERE status='running'),
+                                        (SELECT count(*) FROM scraper.scrape_jobs WHERE status='failed')
+  ")
+  declare -A B1 B24
+  for l in "${B[@]}"; do IFS='|' read -r k v1 v24 <<< "$l"; B1[$k]=$v1; B24[$k]=$v24; done
+  for k in "bbb listings total" "bbb listings last 1h" "scrape jobs done 1h" "scrape jobs running"; do
+    v1=${B1[$k]:-0}; v24=${B24[$k]:-0}
+    st="$OK"; [ "$v1" -eq 0 ] && [ "$v24" -eq 0 ] && st="$DIM$NA (idle)${X}"
+    row2 "$st" "$k" "$(num "$v1")" "${GR}$v24${X}"
+  done
+
+  # BBB queue status
+  BBBP=$(redis-cli LLEN bbb:pending 2>/dev/null || echo 0)
+  BBBR=$(redis-cli LLEN bbb:processing 2>/dev/null || echo 0)
+  BBBD=$(redis-cli LLEN bbb:completed 2>/dev/null || echo 0)
+  row "$NA" "bbb queue pending/processing/completed" "$BBBP / $BBBR / $BBBD"
+
   # ===================== 3. DATA QUALITY (24h browser rows) ============
   sec "DATA QUALITY — gmaps_listing last 24h"
   printf '  %s %-32s %7s %9s   %s%s\n' " " "field" "fill" "baseline" "status" "$X"
