@@ -40,7 +40,9 @@ from utils.pg import (  # noqa: E402
     get_all_listings_with_website,
     get_pg_config,
     get_unprocessed_emails,
+    get_unprocessed_websites,
     mark_listings_email_scanned,
+    mark_websites_email_scanned,
     upsert_emails,
 )
 
@@ -481,6 +483,8 @@ def main():
                         help="Extraction mode (T2: 'both' runs http first then browser fallback for zero-result listings)")
     parser.add_argument("--force-rescan", action="store_true",
                         help="Re-scan listings even if they already have an email row (T6: backlog drain)")
+    parser.add_argument("--unified", action="store_true",
+                        help="Use unified websites table (scraper.websites) instead of gmaps_listings only")
     args = parser.parse_args()
 
     if not args.stats and not acquire_lock():
@@ -521,6 +525,10 @@ def main():
                     listings = get_all_listings_with_website(conn, limit=args.max)
                     log.info("[cycle %d] --force-rescan: %d listings with website",
                              cycle, len(listings))
+                elif args.unified:
+                    listings = get_unprocessed_websites(conn, limit=args.max)
+                    log.info("[cycle %d] --unified: %d websites needing scan",
+                             cycle, len(listings))
                 else:
                     listings = get_unprocessed_emails(conn, limit=args.max)
                 if not listings:
@@ -531,7 +539,7 @@ def main():
                     time.sleep(args.loop_gap)
                     continue
 
-                log.info("[cycle %d] Found %d listings needing email extraction (limit: %d, mode=%s)",
+                log.info("[cycle %d] Found %d items needing email extraction (limit: %d, mode=%s)",
                          cycle, len(listings), args.max, args.mode)
 
                 if args.dry_run:
@@ -554,15 +562,17 @@ def main():
                     log.info("[cycle %d] Done: processed %d / %d listings, wrote %d emails",
                              cycle, processed, len(listings), written)
 
-                # Stamp `email_scanned_at` on every listing we touched this batch
+                # Stamp `email_scanned_at` on every item we touched this batch
                 # (including zero-result ones) so the perpetual loop does not
-                # re-fetch the same sites on the next 30s cycle. Listings older
-                # than the staleness window (FETCH_UNPROCESSED_EMAILS_SQL) will be
-                # re-scanned for newly published contact pages.
+                # re-fetch the same sites on the next 30s cycle.
                 ids = [item["id"] for item in listings]
                 if ids and not args.dry_run:
-                    marked = mark_listings_email_scanned(conn, ids)
-                    log.info("[cycle %d] Marked %d listings email_scanned_at=NOW()", cycle, marked)
+                    if args.unified:
+                        marked = mark_websites_email_scanned(conn, ids)
+                        log.info("[cycle %d] Marked %d websites email_scanned_at=NOW()", cycle, marked)
+                    else:
+                        marked = mark_listings_email_scanned(conn, ids)
+                        log.info("[cycle %d] Marked %d listings email_scanned_at=NOW()", cycle, marked)
 
                 if not args.loop:
                     return

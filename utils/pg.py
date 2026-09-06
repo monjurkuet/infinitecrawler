@@ -296,6 +296,51 @@ def get_all_listings_with_website(conn, limit: int = 100) -> list[dict]:
     return [{"id": r[0], "website": r[1]} for r in rows]
 
 
+# ── Unified websites table (for cross-source email extraction) ────────────────
+
+FETCH_UNPROCESSED_WEBSITES_SQL = r"""
+    SELECT w.id, w.base_url as website
+    FROM scraper.websites w
+    WHERE w.is_crawlable = TRUE
+      AND (
+            w.email_scanned_at IS NULL
+         OR w.email_scanned_at < NOW() - INTERVAL '14 days'
+      )
+    ORDER BY COALESCE(w.email_scanned_at, '1970-01-01'::timestamptz) ASC
+    LIMIT %s
+"""
+
+
+def get_unprocessed_websites(conn, limit: int = 100) -> list[dict]:
+    """Return websites needing an email re-scan from unified table.
+
+    Sources: gmaps, bbb, linkedin (all unified).
+    """
+    with conn.cursor() as cur:
+        cur.execute(FETCH_UNPROCESSED_WEBSITES_SQL, (limit,))
+        rows = cur.fetchall()
+    conn.commit()
+    return [{"id": r[0], "website": r[1]} for r in rows]
+
+
+MARK_WEBSITE_SCANNED_SQL = """
+    UPDATE scraper.websites
+       SET email_scanned_at = NOW()
+     WHERE id = ANY(%s)
+"""
+
+
+def mark_websites_email_scanned(conn, website_ids: list[int]) -> int:
+    """Stamp `email_scanned_at = NOW()` on the given websites."""
+    if not website_ids:
+        return 0
+    with conn.cursor() as cur:
+        cur.execute(MARK_WEBSITE_SCANNED_SQL, (website_ids,))
+        n = cur.rowcount
+    conn.commit()
+    return n
+
+
 FETCH_UNPROCESSED_LINKEDIN_SQL = """
     SELECT l.id, l.name
     FROM scraper.gmaps_listings l

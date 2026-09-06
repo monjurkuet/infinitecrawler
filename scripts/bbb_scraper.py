@@ -311,7 +311,7 @@ def parse_search_results(response: dict) -> list:
 # ── Profile enrichment (via proxy) ──────────────────────────────────────────
 
 def enrich_profile(profile_url: str) -> dict:
-    """Fetch BBB profile page via proxy and extract extra data from JSON-LD."""
+    """Fetch BBB profile page via proxy and extract extra data from JSON-LD + HTML."""
     if not profile_url or not BBB_PROXY:
         return {}
     try:
@@ -329,13 +329,14 @@ def enrich_profile(profile_url: str) -> dict:
             for ld_text in ld_matches:
                 try:
                     ld = json.loads(ld_text.strip())
-                    # Handle both single object and array
                     items = ld if isinstance(ld, list) else [ld]
                     for item in items:
                         if isinstance(item, dict):
-                            # Website from JSON-LD
+                            # Website from JSON-LD (but only if not bbb.org)
                             if not result.get("website") and item.get("url"):
-                                result["website"] = item["url"]
+                                url = item["url"]
+                                if "bbb.org" not in url:
+                                    result["website"] = url
                             # Email from JSON-LD
                             if not result.get("email") and item.get("email"):
                                 result["email"] = item["email"]
@@ -348,27 +349,38 @@ def enrich_profile(profile_url: str) -> dict:
                 except json.JSONDecodeError:
                     continue
             
-            # Fallback: regex on HTML if JSON-LD didn't yield
+            # Fallback: extract all anchor tags and find business website
+            if not result.get("website"):
+                # Find all external links in anchor tags (handling nested HTML like SVG icons)
+                # Use a more robust pattern that captures the href even with nested tags
+                anchor_pattern = r'<a\s+[^>]*href=(["\'])(https?://[^"\']+)\1[^>]*>.*?</a>'
+                anchors = re.findall(anchor_pattern, text, re.DOTALL | re.IGNORECASE)
+                # Filter out known tracking/ad/BBB domains
+                excluded = {
+                    'google.com', 'googletagmanager.com', 'facebook.com', 'doubleclick.net',
+                    'google-analytics.com', 'bbb.org', 'm.bbb.org', 'www.bbb.org',
+                    'cloudflare.com', 'jsdelivr.net', 'unpkg.com', 'fonts.googleapis.com',
+                    'gstatic.com', 'adobedtm.com', 'bbbaihub.org', 'bbbmarketplacetrust.org',
+                    'give.org', 'bbbprograms.org', 'schema.org', 'livechatinc.com',
+                    'assets.adobedtm.com', 'www.gstatic.com', 'yelp.com'
+                }
+                for _, href in anchors:
+                    if not any(bad in href for bad in excluded):
+                        # This is likely the business website
+                        result["website"] = href
+                        break
+            
+            # Phone fallback
             if not result.get("phone"):
                 m = re.search(r'\(?(\d{3}\.?\)?[\s.-]*\d{3}[\s.-]*\d{4})', text)
                 if m:
                     result["phone"] = m.group(1)
+            # Email fallback
             if not result.get("email"):
                 m = re.search(r'mailto:([\w.+-]+@[\w-]+\.[\w.]+)', text)
                 if m:
                     result["email"] = m.group(1)
-            if not result.get("website"):
-                # Look for business website link (not tracking/ad domains)
-                # BBB typically has a "Website" link with rel="noopener" or similar
-                m = re.search(r'Website[^>]*href=["\'](https?://[^"\']+)', text, re.I)
-                if not m:
-                    m = re.search(r'rel=["\']noopener["\'][^>]*href=["\'](https?://[^"\']+)', text, re.I)
-                if m:
-                    url = m.group(1)
-                    # Filter out known tracking/ad domains
-                    excluded = {'google.com', 'googletagmanager.com', 'facebook.com', 'doubleclick.net', 'google-analytics.com'}
-                    if not any(ex in url for ex in excluded):
-                        result["website"] = url
+            # Years in business fallback
             if not result.get("years_in_business"):
                 m = re.search(r'(\d+)\+?\s*years?\s*in\s*business', text, re.I)
                 if m:
