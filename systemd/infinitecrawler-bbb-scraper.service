@@ -1,0 +1,29 @@
+[Unit]
+Description=InfiniteCrawler BBB Scraper (BBB.org JSON API → PG)
+Documentation=https://www.bbb.org/
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/run/media/growloop/codebase/infinitecrawler
+EnvironmentFile=/run/media/growloop/codebase/infinitecrawler/.env
+Environment=PG_HOST=/var/run/postgresql
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/growloop/.venvs/ic/bin/python3 /run/media/growloop/codebase/infinitecrawler/scripts/bbb_scraper.py
+ExecStop=/bin/kill -TERM $MAINPID
+Restart=always
+RestartSec=60
+MemoryMax=300M
+StartLimitIntervalSec=0
+StartLimitBurst=0
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ic-bbb
+TimeoutStopSec=30
+KillMode=mixed
+KillSignal=SIGTERM
+SendSIGKILL=yes
+
+[Install]
+WantedBy=default.target

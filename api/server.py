@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from api.dependencies import _API_TOKEN
-from api.routers import configs, dashboard, enrichment, leads, luxury, monitor, pipeline, search, system, admin
+from api.routers import bbb, configs, dashboard, enrichment, leads, luxury, monitor, pipeline, search, system, admin
 from api.services import pg_service, redis_service
 
 log = logging.getLogger("api.server")
@@ -67,6 +67,7 @@ def create_app() -> FastAPI:
 
     # Register routers
     app.include_router(leads.router)
+    app.include_router(bbb.router)
     app.include_router(search.router)
     app.include_router(monitor.router)
     app.include_router(configs.router)
