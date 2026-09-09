@@ -1,0 +1,19 @@
+[Unit]
+Description=InfiniteCrawler LinkedIn job detail daemon (Redis job_ids → linkedin_jobs)
+After=postgresql.service
+RequiresMountsFor=/run/media/growloop/codebase/infinitecrawler
+
+[Service]
+Type=simple
+WorkingDirectory=/run/media/growloop/codebase/infinitecrawler
+EnvironmentFile=/run/media/growloop/codebase/infinitecrawler/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/growloop/.venvs/ic/bin/python3 -m daemons.linkedin_job_detail_daemon --loop
+Restart=on-failure
+RestartSec=60
+MemoryMax=250M
+StandardOutput=append:/var/log/infinitecrawler/infinitecrawler-linkedin-jobs-detail.log
+StandardError=append:/var/log/infinitecrawler/infinitecrawler-linkedin-jobs-detail.log
+
+[Install]
+WantedBy=default.target

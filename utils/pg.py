@@ -30,11 +30,11 @@ def get_pg_config(include_timeouts: bool = True) -> dict:
     string with `-c` flags — exactly what libpq expects.
     """
     cfg = {
-        "host": PG_DEFAULT_HOST,
+        "host": os.getenv("PG_HOST", ""),
         "port": os.getenv("PG_PORT", "5432"),
-        "dbname": PG_DEFAULT_DB,
+        "dbname": os.getenv("PG_DB", "infinitecrawler"),
         "user": os.getenv("PG_USER", "postgres"),
-        "password": PG_DEFAULT_PASSWORD,
+        "password": os.getenv("PG_PASSWORD", ""),
     }
     if include_timeouts:
         cfg["options"] = (
@@ -521,6 +521,7 @@ def get_companies_to_enrich(conn, limit: int = 200) -> list[dict]:
     with conn.cursor() as cur:
         cur.execute(FETCH_COMPANIES_TO_ENRICH_SQL + " LIMIT %s", (limit,))
         rows = cur.fetchall()
+    conn.commit()  # end read txn before slow company-page scraping (pitfall #11)
     return [{"company_name": r[0], "occurrences": r[1]} for r in rows]
 
 
@@ -542,6 +543,7 @@ def get_profiles_to_backfill(conn, limit: int = 500) -> list[dict]:
     with conn.cursor() as cur:
         cur.execute(FETCH_PROFILES_TO_BACKFILL_SQL + " LIMIT %s", (limit,))
         rows = cur.fetchall()
+    conn.commit()  # end read txn before snippet parsing (pitfall #11)
     return [{"profile_url": r[0], "snippet": r[1], "profile_title": r[2]} for r in rows]
 
 
@@ -573,3 +575,131 @@ def update_profile_enrichment(
     n = cur.rowcount or 0
     conn.commit()
     return n
+
+
+UPSERT_LINKEDIN_JOB_SQL = """
+    INSERT INTO scraper.linkedin_jobs
+        (job_id, source_url, title, company_name, company_linkedin_slug,
+         company_linkedin_url, location, location_city, listed_at,
+         seniority_level, employment_type, job_function, industries,
+         description_html, description_text, applicants_count,
+         promoted, easy_apply, apply_url,
+         source_sector, source_keyword, sector_id)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    ON CONFLICT (job_id) DO UPDATE SET
+        source_url            = EXCLUDED.source_url,
+        title                 = EXCLUDED.title,
+        company_name          = EXCLUDED.company_name,
+        company_linkedin_slug = EXCLUDED.company_linkedin_slug,
+        company_linkedin_url  = EXCLUDED.company_linkedin_url,
+        location              = EXCLUDED.location,
+        location_city         = EXCLUDED.location_city,
+        listed_at             = EXCLUDED.listed_at,
+        seniority_level       = EXCLUDED.seniority_level,
+        employment_type       = EXCLUDED.employment_type,
+        job_function          = EXCLUDED.job_function,
+        industries            = EXCLUDED.industries,
+        description_html      = EXCLUDED.description_html,
+        description_text      = EXCLUDED.description_text,
+        applicants_count      = EXCLUDED.applicants_count,
+        promoted              = EXCLUDED.promoted,
+        easy_apply            = EXCLUDED.easy_apply,
+        apply_url             = EXCLUDED.apply_url,
+        source_sector         = EXCLUDED.source_sector,
+        source_keyword        = EXCLUDED.source_keyword,
+        sector_id             = EXCLUDED.sector_id,
+        updated_at            = NOW()
+"""
+
+
+def upsert_linkedin_job(conn, job: dict) -> int:
+    """Upsert one job into scraper.linkedin_jobs. Key = job_id (LinkedIn canonical)."""
+    cur = conn.cursor()
+    cur.execute(UPSERT_LINKEDIN_JOB_SQL, (
+        job["job_id"],
+        job["source_url"],
+        job["title"],
+        job["company_name"],
+        job["company_linkedin_slug"],
+        job["company_linkedin_url"],
+        job["location"],
+        job["location_city"],
+        job.get("listed_at"),
+        job["seniority_level"],
+        job["employment_type"],
+        job["job_function"],
+        job["industries"],
+        job["description_html"],
+        job["description_text"],
+        job.get("applicants_count"),
+        job.get("promoted", False),
+        job.get("easy_apply", False),
+        job.get("apply_url", ""),
+        job.get("source_sector", ""),
+        job.get("source_keyword", ""),
+        job.get("sector_id"),
+    ))
+    written = cur.rowcount or 1
+    conn.commit()
+    return written
+
+
+# Query state table helpers
+
+GET_QUERY_STATE_SQL = """
+    SELECT last_start, exhausted_at
+      FROM scraper.linkedin_query_state
+     WHERE keyword = %s AND location = %s
+"""
+
+BUMP_QUERY_STATE_SQL = """
+    INSERT INTO scraper.linkedin_query_state (keyword, location, last_start, last_run_at)
+    VALUES (%s, %s, %s, NOW())
+    ON CONFLICT (keyword, location) DO UPDATE SET
+        last_start = EXCLUDED.last_start,
+        last_run_at = NOW()
+"""
+
+MARK_QUERY_EXHAUSTED_SQL = """
+    UPDATE scraper.linkedin_query_state
+       SET exhausted_at = NOW()
+     WHERE keyword = %s AND location = %s
+"""
+
+
+def get_query_state(conn, keyword: str, location: str) -> tuple[int | None, bool]:
+    """Return (last_start, is_exhausted) for a query pair."""
+    with conn.cursor() as cur:
+        cur.execute(GET_QUERY_STATE_SQL, (keyword, location))
+        row = cur.fetchone()
+    conn.commit()  # end read txn before the slow guest-API call (pitfall #11)
+    if not row:
+        return (0, False)
+    return (row[0], row[1] is not None)
+
+
+def bump_query_state(conn, keyword: str, location: str, last_start: int) -> None:
+    """Update the last_start value for a query pair."""
+    with conn.cursor() as cur:
+        cur.execute(BUMP_QUERY_STATE_SQL, (keyword, location, last_start))
+    conn.commit()
+
+
+def mark_query_exhausted(conn, keyword: str, location: str) -> None:
+    """Mark a query pair as exhausted (hit 975 cap or 0 results)."""
+    with conn.cursor() as cur:
+        cur.execute(MARK_QUERY_EXHAUSTED_SQL, (keyword, location))
+    conn.commit()
+
+
+def get_sector_id(conn, sector_name: str) -> Optional[int]:
+    """Look up sector_id from scraper.sectors by display_name or key."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT id FROM scraper.sectors WHERE name = %s OR display_name = %s",
+            (sector_name, sector_name)
+        )
+        row = cur.fetchone()
+    conn.commit()  # end read txn (pitfall #11)
+    return row[0] if row else None
+

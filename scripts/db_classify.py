@@ -94,6 +94,12 @@ def get_unclassified(conn, limit: int, retry_failed: bool = False) -> list[dict]
                 (limit,),
             )
         rows = cur.fetchall()
+    # Commit the read immediately so the connection does NOT sit `idle in
+    # transaction` during the (slow, retry-prone) LLM call that follows in
+    # classify_to_db. An open read transaction on the autocommit=False
+    # connection trips idle_in_transaction_session_timeout, killing the session
+    # mid-classification (pitfall #11/#13).
+    conn.commit()
     return [dict(zip(cols, r)) for r in rows]
 
 
@@ -139,6 +145,7 @@ def get_stats(conn) -> dict:
             """
         )
         by_sector = dict(cur.fetchall())
+    conn.commit()  # end read txn before LLM/sector-file loading (pitfall #11)
     return {
         "total": row[0],
         "qualified": row[1],

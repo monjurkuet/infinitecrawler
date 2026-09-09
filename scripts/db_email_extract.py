@@ -383,6 +383,12 @@ async def process_batch_both(
             (list(website_by_id),),
         )
         have_email = {row[0] for row in cur.fetchall()}
+    # Commit the read immediately so the connection does NOT sit
+    # `idle in transaction` during the minutes-long browser pass below. An
+    # open read transaction on the long-lived autocommit=False connection
+    # trips idle_in_transaction_session_timeout, killing the connection, and
+    # every subsequent upsert_emails fails with "connection is lost" (pitfall #13).
+    conn.commit()
     todo_browser = [
         {"id": lid, "website": site}
         for lid, site in website_by_id.items()

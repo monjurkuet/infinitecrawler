@@ -445,10 +445,10 @@ def _check_pg_staleness(last_pg_check: float, table: str = "scraper.gmaps_search
         return last_pg_check
     try:
         from psycopg import connect
-        with connect(
-            f"host={PG_HOST} port={PG_PORT} user={PG_USER} password={PG_PASSWORD} dbname={PG_DB}",
-            autocommit=True,
-        ) as conn:
+        conninfo = f"host={PG_HOST} port={PG_PORT} user={PG_USER} dbname={PG_DB}"
+        if PG_PASSWORD:
+            conninfo += f" password={PG_PASSWORD}"
+        with connect(conninfo, autocommit=True) as conn:
             with conn.cursor() as cur:
                 cur.execute(f"SELECT MAX(updated_at) FROM {table}")
                 row = cur.fetchone()
