@@ -646,8 +646,20 @@ def upsert_linkedin_job(conn, job: dict) -> int:
 
 # Query state table helpers
 
-GET_QUERY_STATE_SQL = """
-    SELECT last_start, exhausted_at
+# Re-scan window: a query marked "exhausted" is re-scraped from page 0 once its
+# exhausted_at is older than this interval, so newly-posted jobs get picked up
+# (LinkedIn guest API has no incremental/feed endpoint — full re-pagination is
+# the only way to see new listings). Env-overridable.
+LINKEDIN_RESCAN_INTERVAL = os.environ.get("LINKEDIN_RESCAN_INTERVAL", "7 days")
+
+GET_QUERY_STATE_SQL = f"""
+    SELECT
+        CASE WHEN exhausted_at IS NOT NULL
+                  AND exhausted_at <= NOW() - INTERVAL '{LINKEDIN_RESCAN_INTERVAL}'
+             THEN 0 ELSE last_start END AS last_start,
+        CASE WHEN exhausted_at IS NOT NULL
+                  AND exhausted_at > NOW() - INTERVAL '{LINKEDIN_RESCAN_INTERVAL}'
+             THEN exhausted_at ELSE NULL END AS exhausted_at
       FROM scraper.linkedin_query_state
      WHERE keyword = %s AND location = %s
 """

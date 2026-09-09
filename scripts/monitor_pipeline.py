@@ -70,7 +70,12 @@ DAEMON_HEALTH_CHECKS = [
     {
         "unit": "infinitecrawler-email-extract-loop.service",
         "sql": "SELECT EXTRACT(EPOCH FROM NOW() - max(discovered_at))::int FROM scraper.emails",
-        "max_age_s": int(os.environ.get("WATCHDOG_EMAIL_MAX_AGE_S", "1800")),
+        # The email loop's cycle is ~50-60 min (HTTP pass ~10 min + browser pass
+        # ~40 min over ~900 sites); the browser tail legitimately writes no new
+        # emails for ~40 min. A 30-min threshold here kept restarting the daemon
+        # mid-browser-pass and re-scanning the same sites forever. Match the
+        # cycle length with margin.
+        "max_age_s": int(os.environ.get("WATCHDOG_EMAIL_MAX_AGE_S", "5400")),
     },
 ]
 
@@ -481,7 +486,7 @@ def run_checks(restart: bool = False) -> dict:
     # Service freshness checks
     if email_stale_min != "error":
         stale = int(email_stale_min)
-        if stale > 45:
+        if stale > 75:
             is_healthy = False
             state = "active" if email_service_active else "inactive"
             issues.append(f"Email extraction stale: no emails written for {stale} min (service {state})")

@@ -82,6 +82,10 @@ MAX_REDIRECTS = 3
 BROWSER_CONCURRENCY = int(os.environ.get("BROWSER_CONCURRENCY", "3"))
 BROWSER_NAV_DELAY = float(os.environ.get("BROWSER_NAV_DELAY", "0.2"))
 BROWSER_PAGE_TIMEOUT = int(os.environ.get("BROWSER_PAGE_TIMEOUT", "60"))
+# Hard ceiling on the whole browser pass. After a pinchtab crash every remaining
+# navigate hangs ~BROWSER_PAGE_TIMEOUT (60s) each; 928 sites × 60s / 3 workers ≈
+# 5h before this bound existed — the daemon looked "active" but crawled nowhere.
+BROWSER_PASS_BUDGET_SEC = float(os.environ.get("BROWSER_PASS_BUDGET_SEC", "5400"))
 
 # Source tag stamped on every email row this process writes. Main loop sets
 # it to "unified" when --unified is passed (listing_id then refers to
@@ -426,7 +430,16 @@ async def process_batch_both(
 
     tasks = [asyncio.create_task(one(lst)) for lst in todo_browser]
     try:
-        await asyncio.gather(*tasks, return_exceptions=True)
+        await asyncio.wait_for(
+            asyncio.gather(*tasks, return_exceptions=True),
+            timeout=BROWSER_PASS_BUDGET_SEC,
+        )
+    except asyncio.TimeoutError:
+        log.warning(
+            "browser pass budget exceeded (%.0fs) — aborting, %d/%d processed "
+            "(pinchtab likely down; will resume next cycle)",
+            BROWSER_PASS_BUDGET_SEC, browser_processed, len(todo_browser),
+        )
     finally:
         await pt.cleanup()
 
