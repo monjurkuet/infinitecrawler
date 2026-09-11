@@ -271,7 +271,7 @@ def bbb_api_search(keyword: str, location: str, page: int = 1) -> dict:
         "User-Agent": USER_AGENT,
     }
     try:
-        with httpx.Client(proxy=BBB_PROXY, timeout=30, follow_redirects=True) as c:
+        with httpx.Client(**get_proxy(), timeout=30, follow_redirects=True) as c:
             r = c.get("https://www.bbb.org/api/search", params=params, headers=headers)
             r.raise_for_status()
             return r.json()
