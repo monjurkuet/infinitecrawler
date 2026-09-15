@@ -276,6 +276,29 @@ bash /run/media/growloop/codebase/data-archive/backup_all.sh --full   # force al
 
 The legacy `backups/ic_pg_*.dump.zst` files at the repo root are an outdated manual format — superseded by `data-archive` and not uploaded; safe to ignore (or `rm`).
 
+## Recent Changes
+
+### 2026-09-15 — "Cleanse & recovery" pass
+
+**Proxy & connectivity**
+- LinkedIn jobs + BBB profile enrichment pinned to **Datasolved `datasolved-cf`** (Cloudflare-aware exit). Earlier 407 auth failures (stale `datasolved-cf` password) replaced by current credential in `.env`. LinkedIn jobs pipeline (search → detail → company) verified live.
+- Decision record (locked): for CF-blocked sources, route through `datasolved-cf` over plain HTTP. Headless browsers only for pages that need JS or session cookies. BBB's `/api/search` JSON feed deliberately goes **direct** — no proxy — for latency + headroom.
+
+**Data quality fixes**
+- `bbb_scraper.py::enrich_profile`: social/CTA leaks closed (Facebook/Yelp/Instagram from the `bpr-header-contact` "Visit Website" anchor now taken to `social_links` jsonb, not `website`). Same class rule as pitfall #34c.
+- `utils/urls.py`: junk-host blocklist widened (`brand.site`, `business.site`, `carrd.co`, `weebly`, `wix`, `squarespace`, etc.).
+- `utils/pg.py::upsert_emails`: cross-source resolution. `emails.listing_id` is FK'd into `gmaps_listings`, but the unified extractor emits `websites.id`. Resolution now goes `websites.source_id → gmaps_listings.id` (matched by source_id join). Unresolvable rows now land with `listing_id=NULL` instead of raising an FK error — previously ~1,029 emails were silently dropped each day.
+- Purges: 51 junk `bbb_listings.website` (Facebook/brand-site), 9,964 `gmaps_listings.website` with social/builder hosts, 2,152 rows from `scraper.websites`. Pending re-crawl restores legitimate ones.
+
+**New daemon**
+- `scripts/bbb_backfill.py` + `systemd/infinitecrawler-bbb-backfill.service`: continuous sweep over `bbb_listings` rows that never had `website`/`years_in_business` populated. Walks via the same proxy ladder, uses the same `mark_enriched` write path. Live-drain rate ~1,700/hr → full backlog (~5,400 old rows) in ~3 hours.
+
+**Where things stand at end of day 2026-09-15**
+- 21 units active, 0 failed, 0 restarts since final restart wave.
+- BBB website coverage: 7.1% → 12.3% (during today's ramp; expected to reach ~50-60% of rows by tonight as backfill finishes).
+- Emails method mix: 6,086 http / 229 browser over last 24h (browser pass up from near-0).
+- gmaps_listings 1,002,047 total rows; 86,446 unique phone/website/rating rows from gmaps_listing source.
+
 ## Documentation
 
 - [`AGENTS.md`](AGENTS.md) — Agent operating guide (stack, conventions, gotchas)

@@ -172,15 +172,38 @@ BATCH_SIZE = 15             # BBB fixed page size
 MAX_PAGES_PER_QUERY = 15    # BBB hard cap
 SWEEP_SLEEP = 300           # seconds between sweeps (5 min)
 
-# HTTP proxy for BBB (optional, from env)
-BBB_PROXY = os.environ.get("BBB_PROFILE_PROXY", "")
+# HTTP proxy ladder for BBB: try CF flavor, then res, then plain residential.
+# Each adds a new exit IP; 3 flavors × 70-80% pass ≈ >=96% effective success.
+BBB_PROXIES = [
+    p for p in (
+        os.environ.get("BBB_PROFILE_PROXY",      ""),
+        os.environ.get("BBB_PROFILE_PROXY_RES",  ""),
+        os.environ.get("BBB_PROFILE_PROXY_PLAIN",""),
+    ) if p
+]
+BBB_PROXY = BBB_PROXIES[0] if BBB_PROXIES else ""
 
 
 def get_proxy():
-    """Return proxy config or empty dict."""
+    """Return proxy config or empty dict (first proxy only — used by search path)."""
     if BBB_PROXY:
         return {"proxy": BBB_PROXY}
     return {}
+
+
+_CF_WALL_MARKERS = (
+    "cf-challenge", "Just a moment", "cf-browser-verification",
+    "challenge-platform", "cf-im-under-attack",
+)
+
+
+def _is_cf_wall(resp) -> bool:
+    if resp.status_code == 403:
+        return True
+    if resp.status_code != 200:
+        return False
+    text_low = resp.text[:5000].lower()
+    return any(m in text_low for m in _CF_WALL_MARKERS)
 
 
 # Niches targeting handyman / REO / property preservation + general home services
@@ -311,17 +334,40 @@ def parse_search_results(response: dict) -> list:
 
 
 # ── Profile enrichment (via proxy) ──────────────────────────────────────────
-
 def enrich_profile(profile_url: str) -> dict:
-    """Fetch BBB profile page via proxy and extract extra data from JSON-LD + HTML."""
-    if not profile_url or not BBB_PROXY:
+    """Fetch BBB profile page via proxy ladder; rotate flavors on CF-wall."""
+    # Load proxy ladder inside the function so load_dotenv() from the caller
+    # (run() invokes it before workers start) is respected. The module-level
+    # constants are captured at import time, before .env lands in os.environ.
+    proxies = [
+        p for p in (
+            os.environ.get("BBB_PROFILE_PROXY",       ""),
+            os.environ.get("BBB_PROFILE_PROXY_RES",   ""),
+            os.environ.get("BBB_PROFILE_PROXY_PLAIN", ""),
+        ) if p
+    ]
+    if not profile_url or not proxies:
+        return {}
+    url = f"https://www.bbb.org{profile_url}"
+    last_exc = None
+    for proxy in proxies:
+        try:
+            with httpx.Client(proxy=proxy, timeout=30, follow_redirects=True) as c:
+                r = c.get(url, headers={"User-Agent": USER_AGENT, "Accept": "text/html"})
+                if _is_cf_wall(r):
+                    continue  # try next proxy flavor
+                if r.status_code != 200:
+                    return {}
+                text = r.text
+                break  # got a real 200, parse below
+        except Exception as exc:
+            last_exc = exc
+            continue
+    else:
+        if last_exc:
+            log.debug(f"enrich_profile all proxies errored for {url}: {last_exc}")
         return {}
     try:
-        with httpx.Client(proxy=BBB_PROXY, timeout=30, follow_redirects=True) as c:
-            r = c.get(f"https://www.bbb.org{profile_url}", headers={"User-Agent": USER_AGENT})
-            if r.status_code != 200 or "Just a moment" in r.text:
-                return {}
-            text = r.text
             result = {}
             
             # Try JSON-LD first (structured data)
@@ -365,12 +411,16 @@ def enrich_profile(profile_url: str) -> dict:
             
             # Primary: BBB profile header contact block ("Visit Website" link,
             # e.g. <div class="bpr-header-contact"><a href="https://biz.com/" ...>Visit Website</a>)
+            # Blocklist applies here too — a Facebook "Visit Website" CTA is not a website.
             if not result.get("website"):
                 m = re.search('<div class="bpr-header-contact">(.*?)</div>', text, re.DOTALL | re.IGNORECASE)
                 if m:
                     w = re.search('<a[^>]+href="([^"]+)"[^>]*>.*?Visit Website</a>', m.group(1), re.DOTALL | re.IGNORECASE)
                     if w and w.group(1).startswith("http"):
-                        result["website"] = w.group(1)
+                        if not is_social_url(w.group(1)):
+                            result["website"] = w.group(1)
+                        else:
+                            result.setdefault("social_links", []).append(w.group(1))
 
             # Fallback: extract all anchor tags and find business website
             if not result.get("website"):
@@ -508,15 +558,14 @@ def mark_enriched(conn, business_id: str, fields: dict):
                     "UPDATE scraper.bbb_listings SET website=%s, updated_at=NOW() WHERE business_id=%s",
                     (clean, business_id),
                 )
-            elif is_social_url(fields["website"]):
-                # Business's only link is a social profile — keep it, but not as website
-                cur.execute(
-                    """UPDATE scraper.bbb_listings
-                       SET social_links = COALESCE(social_links,'[]'::jsonb) || jsonb_build_array(%s::text),
-                           updated_at = NOW()
-                       WHERE business_id=%s AND NOT (COALESCE(social_links,'[]'::jsonb) @> jsonb_build_array(%s::text))""",
-                    (fields["website"], business_id, fields["website"]),
-                )
+        for soc in fields.get("social_links") or []:
+            cur.execute(
+                """UPDATE scraper.bbb_listings
+                   SET social_links = COALESCE(social_links,'[]'::jsonb) || jsonb_build_array(%s::text),
+                       updated_at = NOW()
+                   WHERE business_id=%s AND NOT (COALESCE(social_links,'[]'::jsonb) @> jsonb_build_array(%s::text))""",
+                (soc, business_id, soc),
+            )
         if fields.get("years_in_business"):
             cur.execute(
                 "UPDATE scraper.bbb_listings SET years_in_business=%s, updated_at=NOW() WHERE business_id=%s",
@@ -616,7 +665,14 @@ def main():
         dbname=os.environ.get("PG_DB", "infinitecrawler"),
     )
     ensure_schema(conn)
-    log.info(f"BBB scraper started (proxy={'set' if BBB_PROXY else 'none'})")
+    proxies_live = [
+        p for p in (
+            os.environ.get("BBB_PROFILE_PROXY",       ""),
+            os.environ.get("BBB_PROFILE_PROXY_RES",   ""),
+            os.environ.get("BBB_PROFILE_PROXY_PLAIN", ""),
+        ) if p
+    ]
+    log.info(f"BBB scraper started (proxy={'set n=' + str(len(proxies_live)) if proxies_live else 'none'})")
 
     # Seed the queue
     seeded = seed_initial_queries()

@@ -28,6 +28,10 @@ TRACKING_DOMAINS = frozenset({
     "googletagmanager.com", "google-analytics.com", "doubleclick.net",
     "gstatic.com", "googleapis.com", "adobedtm.com", "livechatinc.com",
     "cloudflare.com", "jsdelivr.net", "unpkg.com", "schema.org",
+    # Generic site-builder / domain-junk hostnames — concrete signals we saw
+    # polluting `bbb_listings.website` post-recovery.
+    "brand.site", "business.site", "carrd.co", "weebly.com", "wix.com",
+    "squarespace.com", "webnode.com", "jimdo.com", "strikingly.com",
 })
 
 BLOCKED_DOMAINS = SOCIAL_DOMAINS | TRACKING_DOMAINS

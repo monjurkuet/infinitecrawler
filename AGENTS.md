@@ -81,6 +81,7 @@ infinitecrawler/
 7. **email_extract has two modes**: `--loop` (perpetual, 30s gap) and one-shot (every 2h safety net). Both must stay enabled.
 8. **Phantom-row sweeper**: `scripts/phantom_sweeper.py` runs via `infinitecrawler-phantom-sweeper.timer` (every 30min). It requeues bare-shell rendered URLs from `gmaps:phantom` back to `gmaps:pending`. Health: `LLEN gmaps:phantom` ≤ 50; name-only rows in last-hour gmaps_listing inserts < 5%.
 9. **Config files with API keys are gitignored** — `config/places_api_daemon.yaml` and `config/nearby_scanner.yaml` are not tracked. Use the `.yaml.example` templates and `PLACES_API_KEYS` env var.
+10. **BBB pipeline**: `scripts/bbb_scraper.py` (queue-driven listing scraper; search is direct, profile enrichment rotates a 3-flavor Datasolved proxy ladder from `BBB_PROFILE_PROXY{,_RES,_PLAIN}`) plus `scripts/bbb_backfill.py` (`infinitecrawler-bbb-backfill.service`) which sweeps old rows missing `website`/`years_in_business` and reuses the same write path. Social/junk URLs (`facebook.com`, `brand.site`, etc.) land in `bbb_listings.social_links` (jsonb) not `bbb_listings.website` — enforced by `utils/urls.normalize_website`.
 
 ## API Daemon vs Browser Daemon
 

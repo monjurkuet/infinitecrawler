@@ -164,17 +164,58 @@ def upsert_emails(conn, emails: list[dict]) -> int:
     Each dict must have keys: listing_id, email.
     Optional: extraction_method, is_obfuscated, context_snippet,
     website_url, email_type, source.
+
+    FK constraint emails_listing_id_fkey points to gmaps_listings, but the
+    unified extractor drives from websites.id. We resolve websites.id back
+    to gmaps_listings.id (by joining websites.url -> gmaps_listings.website)
+    so an FK miss does not silently drop the row; if no mapping exists the
+    row becomes an orphan (listing_id NULL) instead of crashing the upsert.
     Returns number of rows written.
     """
     if not emails:
         return 0
+
+    # Pre-resolve unique unified-source listing_ids that aren't already
+    # in gmaps_listings. Skip any that resolve cleanly; mark the rest None
+    # so the FK can't crash the row.
+    unified_ids = {e["listing_id"] for e in emails if e.get("source") == "unified"}
+    candidates = [i for i in unified_ids if not _listing_id_in_gmaps(conn, i)]
+    resolved: dict[int, int] = {}
+    if candidates:
+        with conn.cursor() as cur:
+            # Map websites.id -> gmaps_listings.id via normalized URL.
+            cur.execute(
+                """
+                SELECT w.id, g.id
+                FROM scraper.websites w
+                JOIN scraper.gmaps_listings g
+                  ON g.id = (w.source_id)::bigint
+                WHERE w.id = ANY(%s)
+                  AND w.source = 'gmaps'
+                """,
+                (candidates,),
+            )
+            for wid, gid in cur.fetchall():
+                if wid not in resolved:
+                    resolved[wid] = gid
+        conn.commit()  # end the read txn
+
     written = 0
     with conn.cursor() as cur:
         for e in emails:
             try:
+                lid = e["listing_id"]
+                if e.get("source") == "unified" and lid in candidates:
+                    if lid not in resolved:
+                        # No corresponding gmaps_listings row — store as
+                        # orphan email with listing_id NULL (FK allows NULL
+                        # only if the column is nullable).
+                        lid = None
+                    else:
+                        lid = resolved[lid]
                 cur.execute("SAVEPOINT sv_row")
                 cur.execute(UPSERT_EMAIL_SQL, (
-                    e["listing_id"],
+                    lid,
                     e["email"],
                     e.get("extraction_method", "http"),
                     e.get("is_obfuscated", False),
@@ -196,13 +237,18 @@ def upsert_emails(conn, emails: list[dict]) -> int:
             conn.commit()
             return written
         except (psycopg.OperationalError, ConnectionError):
-            # sync retry; caller is non-async
             if attempt < 2:
                 import time
                 time.sleep(0.5 * (attempt + 1))
                 continue
             logger.error("upsert_emails: commit failed after 3 attempts")
             return 0
+
+
+def _listing_id_in_gmaps(conn, listing_id: int) -> bool:
+    with conn.cursor() as cur:
+        cur.execute("SELECT 1 FROM scraper.gmaps_listings WHERE id = %s", (listing_id,))
+        return cur.fetchone() is not None
 
 
 # ──────────────────────────────────────────────────────────────────────────
