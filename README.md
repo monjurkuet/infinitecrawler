@@ -100,9 +100,40 @@ PostgreSQL on local socket (or TCP 127.0.0.1:5432). Redis on localhost for queue
 - **Premium dashboard** — self-serve subscriber SPA on `:5173` + JWT API on `:8016` (see `PREMIUM_DASHBOARD.md`)
 - **LinkedIn enrichment** — three loops: profile backfill (6h, re-parses DDGS snippets for location/country/connections/headline), company loop (30min, slug → public-page → industry/size/employees/followers/HQ/website), firehose (decision-maker discovery)
 - **Health monitoring** — Pipeline monitor script + systemd watchdog (15min) with auto-heal
+- **Live status dashboard** — `scripts/ic_status.sh` renders a single-screen live board: daemons up/down, Redis queue depths, 1h/24h activity per data class (seeds, listings, emails http/browser, LinkedIn jobs BD+global, nearby grid), fill-rate against baselines, backlog drift, dashboards liveness. `--watch [s]` re-renders every N seconds (default 30).
 - **Ops dashboard (admin)** — Vite + React SPA `web-admin/` on `:5174` (`infinitecrawler-web-admin.service`):
   Bearer login against the internal `:8015` API, Overview/Daemons/Queues/Logs pages.
   Units, queues, tables, services. (Older static SPA on `:8015/admin` is the fallback.)
+
+## Live status & logs
+
+The fastest way to see "is everything working":
+
+```bash
+./scripts/ic_status.sh          # one-shot snapshot
+./scripts/ic_status.sh --watch      # refresh every 30s
+./scripts/ic_status.sh --watch 10   # refresh every 10s
+```
+
+Sections it renders:
+
+| Section | What you get |
+|---|---|
+| LIVE NOW | daemon up/down count, Redis pending/processing, phantom depth, currently-extracting URLs, last flush timestamp |
+| ACTIVITY | 1h / 24h deltas per source: GMaps seeds, browser listings (created/updated), emails http/browser, **LinkedIn jobs (BD + global, split)**, nearby grid cells |
+| BBB ACTIVITY | listings by state (new 1h/24h), scrape jobs done/running, queue pending/processing/completed |
+| DATA QUALITY | field fill % (phone / website / rating / address / category) vs baseline |
+| BACKLOGS | uncrawled seeds, websites awaiting email scan, unclassified listings, nearby grid pending |
+| TOTALS | all-time counts: listings, emails, linkedin profiles/companies/jobs |
+| DASHBOARDS | :8015 api, :8016 premium-api, :5173 premium web, :9868 pinchtab |
+
+DB connection: `PG_HOST` / `PG_PORT` env vars win; otherwise read from `.env`; otherwise falls back to the local `/var/run/postgresql` socket. Works identically whether PG is local or Tailscale-remote.
+
+Complementary log sources:
+
+- **Per-daemon logs**: `/var/log/infinitecrawler/infinitecrawler-<daemon>.log` (e.g. `infinitecrawler-listing.log`, `infinitecrawler-linkedin-jobs-search.log`). Tail one with `strings <log> | tail` — some are binary-corrupted from concurrent append, but `strings` recovers them.
+- **systemd journal**: `journalctl --user -u infinitecrawler-<daemon>.service -f` for the unit view of the same stream.
+- **Watchdog** runs every 15 min and decides what's stale; manually: `bash scripts/watchdog.sh --restart`.
 
 ## LinkedIn loops (systemd, no API key)
 

@@ -7,7 +7,19 @@
 #           -> EMAIL TREND -> TOTALS -> DASHBOARDS.
 set -uo pipefail
 
-PSQL="psql -h /var/run/postgresql -U postgres -d infinitecrawler -tA -F|"
+# DB connection: PG_HOST / PG_PORT env override if set, else pull from
+# .env in the repo (works whether IC's PG is local unix-socket or remote via
+# Tailscale like the current 100.108.5.65).
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [ -z "${PG_HOST:-}" ] && [ -f "$REPO_ROOT/.env" ]; then
+  PG_HOST=$(grep -E '^PG_HOST=' "$REPO_ROOT/.env" | head -1 | cut -d= -f2-)
+  PG_PORT=$(grep -E '^PG_PORT=' "$REPO_ROOT/.env" | head -1 | cut -d= -f2-)
+fi
+PG_HOST="${PG_HOST:-/var/run/postgresql}"
+PG_PORT="${PG_PORT:-5432}"
+PG_USER="${PG_USER:-postgres}"
+PG_DB="${PG_DB:-infinitecrawler}"
+PSQL="psql -h $PG_HOST -p $PG_PORT -U $PG_USER -d $PG_DB -tA -F|"
 export PGPASSWORD="${PGPASSWORD:-changeme}"
 LOGDIR=/var/log/infinitecrawler
 
