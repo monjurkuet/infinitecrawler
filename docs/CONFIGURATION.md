@@ -10,12 +10,28 @@ The framework uses YAML files to define scraper behavior. This allows for rapid 
 | :--- | :--- | :--- | :--- |
 | `name` | string | Yes | Human-readable name of the scraper |
 | `content_type` | enum | Yes | `dynamic` (nodriver) or `listing_crawler` |
-| `browser_automation` | string | No | Legacy browser engine key; normalized to `browser.automation` |
-| `headless` | boolean | No | Legacy top-level headless flag; normalized to `browser.headless` |
+| `browser` | object | No | Browser settings (`automation`, `headless`, optional `executable_path`) |
+
+### Browser Section
+
+```yaml
+browser:
+  automation: "nodriver"
+  headless: true
+  executable_path: "/usr/bin/chromium"  # optional
+```
+
+Executable path precedence at runtime is:
+1. CLI `--browser-executable-path`
+2. Env `BROWSER_EXECUTABLE_PATH`
+3. Config `browser.executable_path`
+4. nodriver autodiscovery
 
 ### Input Section
 
 Loads URLs or queries from a source.
+
+For dynamic scraping, `input` is required only when running batch mode (no `--query` CLI override).
 
 ```yaml
 input:
@@ -57,6 +73,8 @@ queue:
       failed: "scraper:failed"        # Failed key
     visibility_timeout: 300  # Seconds before requeue
 ```
+
+For dynamic scraping, `queue` is required only when running batch mode (no `--query` CLI override).
 
 ### Selectors
 
@@ -192,6 +210,7 @@ content_type: "dynamic"
 browser:
   automation: "nodriver"
   headless: true
+  executable_path: "/usr/bin/chromium"  # Optional override
 
 # Input: Load queries from file
 input:

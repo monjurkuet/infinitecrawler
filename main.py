@@ -3,13 +3,13 @@
 Flexible Web Scraping Framework
 Usage:
   # Batch mode (process all queries from input file)
-  python main.py --config config/google_maps.yaml
+  uv run python main.py --config config/google_maps.yaml
 
   # Single query mode (CLI override)
-  python main.py --config config/google_maps.yaml --query "restaurants NYC"
+  uv run python main.py --config config/google_maps.yaml --query "restaurants NYC"
 
   # Listing crawler (URLs from file)
-  python main.py --config config/gmaps_listings_working.yaml
+  uv run python main.py --config config/gmaps_listings_working.yaml
 """
 
 import argparse
@@ -18,6 +18,7 @@ import logging
 import nodriver as uc
 from dotenv import load_dotenv
 from factory.scraper_factory import ScraperFactory
+from utils.config import ConfigError
 
 
 class InstanceLabelFilter(logging.Filter):
@@ -51,6 +52,20 @@ def configure_instance_logging(instance_label: str):
         )
 
 
+def validate_runtime_mode(config, query: str | None):
+    """Validate config/runtime mode combinations that depend on CLI query overrides."""
+    content_type = config.get("content_type", "dynamic")
+    if content_type != "dynamic":
+        return
+    if query:
+        return
+    if not config.get("input") or not config.get("queue"):
+        raise ConfigError(
+            "Dynamic batch mode requires both 'input' and 'queue' sections when --query is not provided. "
+            "Either provide --query for single-query mode or add input/queue config."
+        )
+
+
 async def main():
     """Main entry point"""
     load_dotenv()
@@ -74,6 +89,11 @@ async def main():
         default="main",
         help="Label used in logs when running multiple crawler processes",
     )
+    parser.add_argument(
+        "--browser-executable-path",
+        default=None,
+        help="Optional absolute path to Chrome/Chromium executable",
+    )
 
     args = parser.parse_args()
 
@@ -86,6 +106,7 @@ async def main():
         # Load config
         config = ScraperFactory.load_config(args.config)
         content_type = config.get("content_type", "dynamic")
+        validate_runtime_mode(config, args.query)
 
         # For dynamic scrapers:
         # - If --query is provided: single query mode (CLI override)
@@ -109,6 +130,7 @@ async def main():
             headless=args.headless,
             query=args.query,
             instance_label=args.instance_label,
+            browser_executable_path=args.browser_executable_path,
         )
 
         # Run scraping (scraper handles single vs batch mode)

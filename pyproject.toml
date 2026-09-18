@@ -5,12 +5,27 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "beautifulsoup4>=4.14.3",
-    "python-dotenv>=1.1.0",
-    "nodriver>=0.48.1",
-    "psycopg[binary]>=3.2.6",
-    "pyyaml>=6.0.3",
-    "redis>=5.0.0",
-    "requests>=2.32.5",
-    "tqdm>=4.67.1",
+ "beautifulsoup4>=4.14.3",
+ "python-dotenv>=1.1.0",
+ "nodriver>=0.48.1",
+ "psycopg[binary]>=3.2.6",
+ "pyyaml>=6.0.3",
+ "redis>=5.0.0",
+ "requests>=2.32.5",
+ "tqdm>=4.67.1",
 ]
+
+[dependency-groups]
+dev = [
+ "pytest>=8.4.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+# UV does not support native post-sync hooks yet.
+# After running `uv sync`, always apply nodriver patches:
+#   ./sync.sh        (recommended — wraps uv sync + patch)
+#   make sync        (equivalent)
+#   uv run python scripts/patch_nodriver.py  (manual, after uv sync)

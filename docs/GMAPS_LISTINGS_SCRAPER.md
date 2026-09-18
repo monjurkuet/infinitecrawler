@@ -5,14 +5,14 @@ A production-grade scraper for extracting business listings from Google Maps. Ex
 ## Quick Start
 
 ```bash
-# Activate virtual environment
-source .venv/bin/activate
+# Sync dependencies (includes dev tools like pytest)
+uv sync --dev
 
 # Run with working configuration
-python main.py --config config/gmaps_listings_working.yaml
+uv run python main.py --config config/gmaps_listings_working.yaml
 
 # Run headless (no browser window)
-python main.py --config config/gmaps_listings_working.yaml --headless
+uv run python main.py --config config/gmaps_listings_working.yaml --headless
 
 # Run 4 parallel crawler instances
 uv run python scripts/run_listing_crawlers.py --instances 4 --config config/gmaps_listings_working.yaml
@@ -368,7 +368,7 @@ ORDER BY count DESC;
 **Solution**:
 ```bash
 # Run in headed mode to see what's happening
-python main.py --config config/gmaps_listings_working.yaml --headless false
+uv run python main.py --config config/gmaps_listings_working.yaml --no-headless
 ```
 
 #### 2. "Redis connection refused"
@@ -446,7 +446,7 @@ workers:
 infinitecrawler/
 ├── config/
 │   ├── gmaps_listings_working.yaml    # Main config
-│   └── gmaps_listings.yaml
+│   └── gmaps_listings_working.yaml
 ├── strategies/
 │   ├── extraction/
 │   │   └── multi_step.py              # Extraction logic

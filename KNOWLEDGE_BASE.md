@@ -118,7 +118,7 @@ classDiagram
 | `strategies/extraction/` | Data Extraction | `generic_selector.py`, `multi_step.py` |
 | `strategies/output/` | Data Persistence | `jsonl_file.py`, `null_output.py`, `postgresql.py`, `composite.py` |
 | `utils/` | Utility Modules | `helpers.py` (DelayManager, URLProcessor) |
-| `config/` | YAML Configuration Files | `google_maps.yaml`, `gmaps_listings.yaml`, `yelp_example.yaml` |
+| `config/` | YAML Configuration Files | `google_maps.yaml`, `gmaps_listings_working.yaml`, `yelp_example.yaml` |
 | `output/` | Data Persistence Directory | legacy `*.jsonl` files (default Google Maps configs now write to PostgreSQL) |
 | `main.py` | CLI Entry Point | Argument parsing, logging setup |
 | `.agents/` | Agent Personas & Protocols | `knowledge-base.md`, `refinement-agent.md` |
@@ -237,7 +237,7 @@ classDiagram
 | `search_url_template` | string | URL pattern with `{query}` | `https://site.com/search?q={query}` |
 | `pagination_strategy` | string | "infinite_scroll", "next_button" | "infinite_scroll" |
 | `extraction_strategy` | string | "generic_selector" | "generic_selector" |
-| `output_strategy` | string | "jsonl_file", "postgresql_upsert", "postgresql_listing_upsert", "composite" | "postgresql_upsert" for Google Maps search configs |
+| `output.strategy` | string | "jsonl_file", "postgresql_upsert", "postgresql_listing_upsert", "composite" | "postgresql_upsert" for Google Maps search configs |
 | `selectors` | dict | CSS selectors for extraction | `{items: "div.card", fields: {...}}` |
 | `rate_limit` | int | Seconds between actions | `2` |
 
@@ -304,7 +304,7 @@ classDiagram
 redis-server
 
 # Run the crawler
-uv run python main.py --config config/gmaps_listings.yaml
+uv run python main.py --config config/gmaps_listings_working.yaml
 ```
 
 ### Run Search-Based Scraper

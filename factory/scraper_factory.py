@@ -2,7 +2,7 @@ import yaml
 import logging
 from typing import Dict, Any
 from base.scraper import BaseScraper
-from utils.config import normalize_config, validate_config, ConfigError
+from utils.config import normalize_config, validate_config
 
 
 class ScraperFactory:
@@ -10,6 +10,7 @@ class ScraperFactory:
 
     # Strategy mapping - will be populated when needed
     _STRATEGY_MAP = None
+    _STRATEGY_CATALOG = None
 
     @classmethod
     def get_strategy_map(cls):
@@ -22,6 +23,9 @@ class ScraperFactory:
             from strategies.pagination.next_button import NextButtonPaginationStrategy
             from strategies.extraction.generic_selector import (
                 GenericSelectorExtractionStrategy,
+            )
+            from strategies.extraction.google_maps import (
+                GoogleMapsExtractionStrategy,
             )
             from strategies.extraction.multi_step import MultiStepExtractionStrategy
             from strategies.output.jsonl_file import (
@@ -52,6 +56,7 @@ class ScraperFactory:
                 "next_button": NextButtonPaginationStrategy,
                 # Extraction strategies
                 "generic_selector": GenericSelectorExtractionStrategy,
+                "google_maps": GoogleMapsExtractionStrategy,
                 "multi_step": MultiStepExtractionStrategy,
                 # Output strategies
                 "jsonl_file": JsonlFileOutputStrategy,
@@ -74,13 +79,39 @@ class ScraperFactory:
         return cls._STRATEGY_MAP
 
     @classmethod
+    def get_strategy_catalog(cls):
+        """Return valid strategy names grouped by strategy type."""
+        if cls._STRATEGY_CATALOG is None:
+            cls._STRATEGY_CATALOG = {
+                "pagination": {"infinite_scroll", "next_button"},
+                "extraction": {"generic_selector", "google_maps", "multi_step"},
+                "output": {
+                    "jsonl_file",
+                    "secondary_jsonl",
+                    "null_output",
+                    "postgresql",
+                    "postgresql_upsert",
+                    "postgresql_listing_upsert",
+                    "composite",
+                },
+                "input": {"file_url_loader", "postgresql_uncrawled_gmaps"},
+                "queue": {"redis_queue"},
+                "navigation": {
+                    "tab_navigator",
+                    "accordion_navigator",
+                    "modal_navigator",
+                },
+            }
+        return cls._STRATEGY_CATALOG
+
+    @classmethod
     def load_config(cls, config_path: str) -> Dict[str, Any]:
         """Load configuration from YAML file"""
         try:
             with open(config_path, "r") as f:
                 config = yaml.safe_load(f)
             normalized = normalize_config(config or {})
-            validate_config(normalized, cls.get_strategy_map().keys())
+            validate_config(normalized, cls.get_strategy_catalog())
             return normalized
         except Exception as e:
             logging.error(f"Error loading config file {config_path}: {e}")
@@ -106,6 +137,15 @@ class ScraperFactory:
     @classmethod
     def create_strategy(cls, strategy_type: str, strategy_name: str, *args, **kwargs):
         """Create and return a strategy instance"""
+        strategy_catalog = cls.get_strategy_catalog()
+        allowed = strategy_catalog.get(strategy_type)
+        if allowed is None:
+            raise ValueError(f"Unknown strategy type: {strategy_type}")
+        if strategy_name not in allowed:
+            raise ValueError(
+                f"Unknown {strategy_type} strategy '{strategy_name}'"
+            )
+
         strategy_map = cls.get_strategy_map()
         if strategy_name not in strategy_map:
             raise ValueError(f"Unknown strategy: {strategy_name}")

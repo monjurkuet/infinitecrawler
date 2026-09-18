@@ -1,5 +1,5 @@
 from base.scraper import BaseScraper
-from base.browser_manager import BrowserManager
+from base.browser_manager import BrowserManager, resolve_browser_launch_settings
 from factory.scraper_factory import ScraperFactory
 from strategies.output.null_output import NullOutputStrategy
 from utils.helpers import DelayManager
@@ -15,6 +15,7 @@ class DynamicScraper(BaseScraper):
         super().__init__(config, **kwargs)
         self.query = kwargs.get("query", "default")
         self.headless = kwargs.get("headless", True)
+        self.browser_executable_path = kwargs.get("browser_executable_path")
 
         self.input_strategy = None
         self.queue_strategy = None
@@ -39,8 +40,18 @@ class DynamicScraper(BaseScraper):
             if query:
                 self.logger.info(f"Single query mode: {query}")
                 await self.start_browser()
+                # Navigate IMMEDIATELY after browser start to keep the
+                # CDP WebSocket connection alive.  If strategy init takes
+                # too long the connection goes stale and the subsequent
+                # navigation handshake times out.
+                search_url = await self.get_search_url(query)
+                self.logger.info(f"Navigating to: {search_url[:80]}...")
+                await self.navigate_to_search(search_url)
+                # Now initialise strategies while the page renders
                 await self.initialize_strategies(query)
-                await self._scrape_single_query(query)
+                await self.delay_manager.apply_delay("between_requests")
+                self.query = query
+                await self.scrape_all_results()
             else:
                 await self.start_browser()
                 await self.initialize_strategies("")
@@ -227,7 +238,11 @@ class DynamicScraper(BaseScraper):
                         "{query}", sanitized_query
                     )
 
-        output_strategy_name = output_section.get("strategy", "jsonl_file") if output_section else "jsonl_file"
+        output_strategy_name = "jsonl_file"
+        if isinstance(output_section, dict):
+            output_strategy_name = output_section.get("strategy", "jsonl_file")
+            if "strategies" in output_section and "strategy" not in output_section:
+                output_strategy_name = "composite"
         if output_section:
             self.output_strategy = ScraperFactory.create_strategy(
                 "output", output_strategy_name, output_section
@@ -239,20 +254,23 @@ class DynamicScraper(BaseScraper):
 
     async def start_browser(self):
         """Start browser instance."""
-        browser_config = self.config.get("browser", {})
-        engine = browser_config.get(
-            "automation", self.config.get("browser_automation", "nodriver")
+        settings = resolve_browser_launch_settings(
+            self.config,
+            cli_headless=self.headless,
+            cli_browser_executable_path=self.browser_executable_path,
         )
-        headless = browser_config.get("headless", self.headless)
-        page_wait_seconds = browser_config.get("page_wait_seconds", 1.0)
 
         self.browser_manager = BrowserManager(
-            engine=engine,
-            headless=headless,
-            page_wait_seconds=page_wait_seconds,
+            engine=settings["engine"],
+            headless=settings["headless"],
+            page_wait_seconds=settings["page_wait_seconds"],
+            ready_selector=settings["ready_selector"],
+            browser_executable_path=settings["browser_executable_path"],
+            browser_executable_source=settings["browser_executable_source"],
+            browser_path_checks=settings["browser_path_checks"],
         )
         await self.browser_manager.start()
-        self.logger.info(f"Browser started (headless={headless})")
+        self.logger.info("Browser started (headless=%s)", settings["headless"])
 
     async def get_search_url(self, query: str) -> str:
         """Generate search URL based on configuration."""

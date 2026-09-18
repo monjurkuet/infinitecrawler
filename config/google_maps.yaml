@@ -1,18 +1,23 @@
 name: "Google Maps"
 content_type: "dynamic"
-browser_automation: "nodriver"
-headless: true
+
+browser:
+  automation: "nodriver"
+  headless: true
+  # Maximum time to wait for page to become ready.
+  # The ready_selector polls every 2s so the actual wait
+  # is only as long as the page needs (often 20-35s for Maps).
+  page_wait_seconds: 60.0
+  # Poll for result links to appear instead of fixed sleep.
+  ready_selector: "a.hfpxzc"
+
 pagination_strategy: "infinite_scroll"
-extraction_strategy: "generic_selector"
-output_strategy: "postgresql_upsert"
+extraction_strategy: "google_maps"
 
 search_url_template: "https://www.google.com/maps/search/{query}/"
 
 selectors:
   items: "a.hfpxzc"
-  fields:
-    name: "aria-label"
-    url: "href"
 
 pagination:
   container: "div[role='feed']"
@@ -21,14 +26,12 @@ pagination:
   items_selector: "a.hfpxzc"
 
 output:
-  strategy: "postgresql_upsert"
+  strategy: "postgresql_listing_upsert"
   config:
-    database: "infinitecrawler"
     schema: "scraper"
-    table: "gmaps_search_results"
-    key_field: "url"
-    source_type: "gmaps_search"
-    max_results: 10000
+    table: "gmaps_listings"
+    source_type: "google_maps_search"
+    key_field: "source_url"
 
 rate_limit: 2
 proxy_rotation: false

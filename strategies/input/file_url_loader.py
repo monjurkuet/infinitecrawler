@@ -71,12 +71,17 @@ class FileInputStrategy(InputStrategy):
 
         try:
             count = 0
+            seen_in_counter: Set[str] = set()
             with open(self.file_path, "r", encoding="utf-8") as f:
                 for line in f:
                     url = line.strip()
-                    if url and not url.startswith("#"):
-                        if not self.deduplicate or url not in self._seen_urls:
-                            count += 1
+                    if not url or url.startswith("#"):
+                        continue
+                    if self.deduplicate:
+                        if url in seen_in_counter:
+                            continue
+                        seen_in_counter.add(url)
+                    count += 1
             self._total_count = count
             return count
         except Exception as e:

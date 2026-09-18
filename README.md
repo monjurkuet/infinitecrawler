@@ -17,6 +17,12 @@ A modular, configuration-driven web scraping framework designed for modern, dyna
         uv run python main.py --config config/google_maps.yaml --query "restaurants in NYC" --no-headless
         ```
 
+3.  **Bootstrap Browser (Ubuntu hosts)**:
+    If Chrome/Chromium is missing:
+    ```bash
+    uv run python scripts/bootstrap_ubuntu.py
+    ```
+
 ## Storage
 
 - Search results are written to PostgreSQL table `scraper.gmaps_search_results`.

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from typing import Any, Dict, Iterable, Tuple
+from typing import Any, Dict, Iterable, Mapping, Set
 
 
 class ConfigError(ValueError):
@@ -48,12 +48,15 @@ def normalize_config(config: Dict[str, Any]) -> Dict[str, Any]:
         browser["automation"] = normalized["browser_automation"]
     if "headless" in normalized and "headless" not in browser:
         browser["headless"] = normalized["headless"]
+    if "browser_executable_path" in normalized and "executable_path" not in browser:
+        browser["executable_path"] = normalized["browser_executable_path"]
     if browser:
         normalized["browser"] = browser
 
     if "browser" in normalized:
         normalized["browser_automation"] = browser.get("automation", "nodriver")
         normalized["headless"] = browser.get("headless", True)
+        normalized["browser_executable_path"] = browser.get("executable_path")
 
     for section_name in (
         "input",
@@ -77,6 +80,8 @@ def normalize_config(config: Dict[str, Any]) -> Dict[str, Any]:
     if "output_strategy" in normalized:
         output = _wrap_section(normalized.get("output"))
         if "strategies" in output:
+            if "strategy" not in output:
+                output["strategy"] = normalized.get("output_strategy", "composite")
             normalized["output"] = output
         else:
             if "strategy" not in output:
@@ -89,6 +94,11 @@ def normalize_config(config: Dict[str, Any]) -> Dict[str, Any]:
                     if key not in {"strategy", "config"}:
                         del output[key]
             normalized["output"] = output
+    elif isinstance(normalized.get("output"), dict) and "strategies" in normalized["output"]:
+        output = deepcopy(normalized["output"])
+        if "strategy" not in output:
+            output["strategy"] = "composite"
+        normalized["output"] = output
 
     if "secondary_output_strategy" in normalized:
         secondary_output = _wrap_section(normalized.get("secondary_output"))
@@ -121,7 +131,33 @@ def _ensure_dict_section(
     return section
 
 
-def validate_config(config: Dict[str, Any], strategy_names: Iterable[str]) -> None:
+def _catalog_values(
+    strategy_catalog: Mapping[str, Iterable[str]], strategy_type: str
+) -> Set[str]:
+    values = strategy_catalog.get(strategy_type)
+    if values is None:
+        return set()
+    return set(values)
+
+
+def _validate_section_strategy(
+    section_name: str, section: Dict[str, Any], allowed: Set[str]
+) -> None:
+    if not section:
+        return
+
+    strategy_name = section.get("strategy")
+    if not strategy_name:
+        raise ConfigError(
+            f"'{section_name}.strategy' is required when '{section_name}' section is present"
+        )
+    if strategy_name not in allowed:
+        raise ConfigError(f"Unknown {section_name} strategy '{strategy_name}'")
+
+
+def validate_config(
+    config: Dict[str, Any], strategy_catalog: Mapping[str, Iterable[str]]
+) -> None:
     """Validate normalized configuration and raise actionable errors."""
     if not isinstance(config, dict):
         raise ConfigError("Configuration must be a mapping")
@@ -144,30 +180,55 @@ def validate_config(config: Dict[str, Any], strategy_names: Iterable[str]) -> No
         if section is not None and not isinstance(section, dict):
             raise ConfigError(f"'{section_name}' must be a mapping")
 
+    output_allowed = _catalog_values(strategy_catalog, "output")
+    input_allowed = _catalog_values(strategy_catalog, "input")
+    queue_allowed = _catalog_values(strategy_catalog, "queue")
+    navigation_allowed = _catalog_values(strategy_catalog, "navigation")
+    extraction_allowed = _catalog_values(strategy_catalog, "extraction")
+    pagination_allowed = _catalog_values(strategy_catalog, "pagination")
+
     output = _ensure_dict_section(config, "output")
     if output and "strategies" in output:
-        for index, item in enumerate(output.get("strategies", []), 1):
+        strategies = output.get("strategies", [])
+        if not isinstance(strategies, list):
+            raise ConfigError("output.strategies must be a list")
+        for index, item in enumerate(strategies, 1):
             if not isinstance(item, dict):
                 raise ConfigError(f"output.strategies[{index}] must be a mapping")
             strategy_name = item.get("strategy")
             if not strategy_name:
                 raise ConfigError(f"output.strategies[{index}] is missing 'strategy'")
-            if strategy_name not in strategy_names:
+            if strategy_name not in output_allowed:
                 raise ConfigError(
                     f"Unknown output strategy '{strategy_name}' in output.strategies[{index}]"
                 )
     elif output:
-        strategy_name = output.get("strategy", "jsonl_file")
-        if strategy_name not in strategy_names:
-            raise ConfigError(f"Unknown output strategy '{strategy_name}'")
+        _validate_section_strategy("output", output, output_allowed)
 
-    for section_name in ("input", "queue", "secondary_output"):
-        section = config.get(section_name)
-        if not section:
-            continue
-        strategy_name = section.get("strategy")
-        if strategy_name and strategy_name not in strategy_names:
-            raise ConfigError(f"Unknown {section_name} strategy '{strategy_name}'")
+    _validate_section_strategy(
+        "secondary_output",
+        _ensure_dict_section(config, "secondary_output"),
+        output_allowed,
+    )
+    _validate_section_strategy("input", _ensure_dict_section(config, "input"), input_allowed)
+    _validate_section_strategy("queue", _ensure_dict_section(config, "queue"), queue_allowed)
+    _validate_section_strategy(
+        "navigation",
+        _ensure_dict_section(config, "navigation"),
+        navigation_allowed,
+    )
+
+    extraction_section = _ensure_dict_section(config, "extraction")
+    if extraction_section and "strategy" in extraction_section:
+        _validate_section_strategy("extraction", extraction_section, extraction_allowed)
+
+    extraction_strategy = config.get("extraction_strategy")
+    if extraction_strategy and extraction_strategy not in extraction_allowed:
+        raise ConfigError(f"Unknown extraction strategy '{extraction_strategy}'")
+
+    pagination_strategy = config.get("pagination_strategy")
+    if pagination_strategy and pagination_strategy not in pagination_allowed:
+        raise ConfigError(f"Unknown pagination strategy '{pagination_strategy}'")
 
     if content_type == "listing_crawler":
         browser = config.get("browser")

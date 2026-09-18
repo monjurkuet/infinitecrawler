@@ -197,7 +197,7 @@ For extracting detailed information from known URLs.
 
 The factory normalizes legacy config variants before validation and scraper construction.
 
-- `browser_automation` and top-level `headless` are mapped into `browser.automation` and `browser.headless`.
+- Browser config is canonicalized under `browser.*`, including optional `browser.executable_path`.
 - Legacy output keys are converted into the canonical `output.strategy` and `output.config` shape.
 - Missing output now falls back to a null output strategy so scrapers can run without persistence.
 

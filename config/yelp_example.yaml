@@ -1,10 +1,12 @@
 name: "Yelp Example"
 content_type: "dynamic"
-browser_automation: "nodriver"
-headless: true
+
+browser:
+  automation: "nodriver"
+  headless: true
+
 pagination_strategy: "next_button"
 extraction_strategy: "generic_selector"
-output_strategy: "postgresql_upsert"
 
 search_url_template: "https://www.yelp.com/search?find_desc={query}&find_loc=New+York,+NY"
 

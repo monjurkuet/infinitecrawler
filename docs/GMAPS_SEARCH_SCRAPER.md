@@ -5,42 +5,33 @@ A production-grade scraper for extracting business listings from Google Maps sea
 ## Quick Start
 
 ```bash
-# Activate virtual environment
-source .venv/bin/activate
+# Sync dependencies (includes dev tools like pytest)
+uv sync --dev
 
-# Create input file with queries
-echo -e "restaurants in NYC\npizza in LA" > input/search_queries.txt
+# Run with a single query (recommended for the shipped config)
+uv run python main.py --config config/google_maps.yaml --query "pizza in chicago"
 
-# Run in batch mode (process all queries from file)
-python main.py --config config/google_maps.yaml
-
-# Run with single query (CLI override)
-python main.py --config config/google_maps.yaml --query "pizza in chicago"
-
-# Run headless (no browser window)
-python main.py --config config/google_maps.yaml --query "pizza in chicago" --headless
+# Run in headed mode for debugging
+uv run python main.py --config config/google_maps.yaml --query "pizza in chicago" --no-headless
 ```
 
 ## Two Running Modes
 
-### Mode 1: Batch Mode (Default)
+### Mode 1: Single Query Mode (Default for `config/google_maps.yaml`)
 
-Process multiple queries from `input/search_queries.txt` via Redis queue.
+The shipped `config/google_maps.yaml` is single-query oriented.
 
 ```bash
-# 1. Edit queries file
-nano input/search_queries.txt
-
-# 2. Run (processes all queries from file)
-python main.py --config config/google_maps.yaml
+uv run python main.py --config config/google_maps.yaml --query "restaurants in NYC"
 ```
 
-### Mode 2: Single Query Mode (CLI Override)
+### Mode 2: Batch Mode (Requires `input` + `queue` Config)
 
-Process a single query, bypasses Redis queue.
+Batch mode is enabled only when the config includes both `input` and `queue`.
 
 ```bash
-python main.py --config config/google_maps.yaml --query "restaurants in NYC"
+uv run python main.py --config config/google_maps.yaml
+# Fails fast unless input/queue are configured
 ```
 
 ---
@@ -82,36 +73,17 @@ uv pip install psycopg[binary] python-dotenv redis
 
 name: "Google Maps Search"
 content_type: "dynamic"
-browser_automation: "nodriver"
-headless: true
-
-# Input: Load queries from file
-input:
-  strategy: "file_url_loader"
-  config:
-    file_path: "input/search_queries.txt"
-    deduplicate: true
-
-# Queue: Track query processing
-queue:
-  strategy: "redis_queue"
-  config:
-    host: "localhost"
-    port: 6379
-    db: 0
-    keys:
-      pending: "gmaps_search:pending"
-      processing: "gmaps_search:processing"
-      completed: "gmaps_search:completed"
-      failed: "gmaps_search:failed"
-    visibility_timeout: 300
+browser:
+  automation: "nodriver"
+  headless: true
+  executable_path: "/usr/bin/chromium"  # optional override
 
 pagination_strategy: "infinite_scroll"
 extraction_strategy: "generic_selector"
 
 # Output: PostgreSQL + JSONL fallback
-output_strategy: "composite"
 output:
+  strategy: "composite"
   strategies:
     - strategy: "postgresql_upsert"
       config:
@@ -163,29 +135,31 @@ pubs in Portland
 ### PostgreSQL Only
 
 ```yaml
-output_strategy: "postgresql_upsert"
 output:
-  database: "infinitecrawler"
-  schema: "scraper"
-  table: "gmaps_search_results"
-  key_field: "source_url"
-  source_type: "gmaps_search"
+  strategy: "postgresql_upsert"
+  config:
+    database: "infinitecrawler"
+    schema: "scraper"
+    table: "gmaps_search_results"
+    key_field: "source_url"
+    source_type: "gmaps_search"
 ```
 
 ### JSONL File Only
 
 ```yaml
-output_strategy: "jsonl_file"
 output:
-  file_path: "output/google_maps_{query}.jsonl"
-  max_results: 10000
+  strategy: "jsonl_file"
+  config:
+    file_path: "output/google_maps_{query}.jsonl"
+    max_results: 10000
 ```
 
 ### PostgreSQL + JSONL Fallback (Recommended)
 
 ```yaml
-output_strategy: "composite"
 output:
+  strategy: "composite"
   strategies:
     - strategy: "postgresql_upsert"
       config:
@@ -480,7 +454,7 @@ grep "Joe's Pizza" output/google_maps_pizza_in_chicago.jsonl
 **Solution**:
 ```bash
 # Run in headed mode
-python main.py --config config/google_maps.yaml --query "pizza" --headless false
+uv run python main.py --config config/google_maps.yaml --query "pizza" --no-headless
 ```
 
 #### 2. "Redis connection refused"
@@ -500,7 +474,7 @@ docker run -p 6379:6379 redis:alpine
 # Start PostgreSQL
 sudo systemctl start postgresql
 # Or use JSONL only
-# Change output_strategy to "jsonl_file"
+# Change output.strategy to "jsonl_file"
 ```
 
 #### 4. "Scrolling stops before extracting all results"

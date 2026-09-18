@@ -5,7 +5,7 @@ import logging
 from typing import Dict, Optional
 
 from base.scraper import BaseScraper
-from base.browser_manager import BrowserManager
+from base.browser_manager import BrowserManager, resolve_browser_launch_settings
 from factory.scraper_factory import ScraperFactory
 from utils.helpers import DelayManager
 from strategies.output.null_output import NullOutputStrategy
@@ -21,6 +21,8 @@ class ListingCrawler(BaseScraper):
         super().__init__(config, **kwargs)
         self.logger = logging.getLogger(self.__class__.__name__)
         self.instance_label = kwargs.get("instance_label", "main")
+        self.headless = kwargs.get("headless", True)
+        self.browser_executable_path = kwargs.get("browser_executable_path")
 
         # Initialize components
         self.input_strategy = None
@@ -46,7 +48,6 @@ class ListingCrawler(BaseScraper):
         self.pages_processed = 0
         self.consecutive_errors = 0
         self.session_start_pages = 0
-        self.retry_counts = {}  # Track retries per URL
         self.browser_page_wait_seconds = config.get("browser", {}).get(
             "page_wait_seconds", 1.0
         )
@@ -132,6 +133,8 @@ class ListingCrawler(BaseScraper):
         output_config = self.config.get("output", {})
         if output_config:
             output_strategy_name = output_config.get("strategy", "jsonl_file")
+            if "strategies" in output_config and "strategy" not in output_config:
+                output_strategy_name = "composite"
             self.output_strategy = ScraperFactory.create_strategy(
                 "output", output_strategy_name, output_config
             )
@@ -176,19 +179,22 @@ class ListingCrawler(BaseScraper):
 
     async def start_browser(self):
         """Start browser instance"""
-        browser_config = self.config.get("browser", {})
-        engine = browser_config.get(
-            "automation", self.config.get("browser_automation", "nodriver")
+        settings = resolve_browser_launch_settings(
+            self.config,
+            cli_headless=self.headless,
+            cli_browser_executable_path=self.browser_executable_path,
         )
-        headless = browser_config.get("headless", self.config.get("headless", True))
 
         self.browser_manager = BrowserManager(
-            engine=engine,
-            headless=headless,
+            engine=settings["engine"],
+            headless=settings["headless"],
             page_wait_seconds=self.browser_page_wait_seconds,
+            browser_executable_path=settings["browser_executable_path"],
+            browser_executable_source=settings["browser_executable_source"],
+            browser_path_checks=settings["browser_path_checks"],
         )
         await self.browser_manager.start()
-        self.logger.info(f"Browser started (headless={headless})")
+        self.logger.info("Browser started (headless=%s)", settings["headless"])
 
     async def navigate_to_search(self, url: str):
         """Navigate to URL - required by base class"""
@@ -265,10 +271,6 @@ class ListingCrawler(BaseScraper):
         Returns True if successful, False otherwise.
         """
         self.logger.info(f"Processing: {url[:80]}...")
-
-        # Initialize retry count for this URL
-        if url not in self.retry_counts:
-            self.retry_counts[url] = 0
 
         for attempt in range(self.url_max_retries):
             try:
