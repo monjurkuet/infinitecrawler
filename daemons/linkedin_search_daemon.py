@@ -114,6 +114,9 @@ def process_query(session: curl_cffi.Session, redis_client: redis.Redis, pg_conn
 
     Returns: (jobs_queued, is_exhausted)
     """
+    # Reset the per-cycle rate-limit counter at the start of every query.
+    process_query._rl_strikes = 0  # type: ignore[attr-defined]
+
     # Check query state
     last_start, is_exhausted = get_query_state(pg_conn, keyword, location)
     if is_exhausted:
@@ -142,8 +145,18 @@ def process_query(session: curl_cffi.Session, redis_client: redis.Redis, pg_conn
             mark_query_exhausted(pg_conn, keyword, location)
             return (jobs_queued, True)
         elif html == "RATE_LIMITED":
-            # Rotate proxy or back off
-            time.sleep(30)
+            # Rotate proxy or back off. Exponential backoff, capped at 3 min,
+            # plus session refresh every other strike to swap cookies.
+            rl_strikes = getattr(process_query, "_rl_strikes", 0) + 1
+            process_query._rl_strikes = rl_strikes  # type: ignore[attr-defined]
+            backoff = min(30 * (2 ** (rl_strikes - 1)), 180)
+            log.warning("Rate-limited (#%d). Backing off %ds, refreshing session.", rl_strikes, backoff)
+            if rl_strikes % 2 == 0:
+                session.close()
+                session.headers.clear()
+                session = make_session()
+                log.info("Session refreshed after rate-limit strike #%d", rl_strikes)
+            time.sleep(backoff)
             continue
         elif html is None:
             # Transient error, retry same page after delay

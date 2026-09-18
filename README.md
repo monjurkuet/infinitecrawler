@@ -213,7 +213,7 @@ systemctl --user enable --now infinitecrawler-pinchtab.service
 
 **CRITICAL — listing daemon URL form:** the listing daemon navigates Google Maps place URLs. Headless Chrome cannot render the `/maps/place/<name>/data=!...` detail view (Google strips the CID and returns a bare map shell, so every selector misses). `daemons/listing_daemon.py` rewrites each queued URL to `https://www.google.com/maps/place/?cid=<decimal>` via `to_cid_url()` — this loads the full panel and populates name/rating/phone/address. Do NOT "fix" this back to the `/place/data=` form.
 
-**CRITICAL — page settle time:** even with `?cid=`, the detail panel renders asynchronously. `config/gmaps_listings_working.yaml` sets `browser.page_wait_seconds: 6.0` and `max_wait: 12` on the Overview tab. Lower values extract from the half-rendered shell (name only, no phone/website/rating).
+**CRITICAL — page settle time:** even with `?cid=`, the detail panel renders asynchronously. `config/gmaps_listings_working.yaml` sets `browser.page_wait_seconds: 7.0` and `max_wait: 12` on the Overview tab. Lower values extract from the half-rendered shell (name only, no phone/website/rating).
 
 ## Self-healing: phantom-row sweeper
 
@@ -221,6 +221,7 @@ Google Maps occasionally bounces headless requests to a bare shell (title="Googl
 
 - **Listing daemon** (`daemons/listing_daemon.py`) detects phantom rows (name + no phone/website/rating/address/plus_code/category) and routes the URL to Redis list **`gmaps:phantom`** instead of persisting the bare row or marking it completed.
 - **Phantom sweeper** (`scripts/phantom_sweeper.py`, systemd `infinitecrawler-phantom-sweeper.timer`, every 30min) re-pushes phantom URLs back into `gmaps:pending` and also sweeps legacy PG phantom rows (older than 2h).
+- **Phantom blocklist** (Redis set `gmaps:phantom:blocked`): CIDs that fail repeatably (≥5 historic `Extraction exhausted retries`) get blocklisted so they stop burning retry slots. Populated via `scripts/blocklist_dead_urls.py --apply --threshold 5`; enforced in `_mark_phantom_url` (listing daemon), `sweep_redis` (phantom sweeper), and `requeue_stale_failed` (queue).
 - **Watchdog** (`scripts/monitor_pipeline.py`) calls `backfill_phantom()` each run alongside the existing backlog backfill.
 
 Health check: `redis-cli LLEN gmaps:phantom` should be ≤ 50; `SELECT count(*) FROM scraper.gmaps_listings WHERE source_type='gmaps_listing' AND created_at > now()-interval '1 hour' AND phone IS NULL AND website IS NULL AND rating IS NULL AND address IS NULL` should be < 5% of hourly rows.
@@ -282,6 +283,7 @@ The legacy `backups/ic_pg_*.dump.zst` files at the repo root are an outdated man
 
 **Proxy & connectivity**
 - LinkedIn jobs + BBB profile enrichment pinned to **Datasolved `datasolved-cf`** (Cloudflare-aware exit). Earlier 407 auth failures (stale `datasolved-cf` password) replaced by current credential in `.env`. LinkedIn jobs pipeline (search → detail → company) verified live.
+- **LinkedIn jobs goes global** (2026-09-18): `sectors.yaml` `linkedin_jobs:` now mixes 10 BD locations with 31 global hubs. BD-only sectors (`manufacturing-rmg`, `jewellery`, `beauty-personal-care`, etc.) stay BD-only; universal keywords + the 12 sectors in `global_expansion_sectors:` (marketing, education, logistics, real estate, energy, telecom, maritime, healthcare, banking, professional services, construction, BIM) fan out across all 41 locations. Matrix grew 417 → **4,207 (keyword, location) pairs**. Per-query 7-day rescan (`scraped.linkedin_query_state.exhausted_at`) self-resets so a query that was exhausted 7+ days ago is automatically re-polled on its next visit.
 - Decision record (locked): for CF-blocked sources, route through `datasolved-cf` over plain HTTP. Headless browsers only for pages that need JS or session cookies. BBB's `/api/search` JSON feed deliberately goes **direct** — no proxy — for latency + headroom.
 
 **Data quality fixes**

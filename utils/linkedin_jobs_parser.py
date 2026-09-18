@@ -190,14 +190,21 @@ def parse_job_detail(html: str, job_id: int, keyword: str, sector: str | None,
     # Location
     loc_elem = soup.select_one(SELECTORS["location"])
     raw_location = loc_elem.get_text(strip=True) if loc_elem else ""
-    # Normalize city
+    # Normalize city: prefer the first geotag segment; fall through to a
+    # generic "first comma-separated part" so non-BD locations land correctly.
+    # Original BD-only heuristic kept for backwards compat on existing rows.
     location_city = ""
-    if "dhaka" in raw_location.lower() or "dacca" in raw_location.lower():
+    rl = raw_location.lower()
+    if "dhaka" in rl or "dacca" in rl:
         location_city = "Dhaka"
-    elif "chattogram" in raw_location.lower() or "chittagong" in raw_location.lower():
+    elif "chattogram" in rl or "chittagong" in rl:
         location_city = "Chattogram"
-    elif "bangladesh" in raw_location.lower():
+    elif "bangladesh" in rl:
         location_city = "Bangladesh"
+    elif raw_location:
+        # Take the first comma-component, trimmed — e.g. "Greater Toronto Area,
+        # Canada" -> "Greater Toronto Area", "Amsterdam, Netherlands" -> "Amsterdam"
+        location_city = raw_location.split(",")[0].strip()
 
     # Listed time
     time_elem = soup.select_one(SELECTORS["listed_time"])

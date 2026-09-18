@@ -222,7 +222,13 @@ class RedisQueueStrategy(QueueStrategy):
         cutoff = time.time() - (max_age_hours * 3600)
         to_retry: list[str] = []
 
+        # Never recycle URLs the phantom blocklist has banned (burned on
+        # repeatedly-unrenderable CIDs — see scripts/blocklist_dead_urls.py).
+        blocked = getattr(self.client, "scard", None) and self.client.smembers("gmaps:phantom:blocked") or set()
+
         for url, raw in failed_raw.items():
+            if url in blocked:
+                continue
             try:
                 info = json.loads(raw) if isinstance(raw, str) else {}
             except Exception:

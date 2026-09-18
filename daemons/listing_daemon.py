@@ -455,13 +455,27 @@ def _mark_phantom_url(state: DaemonState, url: str) -> None:
     if not state.queue_strategy:
         return
     try:
+        # Drop URLs whose CID has proven non-renderable repeatedly — see
+        # the do-not-rescan set maintained by scripts/blocklist_dead_urls.py.
+        client = getattr(state.queue_strategy, "client", None)
+        if client is None:
+            return
+        if client.sismember("gmaps:phantom:blocked", to_cid_url(url)):
+            client.lrem("gmaps:pending", 0, url)
+            client.lrem("gmaps:processing", 0, url)
+            client.hdel("gmaps:failed", url)
+            log.info("Phantom blocklisted URL dropped (no requeue): %s", url[:90])
+            return
+        if client.sismember("gmaps:phantom:blocked", url):
+            client.lrem("gmaps:pending", 0, url)
+            client.lrem("gmaps:processing", 0, url)
+            client.hdel("gmaps:failed", url)
+            log.info("Phantom blocklisted URL dropped (no requeue): %s", url[:90])
+            return
         # We don't reinsert into gmaps:pending because that would block the
         # cycle — the URL has already been marked completed/failed. Instead
         # we push to a dedicated phantom list that the phantom-sweeper.service
         # re-pushes to pending when the page-wait condition has stabilized.
-        client = getattr(state.queue_strategy, "client", None)
-        if client is None:
-            return
         client.rpush("gmaps:phantom", url)
         state.phantom_count += 1
         log.info("Phantom URL queued for backfill: %s (total=%d)", url[:70], state.phantom_count)

@@ -21,7 +21,7 @@ content_type: listing_crawler
 browser:
   automation: pinchtab
   headless: true
-  page_wait_seconds: 5.0
+  page_wait_seconds: 7.0
 queue:
   strategy: redis_queue
   config:

@@ -49,29 +49,44 @@ def load_linkedin_jobs_config() -> dict:
     locations = lj.get("locations", [])
     sector_keywords = lj.get("sector_keywords", {})
     universal_keywords = lj.get("universal_keywords", [])
+    global_expansion_sectors = lj.get("global_expansion_sectors", [])
     if not locations:
         raise ValueError("linkedin_jobs.locations must be non-empty")
     return {
         "locations": locations,
         "sector_keywords": sector_keywords,
         "universal_keywords": universal_keywords,
+        "global_expansion_sectors": global_expansion_sectors,
     }
 
 
 def build_keyword_location_pairs() -> list[tuple[str, str, str | None]]:
     """Return [(keyword, location, sector_key_or_None), ...] for the full matrix.
 
-    Sector-keywords run against all locations with their sector tag.
-    Universal keywords run against all locations with sector=None.
+    BD locations (anything matching "Bangladesh") get the FULL keyword matrix:
+    universal + every sector key, since niche vocab is BD-flavored.
+
+    Non-BD (global) locations get only universal keywords + the sectors
+    listed under `global_expansion_sectors:` — BD-local vocabulary
+    (merchandiser, MFS, garments officer) returns empty pages overseas.
     """
     cfg = load_linkedin_jobs_config()
     pairs: list[tuple[str, str, str | None]] = []
 
+    bd_locations = [loc for loc in cfg["locations"] if "bangladesh" in loc.lower()]
+    global_locations = [loc for loc in cfg["locations"] if "bangladesh" not in loc.lower()]
+    global_sectors = set(cfg.get("global_expansion_sectors") or [])
+
+    # Sector-keywords: all sectors × BD, only global_expansion_sectors × global
     for sector_key, kws in cfg["sector_keywords"].items():
         for kw in kws:
-            for loc in cfg["locations"]:
+            for loc in bd_locations:
                 pairs.append((kw, loc, sector_key))
+            if sector_key in global_sectors:
+                for loc in global_locations:
+                    pairs.append((kw, loc, sector_key))
 
+    # Universal keywords: every location regardless of BD/global
     for kw in cfg["universal_keywords"]:
         for loc in cfg["locations"]:
             pairs.append((kw, loc, None))

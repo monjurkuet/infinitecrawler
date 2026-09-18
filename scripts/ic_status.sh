@@ -107,6 +107,14 @@ render() {
     UNION ALL SELECT 'linkedin profiles checked',
                             (SELECT count(*) FROM scraper.linkedin_profiles WHERE checked_at>=now()-interval '1 hour'),
                             (SELECT count(*) FROM scraper.linkedin_profiles WHERE checked_at>=now()-interval '24 hours')
+    UNION ALL SELECT 'linkedin jobs (BD+global)',
+                            (SELECT count(*) FROM scraper.linkedin_jobs WHERE created_at>=now()-interval '1 hour'),
+                            (SELECT count(*) FROM scraper.linkedin_jobs WHERE created_at>=now()-interval '24 hours')
+    UNION ALL SELECT 'linkedin jobs global (excl. BD)',
+                            (SELECT count(*) FROM scraper.linkedin_jobs WHERE created_at>=now()-interval '1 hour'
+                             AND location NOT ILIKE '%bangladesh%' AND location NOT ILIKE '%dhaka%' AND location NOT ILIKE '%chattogram%'),
+                            (SELECT count(*) FROM scraper.linkedin_jobs WHERE created_at>=now()-interval '24 hours'
+                             AND location NOT ILIKE '%bangladesh%' AND location NOT ILIKE '%dhaka%' AND location NOT ILIKE '%chattogram%')
     UNION ALL SELECT 'nearby grid cells',
                             (SELECT count(*) FROM scraper.nearby_scan_grid WHERE scanned_at>=now()-interval '1 hour'),
                             (SELECT count(*) FROM scraper.nearby_scan_grid WHERE scanned_at>=now()-interval '24 hours')
@@ -114,7 +122,8 @@ render() {
   declare -A H1 H24
   for l in "${A[@]}"; do IFS='|' read -r k v1 v24 <<< "$l"; H1[$k]=$v1; H24[$k]=$v24; done
   for k in "search seeds" "listings created (browser)" "listings updated (browser)" \
-           "emails found (http)" "emails found (browser)" "linkedin profiles checked" "nearby grid cells"; do
+           "emails found (http)" "emails found (browser)" "linkedin profiles checked" \
+           "linkedin jobs (BD+global)" "linkedin jobs global (excl. BD)" "nearby grid cells"; do
     v1=${H1[$k]:-0}; v24=${H24[$k]:-0}
     st="$OK"; [ "$v1" -eq 0 ] && [ "$v24" -eq 0 ] && st="$DIM$NA (quota)${X}"
     row2 "$st" "$k" "$(num "$v1")" "${GR}$v24${X}"

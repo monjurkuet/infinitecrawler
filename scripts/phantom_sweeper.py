@@ -17,7 +17,6 @@ All state stays in Redis; no PG writes here (listing_daemon's upsert handles
 the final write).
 """
 
-import json
 import sys
 import time
 from pathlib import Path
@@ -32,6 +31,7 @@ from daemons.listing_daemon import to_cid_url  # noqa: E402
 
 PHANTOM_KEY = "gmaps:phantom"
 PENDING_KEY = "gmaps:pending"
+BLOCKED_KEY = "gmaps:phantom:blocked"
 PHANTOM_LOG = Path("/var/log/infinitecrawler/infinitecrawler-phantom-sweeper.log")
 
 # Longer wait than the listing daemon (6s) to get the tab out of background
@@ -48,15 +48,23 @@ def log(msg: str) -> None:
 
 
 def sweep_redis(r: redis.Redis, batch: int = 100) -> int:
-    """Pop up to `batch` phantom URLs and re-push into the live queue."""
+    """Pop up to `batch` phantom URLs and re-push into the live queue.
+
+    URLs in `gmaps:phantom:blocked` (proven non-renderable CIDs, see
+    scripts/blocklist_dead_urls.py) are dropped, never requeued.
+    """
     urls = r.lrange(PHANTOM_KEY, 0, batch - 1)
     if not urls:
         return 0
+    requeued = 0
     for u in urls:
         cid_u = to_cid_url(u)
+        if r.sismember(BLOCKED_KEY, u) or r.sismember(BLOCKED_KEY, cid_u):
+            continue
         r.rpush(PENDING_KEY, cid_u)
+        requeued += 1
     r.ltrim(PHANTOM_KEY, batch, -1)
-    return len(urls)
+    return requeued
 
 
 def sweep_pg(batch: int = 100) -> int:

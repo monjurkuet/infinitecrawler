@@ -91,6 +91,10 @@ Key engineering:
 - **Phantom-row detection**: headless Chrome sometimes gets a bare GMaps shell.
   The listing daemon detects name-only rows and routes them to `gmaps:phantom`;
   a sweeper timer requeues them automatically instead of persisting garbage.
+  Repeat offenders land in `gmaps:phantom:blocked` (populated by
+  `scripts/blocklist_dead_urls.py`) and are dropped at all three requeue
+  chokepoints — the phantom sweep, the daemon's `_mark_phantom_url`, and
+  `requeue_stale_failed`.
 - **Watchdog/monitor**: `scripts/monitor_pipeline.py` + 15-min systemd watchdog
   restart stalled units and backfill missed queues.
 - **URL fixing**: listing daemon rewrites `/maps/place/data=...` URLs to
@@ -105,8 +109,11 @@ contact emails into `scraper.emails`.
 - **Profiles firehose**: DDGS-based discovery of decision-maker profiles
   (name, title, company, location, connections).
 - **Jobs pipeline** (3 daemons): guest-API search (keyword × location matrix
-  from sectors.yaml) → job detail fetch → company-page enrichment, all through
-  a residential-proxy pool with per-worker pacing and 429/999 backoff.
+  from sectors.yaml, **41 locations: 10 BD + 31 global**, BD-sector-limited
+  via `global_expansion_sectors:`) → job detail fetch → company-page
+  enrichment, all through a residential-proxy pool with per-worker pacing and
+  **adaptive 429 backoff** (exponential 30–180 s + session refresh every
+  other strike). Per-query 7-day rescan self-heals exhausted pairs.
 - **Company loop**: resolves `linkedin.com/company/{slug}` for industry, size,
   employee count, HQ, website, followers; slug-first upsert merges with
   firehose rows without false-name collisions.
