@@ -1,7 +1,10 @@
 """utils/linkedin_jobs_config.py — Load LinkedIn jobs config from sectors.yaml.
 
-Reads the `linkedin_jobs` block we appended to business-plan-template/_system/config/sectors.yaml
-and produces:
+Reads the `linkedin_jobs` block from the vendored sectors.yaml copy at
+config/bpt/sectors.yaml (sourced from business-plan-template, materialized
+into this repo 2026-09-18 so IC has no cross-repo dependency).
+
+Produces:
   - locations: list[str] (e.g., ["Dhaka, Bangladesh", "Chattogram, Bangladesh", "Bangladesh"])
   - sector_keywords: dict[sector_key, list[str]]
   - universal_keywords: list[str]
@@ -19,10 +22,9 @@ from typing import Any
 import yaml
 
 DEFAULT_SECTORS_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "business-plan-template"
-    / "_system"
+    Path(__file__).resolve().parents[1]
     / "config"
+    / "bpt"
     / "sectors.yaml"
 )
 SECTORS_YAML_PATH = Path(os.environ.get("SECTORS_YAML_PATH", str(DEFAULT_SECTORS_PATH)))

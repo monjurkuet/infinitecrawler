@@ -18,7 +18,9 @@ BN_STOP = {
 DEFAULT_SECTOR = "high-roi-niches"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-BPT_DIR = REPO_ROOT.parent / "business-plan-template"
+# Vendored copies of the BPT sector yamls — IC repo no longer reads across
+# into ../business-plan-template (decoupled 2026-09-18).
+BPT_DIR = REPO_ROOT / "config" / "bpt"
 
 log = logging.getLogger("classification")
 
@@ -41,7 +43,7 @@ def load_sectors() -> dict:
     sectors: dict = {}
 
     # 1) BD-business sectors (clothing-fashion, food-beverage, …)
-    bd_path = BPT_DIR / "_system" / "config" / "sectors.yaml"
+    bd_path = BPT_DIR / "sectors.yaml"
     if bd_path.exists():
         try:
             bd_data = yaml.safe_load(bd_path.read_text())
@@ -54,7 +56,7 @@ def load_sectors() -> dict:
         log.warning(f"sectors.yaml not found at {bd_path}")
 
     # 2) Software product sectors (payroll, inventory, pos_retail, …)
-    sw_path = BPT_DIR / "_system" / "config" / "software_sectors.yaml"
+    sw_path = BPT_DIR / "software_sectors.yaml"
     if sw_path.exists():
         try:
             sw_data = yaml.safe_load(sw_path.read_text())

@@ -1,0 +1,853 @@
+# Sector definitions for BD Business Plan Research System
+# Each sector defines keywords for search queries and metadata
+
+sectors:
+  automotive-car-care:
+    display_name: "Automotive & Car Care"
+    status: active
+    priority_weight: 0.6
+    keywords:
+      en: ["car wash Bangladesh", "auto detailing Dhaka", "car care Bangladesh", "automotive service BD",
+           "car dealer", "car rental", "motorcycle",
+           "car repair", "auto parts", "car accessories",
+           "car servicing", "car showroom", "car sales",
+           "car mechanic", "auto body shop", "tire shop"]
+      bn: ["গাড়ি যত্ন বাংলাদেশ", "কার ওয়াশ ঢাকা", "গাড়ী সারাইয়ের দোকান", "গাড়ি ভাড়া",
+           "কার রেন্টাল এজেন্সি", "অটো মোবাইল", "মোটরসাইকেল সারাই"]
+    competitor_target: 12
+    subsegments: ["detailing", "car wash", "ceramic coating", "PPF"]
+    policy_sensitivity: low
+
+  clothing-fashion:
+    display_name: "Clothing & Fashion"
+    status: active
+    priority_weight: 0.7
+    keywords:
+      en: ["clothing Bangladesh", "fashion brand Dhaka", "boutique Bangladesh", "garments retail BD",
+           "clothing store", "fashion house", "cloth shop", "tailor", "textile",
+           "apparel", "garment factory", "fabric shop", "menswear", "womenswear",
+           "uniform", "dress shop", "shirt boutique", "saree shop",
+           "shoe shop", "footwear", "juta", "showroom"]
+      bn: ["ফ্যাশন বাংলাদেশ", "পোশাক ঢাকা", "কাপড়ের দোকান", "পোশাকের দোকান",
+           "মহিলাদের পোশাকের দোকান", "পুরুষের পোশাকের দোকান", "ফ্যাশন মালপত্রের দোকান",
+           "বুটিক", "জুতোর দোকান", "টেইলার্স", "শার্ট", "থ্রি-পিস"]
+    competitor_target: 12
+    subsegments: ["boutique", "fast fashion", "social commerce", "ethnic wear", "western wear"]
+    policy_sensitivity: low
+
+  crypto-bitcoin:
+    display_name: "Crypto & Bitcoin"
+    status: active
+    priority_weight: 0.95
+    keywords:
+      en: ["crypto Bangladesh", "bitcoin BD", "P2P crypto Dhaka", "cryptocurrency trading Bangladesh"]
+      bn: ["ক্রিপ্টোকারেন্সি বাংলাদেশ", "বিটকয়েন ট্রেডিং"]
+    competitor_target: 12
+    subsegments: ["P2P exchange", "OTC desk", "wallet", "education", "payment gateway"]
+    policy_sensitivity: critical
+    freshness_override:
+      policy: 3
+      pricing: 2
+
+  electronics-gadgets:
+    display_name: "Electronics & Gadgets"
+    status: active
+    priority_weight: 0.7
+    keywords:
+      en: ["electronics Bangladesh", "gadget shop Dhaka", "smartphone BD", "laptop price Bangladesh",
+           "mobile phone shop", "computer shop", "electronics store", "tv shop", "electronics shop",
+           "home appliance", "air conditioner", "refrigerator", "software company",
+           "computer repair", "mobile repair", "it service", "electronics repair",
+           "cable tv", "isp", "internet service", "network", "ac repair"]
+      bn: ["ইলেকট্রনিক্স বাংলাদেশ", "মোবাইল দাম ঢাকা", "ইলেকট্রনিক সরঞ্জামের দোকান",
+           "মোবাইল ফোনের দোকান", "কম্পিউটারের দোকান", "সফ্টওয়্যার কোম্পানি",
+           "কম্পিউটারের আনুষঙ্গিক জিনিসের দোকান", "ইলেকট্রনিক্স কোম্পানি",
+           "মোবাইল ফোন সারাইয়ের দোকান", "কম্পিউটার শিক্ষা কেন্দ্র",
+           "কম্পিউটার সহায়তা ও পরিষেবা", "আই এস পি", "ইলেকট্রনিক্স"]
+    competitor_target: 12
+    subsegments: ["smartphone", "laptop", "accessories", "home appliance", "gaming"]
+    policy_sensitivity: medium
+
+  high-roi-niches:
+    display_name: "High ROI Niches"
+    status: active
+    priority_weight: 0.65
+    keywords:
+      en: ["pet care Bangladesh", "creator economy BD", "home bakery Dhaka", "niche business Bangladesh"]
+      bn: ["পেট কেয়ার বাংলাদেশ", "ক্রিয়েটর ইকোনমি"]
+    competitor_target: 10
+    subsegments: ["pet care", "creator economy", "home bakery", "specialty food", "fitness"]
+    policy_sensitivity: low
+
+  jewellery:
+    display_name: "Jewellery"
+    status: active
+    priority_weight: 0.7
+    keywords:
+      en: ["jewellery Bangladesh", "gold jewellery Dhaka", "diamond BD", "ornament shop Bangladesh",
+           "jewelry store", "gold shop", "gold", "diamond shop", "silver jewelry",
+           "golden", "jewellers"]
+      bn: ["গহনা বাংলাদেশ", "স্বর্ণালংকার ঢাকা", "গয়নার দোকান", "স্বর্ণের দোকান",
+           "অলংকারের দোকান", "জুয়েলারি"]
+    competitor_target: 10
+    subsegments: ["gold", "diamond", "silver", "fashion jewellery", "traditional"]
+    policy_sensitivity: medium
+
+  media-marketing-digital:
+    display_name: "Media, Marketing & Digital"
+    status: active
+    priority_weight: 0.65
+    keywords:
+      en: ["digital marketing Bangladesh", "ad agency Dhaka", "social media BD", "content marketing Bangladesh",
+           "marketing agency", "digital agency", "web design", "graphic design", "seo service",
+           "social media marketing", "advertising agency", "printing press", "printing shop",
+           "video production", "media production", "ecommerce", "e-commerce",
+           "web developer", "software development", "digital service",
+           "marketing consultant", "public relations", "branding",
+           "it consultant", "online marketing", "freelancer", "creative agency",
+           "photography", "photo studio", "event management", "training center"]
+      bn: ["ডিজিটাল মার্কেটিং বাংলাদেশ", "এড এজেন্সি ঢাকা",
+           "মার্কেটিং এজেন্সি", "ইন্টারনেট বিপণন পরিষেবা", "সফ্টওয়্যার কোম্পানি",
+           "মার্কেটিং কনসাল্টেন্ট", "ওয়েব ডিজাইনার", "ই-কমার্স সেবা",
+           "বিজ্ঞাপন সংস্থা", "গ্রাফিক ডিজাইনার", "প্রিন্টিং প্রেস",
+           "প্রশিক্ষণ কেন্দ্র", "মুদ্রণের দোকান", "ভিডিও প্রোডাকশান পরিষেবা",
+           "ফটোগ্রাফার", "ইভেন্ট ম্যানেজমেন্ট", "আইটি সার্ভিস",
+           "কম্পিউটার প্রশিক্ষণ", "বিপণন সেবা"]
+    competitor_target: 10
+    subsegments: ["agency", "freelance", "influencer marketing", "SEO/SEM", "content production"]
+    policy_sensitivity: low
+
+  travel-tourism:
+    display_name: "Travel & Tourism"
+    status: active
+    priority_weight: 0.75
+    keywords:
+      en: ["travel agency Bangladesh", "tourism Dhaka", "tour operator BD", "visa service Bangladesh",
+           "travel agent", "tour package", "airline ticket", "hotel booking",
+           "resort", "airport transfer", "travel service", "umrah service",
+           "hajj service", "tourist attraction", "guest house", "motel"]
+      bn: ["ট্রাভেল এজেন্সি বাংলাদেশ", "পর্যটন ঢাকা",
+           "ভ্রমণ সংস্থা", "পর্যটন সংস্থা", "হোটেল", "রিসোর্ট"]
+    competitor_target: 12
+    subsegments: ["tour operator", "visa service", "hotel booking", "domestic tourism", "airline ticketing"]
+    policy_sensitivity: medium
+
+  bim-global-outreach:
+    display_name: "BIM Global Outreach"
+    status: active
+    priority_weight: 0.80
+    keywords:
+      en: [
+        # BD businesses to sell BIM services to
+        "architecture firm", "engineering consultant", "construction company",
+        "interior design", "real estate developer", "structural engineer",
+        "MEP consultant", "civil engineer", "building design",
+        "architectural design", "3D modeling service", "project management consultancy",
+        "urban planning", "quantity surveyor", "building contractor", "land surveyor",
+        "drafting service", "CAD service", "landscape architect",
+        # Global/US/UK clients for BIM outsourcing
+        "BIM outsourcing", "Revit modeling service",
+        "MEP coordination", "BIM consultant", "architectural BIM service",
+        "scan to BIM", "construction documentation", "BIM production partner"
+      ]
+      bn: ["আর্কিটেকচার ফার্ম", "ইঞ্জিনিয়ারিং কনসালটেন্ট", "কনস্ট্রাকশন কোম্পানি",
+           "স্ট্রাকচারাল ইঞ্জিনিয়ার", "সিভিল ইঞ্জিনিয়ার", "বিল্ডিং ডিজাইন",
+           "জমি জরিপ", "ড্রাফটিং সার্ভিস", "ডেভেলপার কোম্পানি"]
+    competitor_target: 12
+    subsegments: [
+      "architecture", "structural engineering", "MEP design",
+      "BIM modeling", "construction management", "interior design",
+      "urban planning", "land surveying", "drafting",
+      "BIM outsourcing", "scan-to-BIM", "BIM consulting",
+      "construction documentation", "visualization"
+    ]
+    policy_sensitivity: low
+
+  # ── NEW SECTORS (2026-07-03) ───────────────────────────────────────────────
+
+  healthcare-pharma:
+    display_name: "Healthcare & Pharma"
+    status: active
+    priority_weight: 0.75
+    keywords:
+      en: ["pharmacy Bangladesh", "medical store near me", "diagnostic center Bangladesh",
+           "clinic BD", "hospital Bangladesh", "medical equipment Bangladesh",
+           "pharmaceutical company BD", "medicine shop", "healthcare Bangladesh",
+           "doctor chamber", "dentist Bangladesh", "eye hospital",
+           "physiotherapy Bangladesh", "blood test lab", "x-ray clinic",
+           "ultrasound center", "medical supply", "surgical equipment",
+           "herbal medicine", "Unani medicine", "homeopathy Bangladesh",
+           "ambulance service", "nursing home", "mental health Bangladesh"]
+      bn: ["ফার্মেসি বাংলাদেশ", "ঔষধের দোকান", "ডায়াগনস্টিক সেন্টার",
+           "ক্লিনিক", "হাসপাতাল", "চিকিৎসা সরঞ্জাম",
+           "ডাক্তার চেম্বার", "ডেন্টিস্ট", "চক্ষু হাসপাতাল",
+           "ফিজিওথেরাপি", "রক্ত পরীক্ষা ল্যাব", "এক্স-রে ক্লিনিক",
+           "আলট্রাসনোগ্রাফি সেন্টার", "নার্সিং হোম",
+           "হোমিওপ্যাথি", "হারবাল মেডিসিন", "এম্বুলেন্স সার্ভিস"]
+    competitor_target: 15
+    subsegments: ["pharmacy", "diagnostic lab", "clinic", "hospital", "medical equipment",
+                  "pharmaceutical manufacturer", "dental", "eye care", "physiotherapy",
+                  "medical supply chain"]
+    policy_sensitivity: medium
+
+  construction-real-estate:
+    display_name: "Construction & Real Estate"
+    status: active
+    priority_weight: 0.70
+    keywords:
+      en: ["building material Bangladesh", "hardware shop BD", "construction company Bangladesh",
+           "real estate developer Dhaka", "brick manufacturer Bangladesh", "cement dealer",
+           "steel supplier BD", "sanitary ware shop", "tiles shop Bangladesh",
+           "paint shop BD", "electrical shop", "plumbing supplier",
+           "rod-cement shop", "sand supplier", "stone chips supplier",
+           "glass shop", "aluminum shop", "wood supplier",
+           "furniture hardware", "construction equipment rental",
+           "property developer", "land developer", "apartment builder",
+           "building contractor", "roofing material", "interior decorator"]
+      bn: ["বিল্ডিং ম্যাটেরিয়াল", "হার্ডওয়্যারের দোকান", "কনস্ট্রাকশন কোম্পানি",
+           "রিয়েল এস্টেট ডেভেলপার", "ইট প্রস্তুতকারক", "সিমেন্ট ডিলার",
+           "রড সিমেন্টের দোকান", "স্যানিটারি দ্রব্যের দোকান", "টাইলসের দোকান",
+           "পেইন্টের দোকান", "বালু সরবরাহকারী", "পাথর চিপস সরবরাহকারী",
+           "কাঁচের দোকান", "অ্যালুমিনিয়ামের দোকান", "কাঠ সরবরাহকারী",
+           "ডেভেলপার কোম্পানি", "বিল্ডিং কন্ট্রাকটর"]
+    competitor_target: 15
+    subsegments: ["building materials", "hardware", "cement-steel", "sanitary-tiles",
+                  "paint-electrical", "developer", "contractor", "interior-decoration"]
+    policy_sensitivity: low
+
+  food-beverage:
+    display_name: "Food & Beverage"
+    status: active
+    priority_weight: 0.65
+    keywords:
+      en: ["restaurant Bangladesh", "food processing company BD", "catering service Bangladesh",
+           "bakery Bangladesh", "grocery store BD", "food supplier Bangladesh",
+           "beverage company BD", "snacks manufacturer Bangladesh", "spice company BD",
+           "food packaging Bangladesh", "cold storage Bangladesh", "wholesale grocery",
+           "meat supplier BD", "fish supplier Bangladesh", "rice mill Bangladesh",
+           "flour mill BD", "edible oil Bangladesh", "dairy farm Bangladesh",
+           "ice cream manufacturer BD", "juice company Bangladesh", "bottled water BD",
+           "tea company Bangladesh", "confectionery BD", "fast food Bangladesh",
+           "online food delivery BD", "cloud kitchen Bangladesh"]
+      bn: ["রেস্টুরেন্ট বাংলাদেশ", "খাদ্য প্রক্রিয়াজাতকরণ", "কেটারিং সার্ভিস",
+           "বেকারি", "মুদি দোকান", "খাদ্য সরবরাহকারী",
+           "পানীয় কোম্পানি", "স্ন্যাকস প্রস্তুতকারক", "মশলা কোম্পানি",
+           "ফুড প্যাকেজিং", "কোল্ড স্টোরেজ", "পাইকারি মুদি",
+           "মাংস সরবরাহকারী", "মাছ সরবরাহকারী", "রাইস মিল",
+           "আটা মিল", "ভোজ্য তেল", "ডেইরি ফার্ম",
+           "আইসক্রিম প্রস্তুতকারক", "জুস কোম্পানি", "বোতলজাত পানি",
+           "চা কোম্পানি", "মিষ্টান্ন", "ফাস্ট ফুড",
+           "অনলাইন ফুড ডেলিভারি", "ক্লাউড কিচেন"]
+    competitor_target: 15
+    subsegments: ["restaurant", "food processing", "catering", "bakery",
+                  "grocery-wholesale", "beverage", "dairy", "snacks-confectionery",
+                  "cold-storage", "online-food"]
+    policy_sensitivity: low
+
+  education-training:
+    display_name: "Education & Training"
+    status: active
+    priority_weight: 0.65
+    keywords:
+      en: ["coaching center Bangladesh", "private university BD", "English medium school Bangladesh",
+           "training institute BD", "online course Bangladesh", "skill development center BD",
+           "IELTS coaching Dhaka", "GRE GMAT preparation Bangladesh", "vocational training BD",
+           "driving school Bangladesh", "language center BD", "computer training Bangladesh",
+           "admission coaching BD", "madrasa Bangladesh", "kindergarten school BD",
+           "education consultant Bangladesh", "study abroad agency BD",
+           "corporate training Bangladesh", "professional certification BD",
+           "music school", "art school", "dance school",
+           "martial arts training", "swimming coaching", "sports academy Bangladesh"]
+      bn: ["কোচিং সেন্টার বাংলাদেশ", "বেসরকারি বিশ্ববিদ্যালয়", "ইংরেজি মাধ্যম স্কুল",
+           "প্রশিক্ষণ কেন্দ্র", "অনলাইন কোর্স", "স্কিল ডেভেলপমেন্ট সেন্টার",
+           "আইইএলটিএস কোচিং", "ভোকেশনাল ট্রেনিং", "ড্রাইভিং স্কুল",
+           "ভাষা শিক্ষা কেন্দ্র", "কম্পিউটার প্রশিক্ষণ কেন্দ্র",
+           "ভর্তি কোচিং", "মাদ্রাসা", "কিন্ডারগার্টেন স্কুল",
+           "শিক্ষা পরামর্শক", "স্টাডি অ্যাব্রোড এজেন্সি",
+           "মিউজিক স্কুল", "আর্ট স্কুল", "সাঁতার কোচিং"]
+    competitor_target: 12
+    subsegments: ["coaching-center", "private-university", "english-school",
+                  "vocational-training", "online-education", "language-center",
+                  "skill-development", "education-consultancy"]
+    policy_sensitivity: low
+
+  logistics-transport:
+    display_name: "Logistics & Transport"
+    status: active
+    priority_weight: 0.60
+    keywords:
+      en: ["courier service Bangladesh", "freight forwarder BD", "truck transport Bangladesh",
+           "cargo service Dhaka", "shipping company Bangladesh", "logistics company BD",
+           "warehouse Bangladesh", "cold chain logistics BD", "parcel delivery Bangladesh",
+           "moving company Bangladesh", "bus company BD", "truck rental Bangladesh",
+           "pickup van rental BD", "covered van Bangladesh", "lorry transport",
+           "air freight Bangladesh", "sea freight BD", "supply chain company Bangladesh",
+           "3PL logistics BD", "last mile delivery Bangladesh", "ecommerce logistics",
+           "customs clearance BD", "port service Bangladesh", "container transport"]
+      bn: ["কুরিয়ার সার্ভিস বাংলাদেশ", "মালবাহী ফরওয়ার্ডার", "ট্রাক পরিবহন",
+           "কার্গো সার্ভিস", "শিপিং কোম্পানি", "লজিস্টিক কোম্পানি",
+           "গুদাম বাংলাদেশ", "পার্সেল ডেলিভারি", "মুভিং কোম্পানি",
+           "বাস কোম্পানি", "ট্রাক ভাড়া", "পিকআপ ভ্যান ভাড়া",
+           "কাভার্ড ভ্যান", "লরি পরিবহন", "এয়ার ফ্রেইট",
+           "সাপ্লাই চেইন কোম্পানি", "ইকমার্স লজিস্টিকস"]
+    competitor_target: 12
+    subsegments: ["courier", "freight-forwarding", "truck-transport",
+                  "shipping", "warehousing", "cold-chain", "ecommerce-logistics",
+                  "last-mile-delivery", "3PL"]
+    policy_sensitivity: low
+
+  agriculture-agro:
+    display_name: "Agriculture & Agro-processing"
+    status: active
+    priority_weight: 0.70
+    keywords:
+      en: ["fertilizer Bangladesh", "seed company BD", "pesticide Bangladesh",
+           "agricultural machinery Bangladesh", "irrigation pump BD",
+           "cold storage BD", "rice processing Bangladesh", "grain supplier BD",
+           "agro farm Bangladesh", "fish hatchery BD", "poultry farm Bangladesh",
+           "dairy farm Bangladesh", "shrimp processing Bangladesh",
+           "vegetable supplier Bangladesh", "agriculture equipment BD",
+           "tractor Bangladesh", "power tiller BD", "harvest machine Bangladesh",
+           "agro processing company BD", "fruit processing Bangladesh",
+           "spice processing BD", "jute mill Bangladesh", "tea garden BD",
+           "rubber plantation Bangladesh", "organic farm BD",
+           "agriculture consultant Bangladesh", "agri input supplier"]
+      bn: ["সার বাংলাদেশ", "বীজ কোম্পানি", "কীটনাশক",
+           "কৃষি যন্ত্রপাতি বাংলাদেশ", "সেচ পাম্প",
+           "কোল্ড স্টোরেজ", "ধান প্রক্রিয়াজাতকরণ", "খাদ্যশস্য সরবরাহকারী",
+           "কৃষি খামার বাংলাদেশ", "মাছের হ্যাচারি", "পোল্ট্রি ফার্ম",
+           "ডেইরি ফার্ম", "চিংড়ি প্রক্রিয়াজাতকরণ",
+           "ট্রাক্টর বাংলাদেশ", "পাওয়ার টিলার",
+           "কৃষি প্রক্রিয়াজাতকরণ কোম্পানি", "পাটকল বাংলাদেশ",
+           "চা বাগান", "অর্গানিক ফার্ম", "কৃষি পরামর্শক"]
+    competitor_target: 15
+    subsegments: ["fertilizer-seed", "farm-machinery", "irrigation",
+                  "poultry-dairy", "fish-shrimp", "rice-grain",
+                  "cold-storage", "agro-processing", "organic"]
+    policy_sensitivity: low
+
+  service-agents-distribution:
+    display_name: "Service Agents & Distribution"
+    status: active
+    priority_weight: 0.75
+    keywords:
+      en: ["C&F agent Bangladesh", "clearing forwarding agent BD", "importer Bangladesh",
+           "wholesale distributor Dhaka", "indenting agent BD", "buying house Bangladesh",
+           "commission agent BD", "liaison office Bangladesh", "trade agent BD",
+           "door to door sales Bangladesh", "direct sales Bangladesh", "MLM company BD",
+           "network marketing Bangladesh", "field sales agent BD", "sales representative Bangladesh",
+           "distributor company BD", "dealer network Bangladesh", "supply chain agent BD",
+           "procurement agent Dhaka", "customs broker Bangladesh", "bonded warehouse BD",
+           "commercial importer Bangladesh", "trading company Bangladesh", "outdoor sales BD",
+           "franchise distributor bangladesh", "sole distributor BD", "agency business Bangladesh"]
+      bn: ["সিএন্ডএফ এজেন্ট বাংলাদেশ", "ক্লিয়ারিং ফরওয়ার্ডিং এজেন্ট", "আমদানিকারক",
+           "পাইকারি ডিস্ট্রিবিউটর", "ইন্ডেন্টিং এজেন্ট", "বায়িং হাউস",
+           "কমিশন এজেন্ট", "লিয়াজো অফিস", "বাণিজ্য এজেন্ট",
+           "ডোর টু ডোর সেলস", "ডিরেক্ট সেলস", "এমএলএম কোম্পানি",
+           "ডিস্ট্রিবিউটর কোম্পানি", "ডিলার নেটওয়ার্ক", "সাপ্লাই চেইন এজেন্ট",
+           "কাস্টমস ব্রোকার", "ট্রেডিং কোম্পানি", "ফ্র্যাঞ্চাইজ ডিস্ট্রিবিউটর",
+           "সোল ডিস্ট্রিবিউটর", "এজেন্সি ব্যবসা"]
+    competitor_target: 15
+    subsegments: ["C&F agent", "customs broker", "importer", "wholesale distributor",
+                  "indenting agent", "buying house", "commission agent", "door-to-door sales",
+                  "direct sales", "MLM network", "franchise distribution", "trade agent"]
+    policy_sensitivity: medium
+
+  manufacturing-rmg:
+    display_name: "Manufacturing & RMG"
+    status: active
+    priority_weight: 0.85
+    keywords:
+      en: ["garments factory Bangladesh", "RMG factory BD", "textile mill Bangladesh",
+           "knitwear factory BD", "denim factory Bangladesh", "sweater factory BD",
+           "apparel manufacturer Bangladesh", "garments accessories BD", "button factory BD",
+           "zipper factory Bangladesh", "label manufacturer BD", "embroidery factory Bangladesh",
+           "tannery Bangladesh", "leather goods factory BD", "shoe factory Bangladesh",
+           "footwear manufacturer BD", "plastic factory Bangladesh", "PVC pipe manufacturer BD",
+           "steel mill Bangladesh", "pharmaceutical manufacturer BD"]
+      bn: ["পোশাক কারখানা", "আরএমজি ফ্যাক্টরি", "টেক্সটাইল মিল", "নিটওয়্যার ফ্যাক্টরি",
+           "ডেনিম ফ্যাক্টরি", "সোয়েটার ফ্যাক্টরি", "গার্মেন্টস অ্যাক্সেসরিজ",
+           "লেদার ফ্যাক্টরি", "জুতা কারখানা", "প্লাস্টিক কারখানা", "স্টিল মিল"]
+    competitor_target: 15
+    subsegments: ["RMG", "textile", "leather", "footwear", "plastics", "steel", "pharma manufacturing"]
+    policy_sensitivity: low
+    linkedin_keywords:
+      - "garments factory"
+      - "textile mill"
+      - "RMG"
+      - "apparel"
+      - "merchandiser"
+      - "quality assurance garments"
+      - "compliance officer garments"
+
+  banking-finance:
+    display_name: "Banking, Finance & Fintech"
+    status: active
+    priority_weight: 0.85
+    keywords:
+      en: ["bank Bangladesh", "financial institution BD", "microfinance Bangladesh",
+           "NGO microcredit BD", "investment bank Bangladesh", "leasing company BD",
+           "insurance company Bangladesh", "stock brokerage BD", "merchant bank Bangladesh",
+           "Islami bank BD", "mobile banking Bangladesh", "fintech BD",
+           "payment gateway Bangladesh", "MFS Bangladesh", "agent banking BD",
+           "remittance company Bangladesh", "money exchange BD", "audit firm Bangladesh"]
+      bn: ["ব্যাংক বাংলাদেশ", "আর্থিক প্রতিষ্ঠান", "মাইক্রোফাইন্যান্স",
+           "বীমা কোম্পানি", "স্টক ব্রোকারেজ", "ইসলামী ব্যাংক", "মোবাইল ব্যাংকিং",
+           "রেমিট্যান্স কোম্পানি", "অডিট ফার্ম"]
+    competitor_target: 15
+    subsegments: ["commercial bank", "Islamic bank", "MFS", "insurance", "investment", "fintech", "NGO-MFI"]
+    policy_sensitivity: high
+    linkedin_keywords:
+      - "banker"
+      - "branch manager"
+      - "credit analyst"
+      - "relationship manager"
+      - "MFS"
+      - "fintech"
+      - "audit"
+      - "accountant"
+      - "compliance"
+
+  hospitality-hotels:
+    display_name: "Hotels & Hospitality"
+    status: active
+    priority_weight: 1.0
+    keywords:
+      en:
+        - "hotel Bangladesh"
+        - "resort Bangladesh"
+        - "guest house Bangladesh"
+        - "luxury hotel Dhaka"
+        - "boutique hotel Bangladesh"
+        - "budget hotel BD"
+        - "motel Bangladesh"
+        - "hotel & restaurant Bangladesh"
+        - "rest house Bangladesh"
+        - "boarding Bangladesh"
+        - "inn Bangladesh"
+        - "hostel Bangladesh"
+        - "hotel resort Bangladesh"
+        - "hotel in Dhaka"
+        - "hotel in Chattogram"
+        - "hotel in Cox's Bazar"
+        - "hotel in Sylhet"
+        - "resort in Cox's Bazar"
+        - "sea resort Bangladesh"
+        - "beach hotel Bangladesh"
+      bn:
+        - "হোটেল বাংলাদেশ"
+        - "রিসোর্ট বাংলাদেশ"
+        - "গেস্ট হাউস বাংলাদেশ"
+        - "আবাসিক হোটেল বাংলাদেশ"
+        - "বোর্ডিং বাংলাদেশ"
+        - "রেস্ট হাউস বাংলাদেশ"
+        - "মোটেল বাংলাদেশ"
+        - "হোস্টেল বাংলাদেশ"
+        - "লাক্সারি হোটেল ঢাকা"
+        - "বাজেট হোটেল বাংলাদেশ"
+        - "বুটিক হোটেল বাংলাদেশ"
+        - "সি রিসোর্ট বাংলাদেশ"
+        - "বিচ হোটেল বাংলাদেশ"
+    competitor_target: 20
+    subsegments:
+      - "hotels"
+      - "resorts"
+      - "guest houses"
+      - "motels"
+      - "hostels"
+      - "luxury hotels"
+      - "boutique hotels"
+      - "sea resorts"
+      - "beach hotels"
+      - "budget hotels"
+    policy_sensitivity: low
+
+  machinery-industrial:
+    display_name: "Machinery & Industrial Equipment"
+    status: active
+    priority_weight: 0.70
+    keywords:
+      en: ["industrial machinery Bangladesh", "CNC machine BD", "generator Bangladesh",
+           "welding equipment BD", "lathe machine Bangladesh", "industrial pump BD",
+           "boiler Bangladesh", "compressor BD", "power tool Bangladesh",
+           "packaging machine BD", "printing machine Bangladesh", "sewing machine Bangladesh"]
+      bn: ["শিল্প যন্ত্রপাতি", "জেনারেটর", "ওয়েল্ডিং যন্ত্র", "কারখানার মেশিন"]
+    competitor_target: 10
+    subsegments: ["industrial machinery", "power equipment", "workshop tools"]
+    policy_sensitivity: low
+
+  telecom-isp:
+    display_name: "Telecom & ISP"
+    status: active
+    priority_weight: 0.70
+    keywords:
+      en: ["ISP Bangladesh", "internet service provider Dhaka", "broadband company BD",
+           "telecom company Bangladesh", "network infrastructure BD", "fiber optic internet Bangladesh"]
+      bn: ["আইএসপি বাংলাদেশ", "ইন্টারনেট সার্ভিস প্রভাইডার", "ব্রডব্যান্ড কোম্পানি"]
+    competitor_target: 10
+    subsegments: ["ISP", "telecom operator", "network infrastructure"]
+    policy_sensitivity: medium
+
+  energy-power:
+    display_name: "Energy & Power"
+    status: active
+    priority_weight: 0.70
+    keywords:
+      en: ["solar company Bangladesh", "power plant BD", "energy company Bangladesh",
+           "solar panel supplier BD", "IPS battery Bangladesh", "electrical contractor BD",
+           "generator supplier Bangladesh", "renewable energy BD"]
+      bn: ["সোলার কোম্পানি বাংলাদেশ", "বিদ্যুৎ কেন্দ্র", "সোলার প্যানেল", "জেনারেটর সরবরাহকারী"]
+    competitor_target: 12
+    subsegments: ["solar", "power generation", "electrical contracting", "IPS-battery"]
+    policy_sensitivity: medium
+
+  ngo-development:
+    display_name: "NGO & Development"
+    status: active
+    priority_weight: 0.65
+    keywords:
+      en: ["NGO Bangladesh", "development organization Dhaka", "international NGO BD",
+           "charity organization Bangladesh", "foundation Bangladesh", "volunteer organization BD"]
+      bn: ["এনজিও বাংলাদেশ", "উন্নয়ন সংস্থা", "দাতব্য সংস্থা", "ফাউন্ডেশন"]
+    competitor_target: 10
+    subsegments: ["local NGO", "international NGO", "charity", "foundation"]
+    policy_sensitivity: medium
+
+  beauty-personal-care:
+    display_name: "Beauty & Personal Care"
+    status: active
+    priority_weight: 0.60
+    keywords:
+      en: ["beauty parlour Bangladesh", "salon Dhaka", "cosmetics shop BD",
+           "skincare Bangladesh", "barber shop Bangladesh", "spa Bangladesh",
+           "cosmetics company BD", "beauty product distributor Bangladesh"]
+      bn: ["বিউটি পার্লার", "সেলুন", "কসমেটিক্সের দোকান", "স্পা"]
+    competitor_target: 10
+    subsegments: ["salon", "cosmetics retail", "spa", "cosmetics manufacturing"]
+    policy_sensitivity: low
+
+  real-estate-property:
+    display_name: "Real Estate & Property Services"
+    status: active
+    priority_weight: 0.70
+    keywords:
+      en: ["property management Bangladesh", "real estate agency Dhaka", "apartment developer BD",
+           "commercial property Bangladesh", "land brokerage BD", "facility management Bangladesh"]
+      bn: ["প্রপার্টি ম্যানেজমেন্ট", "রিয়েল এস্টেট এজেন্সি", "জমি দালাল"]
+    competitor_target: 12
+    subsegments: ["property management", "brokerage", "facility management"]
+    policy_sensitivity: low
+
+  professional-services:
+    display_name: "Professional Services"
+    status: active
+    priority_weight: 0.65
+    keywords:
+      en: ["law firm Bangladesh", "accounting firm Dhaka", "consulting firm BD",
+           "audit firm Bangladesh", "lawyer chamber Bangladesh", "business consultant BD",
+           "tax consultant Bangladesh", "HR consulting BD", "recruitment agency Bangladesh"]
+      bn: ["আইনজীবী চেম্বার", "অ্যাকাউন্টিং ফার্ম", "কনসালটিং ফার্ম", "রিক্রুটমেন্ট এজেন্সি"]
+    competitor_target: 12
+    subsegments: ["legal", "accounting-audit", "consulting", "recruitment-HR"]
+    policy_sensitivity: low
+
+  sports-fitness:
+    display_name: "Sports & Fitness"
+    status: active
+    priority_weight: 0.55
+    keywords:
+      en: ["gym Bangladesh", "fitness center Dhaka", "sports shop BD",
+           "gymnasium Bangladesh", "sports complex Bangladesh", "swimming pool BD"]
+      bn: ["জিম বাংলাদেশ", "ফিটনেস সেন্টার", "খেলার মাঠ", "সুইমিং পুল"]
+    competitor_target: 10
+    subsegments: ["gym-fitness", "sports facilities", "sports retail"]
+    policy_sensitivity: low
+
+  printing-publishing:
+    display_name: "Printing & Publishing"
+    status: active
+    priority_weight: 0.55
+    keywords:
+      en: ["printing press Bangladesh", "book publisher Dhaka", "packaging printing BD",
+           "offset printing Bangladesh", "banner printing BD", "publication house Bangladesh"]
+      bn: ["প্রিন্টিং প্রেস", "বই প্রকাশক", "প্যাকেজিং প্রিন্টিং", "প্রকাশনী"]
+    competitor_target: 10
+    subsegments: ["commercial printing", "publishing", "packaging print"]
+    policy_sensitivity: low
+
+  maritime-shipping:
+    display_name: "Maritime & Shipping"
+    status: active
+    priority_weight: 0.65
+    keywords:
+      en: ["shipping line Bangladesh", "stevedoring Chattogram", "ship chandler BD",
+           "marine service Bangladesh", "ship agent Chattogram", "inland shipping Bangladesh"]
+      bn: ["শিপিং লাইন", "শিপ চ্যান্ডলার", "নৌ পরিবহন", "শিপিং এজেন্ট"]
+    competitor_target: 8
+    subsegments: ["shipping line", "ship agency", "chandler", "inland water"]
+    policy_sensitivity: medium
+
+# ── LinkedIn Jobs crawler config ──────────────────────────────────────────
+# Drives the LinkedIn jobs-guest scraper (see docs/LINKEDIN_SCRAPER_PLAN.md).
+# Queries = linkedin_keywords × locations. Kept here so jobs scraping scales
+# automatically whenever a sector is added/activated above.
+
+linkedin_jobs:
+  # LinkedIn guest guest-search `location` param values (must match LinkedIn geo names)
+  locations:
+    # Bangladesh — primary market (10), gets the FULL keyword matrix
+    # (universal + every sector), because the niche vocabs are BD-specific.
+    - "Dhaka, Bangladesh"
+    - "Chattogram, Bangladesh"
+    - "Bangladesh"
+    - "Sylhet, Bangladesh"
+    - "Khulna, Bangladesh"
+    - "Rajshahi, Bangladesh"
+    - "Barishal, Bangladesh"
+    - "Rangpur, Bangladesh"
+    - "Mymensingh, Bangladesh"
+    - "Cumilla, Bangladesh"
+    # 2026-09-18 — global expansion. Only universal keywords + the
+    # `global_expansion_sectors` below run against these locations —
+    # BD-local vocab (merchandiser, MFS, garments) doesn't load overseas.
+    #
+    # North America
+    - "United States"
+    - "New York, United States"
+    - "San Francisco, United States"
+    - "Toronto, Canada"
+    - "Canada"
+    # Europe / UK
+    - "United Kingdom"
+    - "London, United Kingdom"
+    - "Berlin, Germany"
+    - "Germany"
+    - "Amsterdam, Netherlands"
+    - "Paris, France"
+    - "Ireland"
+    - "Poland"
+    - "Spain"
+    # APAC
+    - "India"
+    - "Bangalore, India"
+    - "Mumbai, India"
+    - "Singapore"
+    - "Australia"
+    - "Sydney, Australia"
+    - "Japan"
+    - "Hong Kong"
+    # Middle East
+    - "Dubai, United Arab Emirates"
+    - "United Arab Emirates"
+    - "Saudi Arabia"
+    - "Qatar"
+    # South Asia spillover
+    - "Pakistan"
+    - "Sri Lanka"
+    - "Nepal"
+    # Africa foothold
+    - "South Africa"
+    - "Nigeria"
+  # Sectors whose keyword vocabulary is international enough to run against
+  # the global location list. BD-flavored sectors (RMG, microfinance, beauty)
+  # stay BD-only.
+  global_expansion_sectors:
+    - media-marketing-digital
+    - education-training
+    - logistics-transport
+    - real-estate-property
+    - energy-power
+    - telecom-isp
+    - maritime-shipping
+    - healthcare-pharma
+    - banking-finance
+    - professional-services
+    - construction-real-estate
+    - bim-global-outreach
+  # Per-sector keyword lists tuned for LinkedIn *job title/skill* search.
+  # These are job-seeker vocabulary, NOT the B2B discovery keywords above.
+  sector_keywords:
+    manufacturing-rmg:
+      - "merchandiser"
+      - "garments"
+      - "textile engineer"
+      - "production manager factory"
+      - "quality controller garments"
+      - "compliance officer"
+      - "industrial engineer"
+    banking-finance:
+      - "banker"
+      - "relationship manager"
+      - "credit analyst"
+      - "MFS"
+      - "accountant"
+      - "auditor"
+      - "insurance officer"
+      - "AML compliance"
+    healthcare-pharma:
+      - "medical officer"
+      - "pharmacist"
+      - "medical representative"
+      - "nurse"
+      - "lab technologist"
+      - "hospital administrator"
+    construction-real-estate:
+      - "civil engineer"
+      - "site engineer"
+      - "architect"
+      - "project manager construction"
+      - "quantity surveyor"
+    real-estate-property:
+      - "property manager"
+      - "real estate executive"
+      - "sales executive real estate"
+    food-beverage:
+      - "chef"
+      - "restaurant manager"
+      - "food technologist"
+      - "quality assurance food"
+      - "F&B manager"
+    media-marketing-digital:
+      - "digital marketing"
+      - "SEO specialist"
+      - "content writer"
+      - "graphic designer"
+      - "social media executive"
+      - "marketing executive"
+      - "brand manager"
+    education-training:
+      - "teacher"
+      - "lecturer"
+      - "IELTS instructor"
+      - "academic coordinator"
+      - "trainer"
+    logistics-transport:
+      - "supply chain executive"
+      - "logistics officer"
+      - "fleet manager"
+      - "warehouse supervisor"
+      - "customs clearance officer"
+      - "freight forwarding"
+    agriculture-agro:
+      - "agriculture officer"
+      - "agronomist"
+      - "fisheries officer"
+      - "poultry farm manager"
+      - "seed production"
+    travel-tourism:
+      - "travel consultant"
+      - "visa officer"
+      - "tour operator"
+      - "ticketing officer"
+    hospitality-hotels:
+      - "hotel manager"
+      - "front office executive"
+      - "housekeeping supervisor"
+      - "hotel chef"
+    clothing-fashion:
+      - "fashion designer"
+      - "merchandiser apparel"
+      - "pattern master"
+      - "boutique manager"
+    electronics-gadgets:
+      - "electronics engineer"
+      - "service engineer"
+      - "mobile technician"
+    automotive-car-care:
+      - "automobile engineer"
+      - "workshop supervisor"
+      - "service advisor automobile"
+    service-agents-distribution:
+      - "sales executive"
+      - "area sales manager"
+      - "distributor manager"
+      - "C&F officer"
+    energy-power:
+      - "electrical engineer"
+      - "power plant engineer"
+      - "solar engineer"
+    telecom-isp:
+      - "network engineer"
+      - "telecom engineer"
+      - "NOC engineer"
+      - "fiber optic"
+    machinery-industrial:
+      - "mechanical engineer"
+      - "maintenance engineer"
+      - "CNC operator"
+    ngo-development:
+      - "project officer NGO"
+      - "field officer"
+      - "programme manager"
+      - "monitoring evaluation"
+      - "MIS officer NGO"
+    beauty-personal-care:
+      - "beautician"
+      - "salon manager"
+      - "cosmetics sales"
+    professional-services:
+      - "lawyer"
+      - "advocate"
+      - "chartered accountant"
+      - "HR executive"
+      - "consultant"
+      - "recruiter"
+    sports-fitness:
+      - "fitness trainer"
+      - "gym instructor"
+      - "sports coach"
+    printing-publishing:
+      - "printing supervisor"
+      - "editor"
+      - "prepress operator"
+    maritime-shipping:
+      - "shipping executive"
+      - "port officer"
+      - "marine engineer"
+      - "crew coordinator"
+    jewellery:
+      - "jewellery designer"
+      - "gemologist"
+      - "showroom manager jewellery"
+    high-roi-niches:
+      - "pet groomer"
+      - "content creator"
+      - "baker"
+    crypto-bitcoin:
+      - "blockchain developer"
+      - "crypto trader"
+    bim-global-outreach:
+      - "BIM modeler"
+      - "revit drafter"
+      - "CAD operator"
+      - "MEP designer"
+  # Universal keywords run against every location regardless of sector —
+  # these are the high-volume BD job title families.
+  universal_keywords:
+    - "software engineer"
+    - "web developer"
+    - "data analyst"
+    - "manager"
+    - "executive"
+    - "officer"
+    - "accountant"
+    - "customer service"
+    - "call center"
+    - "driver"
+    - "security guard"
+    - "cook"
+    - "intern"
+    - "remote"
+    # 2026-09-16 expansion — high-volume BD titles (original 14 exhausted)
+    - "sales representative"
+    - "administrative assistant"
+    - "receptionist"
+    - "graphic design"
+    - "marketing manager"
+    - "finance officer"
+    - "HR manager"
+    - "supply chain manager"
+    - "customer support"
+    - "business development"
+    - "delivery rider"
+    - "store keeper"

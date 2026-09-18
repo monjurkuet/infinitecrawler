@@ -40,8 +40,10 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # Load .env so interactive runs get LLM_API_KEY etc. Systemd EnvironmentFile
 # vars already in os.environ take precedence (load_dotenv does not override).
 load_dotenv(REPO_ROOT / ".env")
-# BPT_DIR points to business-plan-template sibling repo at ../business-plan-template
-BPT_DIR = REPO_ROOT.parent / "business-plan-template"
+# BPT_DIR points to the vendored copies in config/bpt/ (decoupled from
+# ../business-plan-template on 2026-09-18; the yamls there are the source of
+# truth now).
+BPT_DIR = REPO_ROOT / "config" / "bpt"
 CLASSIFICATION_DIR = REPO_ROOT / "_system" / "classification"
 
 # LLM settings — support both LLM_* and OPENAI_* env vars (bashrc uses OPENAI_*, .env uses LLM_*)

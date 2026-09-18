@@ -62,7 +62,7 @@ FAIRBURY_NICHE_SHARE = 2  # queries per next_batch(n) (QUERY_BATCH_SIZE=25 → ~
 QUERY_SEP = "|"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-_SECTORS_YAML_DEFAULT = REPO_ROOT.parent / "business-plan-template" / "_system" / "config" / "software_sectors.yaml"
+_SECTORS_YAML_DEFAULT = REPO_ROOT / "config" / "bpt" / "software_sectors.yaml"
 SECTORS_YAML_PATH = Path(os.environ["SECTORS_YAML_PATH"]) if os.environ.get("SECTORS_YAML_PATH") else _SECTORS_YAML_DEFAULT
 
 

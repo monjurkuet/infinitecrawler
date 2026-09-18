@@ -1,0 +1,230 @@
+---
+name: software-products-lead-pipeline
+version: 2.0
+description: >
+  Searches for businesses that would BUY software products.
+  Queries target customer business types (e.g., "garments factory")
+  NOT the software itself — so we find potential buyers, not competitors.
+sectors:
+  payroll:
+    display_name: "Payroll Software"
+    product_name: "Payroll Management System"
+    target_business_types:
+      en: ["garments factory", "manufacturing company", "textile mill", "pharmaceutical company", "FMCG company", "corporate office", "industrial company", "large business"]
+      bn: ["গার্মেন্টস ফ্যাক্টরি", "টেক্সটাইল মিল", "ফার্মাসিউটিক্যাল কোম্পানি", "কর্পোরেট অফিস", "বড় ব্যবসা", "শিল্প কারখানা", "পোশাক কারখানা"]
+    subsegments: ["factories", "HR departments", "corporate offices"]
+    priority_weight: 0.95
+    status: active
+    competitor_target: 12
+    policy_sensitivity: low
+
+  attendance:
+    display_name: "Attendance Software"
+    product_name: "Attendance & Time Tracking System"
+    target_business_types:
+      en: ["garments factory", "manufacturing company", "corporate office", "industrial company", "large office", "bank", "insurance company"]
+      bn: ["গার্মেন্টস কারখানা", "শিল্প কারখানা", "কর্পোরেট অফিস", "ব্যাংক", "বীমা কোম্পানি", "বড় প্রতিষ্ঠান"]
+    subsegments: ["factories", "offices", "institutions"]
+    priority_weight: 0.9
+    status: active
+    competitor_target: 10
+    policy_sensitivity: low
+
+  inventory:
+    display_name: "Inventory Software"
+    product_name: "Inventory Management System"
+    target_business_types:
+      en: ["warehouse", "wholesale market", "supermarket", "retail store", "trading company", "showroom", "department store"]
+      bn: ["গুদাম", "পাইকারি বাজার", "সুপারমার্কেট", "রিটেইল স্টোর", "ট্রেডিং কোম্পানি", "শোরুম", "ডিপার্টমেন্টাল স্টোর"]
+    subsegments: ["warehouses", "retail chains", "trading companies"]
+    priority_weight: 0.9
+    status: active
+    competitor_target: 10
+    policy_sensitivity: low
+
+  pos_retail:
+    display_name: "POS - Retail Shop"
+    product_name: "POS Software for Retail"
+    target_business_types:
+      en: ["retail shop", "grocery store", "supermarket", "fashion boutique", "clothing store", "electronics shop", "general store", "department store", "variety store", "jewellery shop"]
+      bn: ["দোকান", "মুদি দোকান", "সুপারমার্কেট", "ফ্যাশন বুটিক", "ইলেকট্রনিক্সের দোকান", "জুয়েলারি দোকান", "পোশাকের দোকান", "শোরুম"]
+    subsegments: ["retail shops", "boutiques", "general stores", "supermarkets"]
+    priority_weight: 0.95
+    status: active
+    competitor_target: 12
+    policy_sensitivity: low
+
+  pos_restaurant:
+    display_name: "POS - Restaurant"
+    product_name: "POS Software for Restaurants"
+    target_business_types:
+      en: ["restaurant", "cafe", "fast food shop", "fine dining", "food court", "bakery", "coffee shop", "diner", "pizza shop", "kebab shop"]
+      bn: ["রেস্তোরাঁ", "ক্যাফে", "ফাস্ট ফুড", "বেকারি", "কফি শপ", "হোটেল রেস্টুরেন্ট"]
+    subsegments: ["restaurants", "cafes", "fast food outlets", "bakeries"]
+    priority_weight: 0.9
+    status: active
+    competitor_target: 12
+    policy_sensitivity: low
+
+  distribution:
+    display_name: "Distribution Management System"
+    product_name: "Distribution & Supply Chain Software"
+    target_business_types:
+      en: ["trading company", "distributor", "wholesale business", "logistics company", "supply chain company", "courier service", "transport company", "C&F agent"]
+      bn: ["ট্রেডিং কোম্পানি", "ডিস্ট্রিবিউটর", "পাইকারি ব্যবসা", "লজিস্টিকস কোম্পানি", "কুরিয়ার সার্ভিস", "পরিবহন কোম্পানি"]
+    subsegments: ["distributors", "trading houses", "logistics providers"]
+    priority_weight: 0.85
+    status: active
+    competitor_target: 10
+    policy_sensitivity: low
+
+  tour_travel:
+    display_name: "Tour & Travel Management System"
+    product_name: "Tour & Travel Management Software"
+    target_business_types:
+      en: ["travel agency", "tour operator", "hotel", "resort", "transport company", "bus service", "airline agency"]
+      bn: ["ট্রাভেল এজেন্সি", "ট্যুর অপারেটর", "হোটেল", "রিসোর্ট", "পরিবহন কোম্পানি", "বাস সার্ভিস"]
+    subsegments: ["travel agencies", "tour operators", "hotels", "resorts"]
+    priority_weight: 0.85
+    status: active
+    competitor_target: 10
+    policy_sensitivity: low
+
+  buying_house:
+    display_name: "Buying House Management System"
+    product_name: "Buying House Management Software"
+    target_business_types:
+      en: ["buying house", "garment buying house", "export house", "apparel sourcing", "textile buying house", "sourcing company", "garment sourcing"]
+      bn: ["বায়িং হাউস", "গার্মেন্টস বায়িং হাউস", "এক্সপোর্ট হাউস", "টেক্সটাইল বায়িং হাউস"]
+    subsegments: ["buying houses", "sourcing agents", "export houses"]
+    priority_weight: 0.8
+    status: active
+    competitor_target: 8
+    policy_sensitivity: low
+
+  auto_repair:
+    display_name: "Auto Repairing Shop Management System"
+    product_name: "Auto Repair Shop Management Software"
+    target_business_types:
+      en: ["auto repair shop", "garage", "car service center", "workshop", "car dealer", "auto mechanic shop", "car workshop", "tire shop"]
+      bn: ["অটো রিপেয়ার শপ", "গ্যারেজ", "কার সার্ভিস সেন্টার", "ওয়ার্কশপ", "গাড়ির ডিলার"]
+    subsegments: ["auto repair shops", "garages", "car service centers"]
+    priority_weight: 0.8
+    status: active
+    competitor_target: 10
+    policy_sensitivity: low
+
+  event_management:
+    display_name: "Event Management System"
+    product_name: "Event Management Software"
+    target_business_types:
+      en: ["event management company", "wedding planner", "event venue", "conference hall", "convention center", "corporate event", "event agency"]
+      bn: ["ইভেন্ট ম্যানেজমেন্ট কোম্পানি", "ওয়েডিং প্ল্যানার", "ইভেন্ট ভেন্যু", "কনফারেন্স হল", "কনভেনশন সেন্টার"]
+    subsegments: ["event venues", "wedding planners", "conference centers"]
+    priority_weight: 0.85
+    status: active
+    competitor_target: 10
+    policy_sensitivity: low
+
+  ceo_crystal_ball:
+    display_name: "CEO's Crystal Ball"
+    product_name: "Business Intelligence Dashboard"
+    target_business_types:
+      en: ["corporate office", "large business", "enterprise company", "holding company", "group of companies", "CEO office", "business group"]
+      bn: ["কর্পোরেট অফিস", "বড় ব্যবসা", "হোল্ডিং কোম্পানি", "গ্রুপ অফ কোম্পানি", "সিইও অফিস"]
+    subsegments: ["corporate offices", "holding companies", "business groups"]
+    priority_weight: 0.85
+    status: active
+    competitor_target: 10
+    policy_sensitivity: low
+
+  personal_finance:
+    display_name: "Personal Finance"
+    product_name: "Personal Finance & Budgeting App"
+    target_business_types:
+      en: ["financial advisor", "accounting firm", "tax consultant", "investment firm", "stock broker", "remittance service"]
+      bn: ["ফাইন্যান্সিয়াল এডভাইজর", "অ্যাকাউন্টিং ফার্ম", "ট্যাক্স কনসালটেন্ট", "ইনভেস্টমেন্ট ফার্ম"]
+    subsegments: ["financial services", "accounting firms", "advisors"]
+    priority_weight: 0.7
+    status: active
+    competitor_target: 8
+    policy_sensitivity: low
+
+  community_center:
+    display_name: "Community Center Automation"
+    product_name: "Community & Club Management System"
+    target_business_types:
+      en: ["community center", "club", "sports complex", "association office", "society", "cultural club", "social club", "senior center"]
+      bn: ["কমিউনিটি সেন্টার", "ক্লাব", "স্পোর্টস কমপ্লেক্স", "সোসাইটি", "সাংস্কৃতিক ক্লাব"]
+    subsegments: ["community centers", "clubs", "associations", "sports facilities"]
+    priority_weight: 0.75
+    status: active
+    competitor_target: 8
+    policy_sensitivity: low
+
+  self_study:
+    display_name: "Self Study Tracker"
+    product_name: "Self-Learning Management Software"
+    target_business_types:
+      en: ["coaching center", "tutorial center", "educational institute", "school", "college", "learning center", "skill development center", "madrasa", "training center"]
+      bn: ["কোচিং সেন্টার", "টিউশন সেন্টার", "স্কুল", "কলেজ", "মাদ্রাসা", "প্রশিক্ষণ কেন্দ্র", "শিক্ষা প্রতিষ্ঠান"]
+    subsegments: ["coaching centers", "schools", "madrasas", "training centers"]
+    priority_weight: 0.75
+    status: active
+    competitor_target: 8
+    policy_sensitivity: low
+
+  pos_moody:
+    display_name: "POS - Moody (Dokan)"
+    product_name: "Multi-Vendor Marketplace POS"
+    target_business_types:
+      en: ["marketplace", "multi-vendor shop", "dokan", "online marketplace", "e-commerce platform", "wholesale market", "bazaar", "shopping complex"]
+      bn: ["বাজার", "মাল্টি-ভেন্ডর দোকান", "ডোকান", "অনলাইন মার্কেটপ্লেস", "পাইকারি বাজার", "শপিং কমপ্লেক্স"]
+    subsegments: ["marketplaces", "bazaars", "shopping complexes", "wholesale shops"]
+    priority_weight: 0.9
+    status: active
+    competitor_target: 10
+    policy_sensitivity: low
+
+  hotels-hospitality:
+    display_name: "Hotels & Hospitality"
+    product_name: "Hotel Management System"
+    target_business_types:
+      en:
+        - "hotel"
+        - "resort"
+        - "guest house"
+        - "luxury hotel"
+        - "boutique hotel"
+        - "budget hotel"
+        - "motel"
+        - "hotel & restaurant"
+        - "rest house"
+        - "boarding"
+        - "inn"
+        - "hostel"
+        - "hotel resort"
+      bn:
+        - "হোটেল"
+        - "রিসোর্ট"
+        - "গেস্ট হাউস"
+        - "আবাসিক হোটেল"
+        - "বোর্ডিং"
+        - "রেস্ট হাউস"
+        - "মোটেল"
+        - "হোস্টেল"
+        - "লাক্সারি হোটেল"
+        - "বাজেট হোটেল"
+        - "বুটিক হোটেল"
+    subsegments:
+      - "hotels"
+      - "resorts"
+      - "guest houses"
+      - "motels"
+      - "hostels"
+      - "luxury hotels"
+      - "boutique hotels"
+    priority_weight: 1.0
+    status: active
+    competitor_target: 20
+    policy_sensitivity: low

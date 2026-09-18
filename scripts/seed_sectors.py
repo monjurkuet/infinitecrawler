@@ -18,9 +18,10 @@ from utils.pg import get_pg_config  # noqa: E402
 
 log = logging.getLogger("seed_sectors")
 
-BPT_DIR = REPO_ROOT.parent / "business-plan-template"
-SECTORS_YAML = BPT_DIR / "_system" / "config" / "sectors.yaml"
-SOFTWARE_SECTORS_YAML = BPT_DIR / "_system" / "config" / "software_sectors.yaml"
+# Vendored copies of the BPT sector yamls (decoupled 2026-09-18).
+BPT_DIR = REPO_ROOT / "config" / "bpt"
+SECTORS_YAML = BPT_DIR / "sectors.yaml"
+SOFTWARE_SECTORS_YAML = BPT_DIR / "software_sectors.yaml"
 
 
 def load_all_sectors() -> dict:
