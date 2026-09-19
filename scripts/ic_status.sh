@@ -151,11 +151,11 @@ collect() {
   CLASS_DONE_24H=$($REDIS GET classify:done_24h 2>/dev/null || echo 0)
 
   # ── SERVICE PINGS ──
-  API=$(curl -sf -m 2 http://localhost:8015/health 2>/dev/null | grep -q '"status":"ok"' && echo "✓" || echo "✗")
+  API=$(curl -sf -m 2 http://localhost:8015/api/health 2>/dev/null | grep -q '"status":"ok"' && echo "✓" || echo "✗")
   PRM=$(curl -sf -m 2 http://localhost:8016/health 2>/dev/null | grep -q '"status":"ok"' && echo "✓" || echo "✗")
   WEB=$(curl -sf -m 2 http://localhost:5173 2>/dev/null | grep -q '<html' && echo "✓" || echo "✗")
   ADM=$(curl -sf -m 2 http://localhost:5174 2>/dev/null | grep -q '<html' && echo "✓" || echo "✗")
-  PINCH=$(curl -sf -m 2 http://localhost:9222/json/version 2>/dev/null | grep -q '"Browser"' && echo "✓" || echo "✗")
+  PINCH=$(curl -sf -m 2 http://localhost:9869/json/version 2>/dev/null | grep -q '"Browser"' && echo "✓" || echo "✗")
 
   # ── LAST FLUSH ──
   FLUSH=$($REDIS GET ic:last_flush 2>/dev/null | xargs -I{} date -d @{} '+%H:%M:%S' 2>/dev/null || echo "never")

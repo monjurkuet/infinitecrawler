@@ -79,7 +79,7 @@ and `RequiresMountsFor=/run/media/growloop/codebase/infinitecrawler`; with
 | `scraper.gmaps_listings` | all 3 listing daemons | Full profile: phone, website, address, rating, coordinates, sector_id |
 | `scraper.emails` | db_email_extract (loop + 2h timer) | Extracted emails from business websites |
 | `scraper.nearby_scan_grid` | nearby-scanner-daemon | Grid cell tracking (city, lat, lng, status) |
-| `scraper.linkedin_profiles` | firehose + search + backfill | DDGS-discovered LinkedIn profiles (name, title, company, location, connections, headline) |
+| `scraper.linkedin_jobs` | linkedin jobs search/detail/company | Global jobs matrix (41 locations, 4,207 pairs) |
 | `scraper.linkedin_companies` | company enrichment loop | Company cards: industry, size, employees, followers, HQ, website, founded, specialties, logo |
 | `scraper.app_users` | premium dashboard | Subscribers (bcrypt+JWT credentials, entitlement) |
 | `scraper.auth_attempts` | premium dashboard | Login audit log + rate-limit source (success/fail per IP+email) |

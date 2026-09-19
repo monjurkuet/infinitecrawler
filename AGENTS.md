@@ -1,6 +1,6 @@
 # AGENTS.md — InfiniteCrawler
 
-24/7 Google Maps lead generation pipeline for Bangladesh (15 BPT sectors × 15 cities) plus 29 global cities. Three extraction strategies run side by side: browser scroll, Places API multi-key enrichment, and Nearby Search grid-scanning — all writing to the same PostgreSQL `gmaps_listings` table.
+24/7 Google Maps lead generation pipeline for Bangladesh (15 sectors × 15 cities) plus 29 global cities. Three extraction strategies run side by side: browser scroll, Places API multi-key enrichment, and Nearby Search grid-scanning — all writing to the same PostgreSQL `gmaps_listings` table.
 
 ## Stack & Tooling
 
@@ -27,7 +27,7 @@ enrichment:
   monitor_pipeline + watchdog  (every 15min, auto-heal)
 ```
 
-Query mix: 70% BD-Local (city×keyword), 10% BD-National, 20% Global (6 international markets). 23,460 unique queries sourced from business-plan-template `sectors.yaml`.
+Query mix: 70% BD-Local (city×keyword), 10% BD-National, 20% Global (6 international markets). **23,460 unique queries** sourced from vendored `config/bpt/sectors.yaml`.
 
 ### Places API (New) — Free Tier Quota
 

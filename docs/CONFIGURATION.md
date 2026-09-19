@@ -214,3 +214,10 @@ CREATE TABLE scraper.nearby_scan_grid (
 -- Unique constraint: (city, latitude, longitude, batch_idx)
 -- Index on (status, city) for efficient pending-cell queries
 ```
+
+## Phantom Blocklist
+
+Redis set `gmaps:phantom:blocked` stores CIDs that have failed ≥5 times. Populated by `scripts/blocklist_dead_urls.py --apply --threshold 5`. Enforced in three chokepoints:
+- `daemons/listing_daemon.py:_mark_phantom_url` — blocks before requeue
+- `scripts/phantom_sweeper.py:sweep_redis` — skips blocked URLs
+- `strategies/queue/redis_queue.py:requeue_stale_failed` — timer-driven recycle guard
