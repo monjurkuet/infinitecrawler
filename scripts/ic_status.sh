@@ -1,268 +1,142 @@
 #!/usr/bin/env bash
-# ic_status.sh — live status board for the InfiniteCrawler pipeline.
-# Usage:  ic_status              one-shot snapshot
-#         ic_status --watch [s]  refresh every N seconds (default 30)
-#
-# Sections: LIVE NOW -> ACTIVITY (1h/24h) -> DATA QUALITY -> BACKLOGS
-#           -> EMAIL TREND -> TOTALS -> DASHBOARDS.
-set -uo pipefail
+# ic_status.sh — 25-line live dashboard for InfiniteCrawler
+# Usage: ic_status.sh [--watch [interval_sec]]  (default interval 30s)
+# Requires: PG_HOST/PG_PORT in .env or env, redis-cli, systemctl --user
 
-# DB connection: PG_HOST / PG_PORT env override if set, else pull from
-# .env in the repo (works whether IC's PG is local unix-socket or remote via
-# Tailscale like the current 100.108.5.65).
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-if [ -z "${PG_HOST:-}" ] && [ -f "$REPO_ROOT/.env" ]; then
-  PG_HOST=$(grep -E '^PG_HOST=' "$REPO_ROOT/.env" | head -1 | cut -d= -f2-)
-  PG_PORT=$(grep -E '^PG_PORT=' "$REPO_ROOT/.env" | head -1 | cut -d= -f2-)
-fi
-PG_HOST="${PG_HOST:-/var/run/postgresql}"
-PG_PORT="${PG_PORT:-5432}"
-PG_USER="${PG_USER:-postgres}"
-PG_DB="${PG_DB:-infinitecrawler}"
-PSQL="psql -h $PG_HOST -p $PG_PORT -U $PG_USER -d $PG_DB -tA -F|"
+set -euo pipefail
+
+REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+ENV_FILE="$REPO_ROOT/.env"
+[[ -f "$ENV_FILE" ]] && source "$ENV_FILE"
 export PGPASSWORD="${PGPASSWORD:-changeme}"
-LOGDIR=/var/log/infinitecrawler
+PSQL="psql -h ${PG_HOST:-/var/run/postgresql} -p ${PG_PORT:-5432} -U postgres -d infinitecrawler -tA -F'|'"
+REDIS="redis-cli -n 0"
 
-# ---------- palette ----------
-if [ -t 1 ]; then
-  B=$'\e[1m'; DIM=$'\e[2m'; X=$'\e[0m'
-  GR=$'\e[32m'; YL=$'\e[33m'; RD=$'\e[31m'; CY=$'\e[36m'
-  OK="${GR}●${X}"; WARN="${YL}●${X}"; BAD="${RD}●${X}"; NA="${DIM}·${X}"
-else B=; DIM=; X=; GR=; YL=; RD=; CY=; OK="[ok]"; WARN="[warn]"; BAD="[BAD]"; NA="-"; fi
+WATCH=0
+INTERVAL=30
+for arg in "$@"; do
+  case $arg in
+    --watch) WATCH=1 ;;
+    *) [[ $arg =~ ^[0-9]+$ ]] && INTERVAL=$arg ;;
+  esac
+done
 
-q() { $PSQL -c "$1" 2>/dev/null; }   # psql wrapper (tuples, | sep)
+hr() { printf '─%.0s' {1..80}; echo; }
+cell() { printf '%-26s' "$1"; }
+grid3() { cell "$1"; cell "$2"; echo "$3"; }
+grid4() { cell "$1"; cell "$2"; cell "$3"; echo "$4"; }
+age() { 
+    local ts="$1"
+    [[ -z "$ts" || "$ts" = "0" ]] && echo "?" && return
+    date -d "@$ts" '+%H:%M' 2>/dev/null || date -r "$ts" '+%H:%M' 2>/dev/null || echo "?"; 
+  }
 
-sec() {  # section header with rule
-  local t="$1"
-  local pad=$(( 76 - ${#t} ))
-  [ "$pad" -lt 2 ] && pad=2
-  local rule; rule=$(printf '%.0s─' $(seq "$pad"))
-  printf '%s─ %s %s%s\n' "$CY$B" "$t" "$rule" "$X"
-}
-row() {  printf '  %s %-38s %10s%s\n' "$1" "$2" "$3" "$X"; }
-row2() { printf '  %s %-26s %14s %10s %s\n' "$1" "$2" "$3" "$4" "$X"; }
+collect() {
+  # ── DAEMONS ──
+  mapfile -t UNITS < <(systemctl --user list-units 'infinitecrawler-*.service' --no-legend --plain 2>/dev/null | awk '{print $1,$3,$4}')
+  UP=0; TOT=${#UNITS[@]}
+  for u in "${UNITS[@]}"; do [[ $u == *active* ]] && UP=$((UP+1)); done
 
-# gauge: num $1 warn_if_below $2 -> colored number
-num() {
-  local v="${1:-0}" lo="${2:-1}"
-  if [ "$v" -ge "$lo" ] 2>/dev/null; then echo "${GR}$v${X}"; else echo "${WARN}$v${X}"; fi
-}
+  # ── PG COUNTS ──
+  IFS='|' read -r LIST_TOTAL LIST_1H LIST_24H < <($PSQL -c "
+    SELECT count(*), count(*) FILTER (WHERE created_at > now() - interval '1 hour'),
+           count(*) FILTER (WHERE created_at > now() - interval '24 hour')
+    FROM scraper.gmaps_listings" 2>/dev/null || echo "0|0|0")
+  IFS='|' read -r SRCH_TOTAL SRCH_1H SRCH_24H < <($PSQL -c "
+    SELECT count(*), count(*) FILTER (WHERE created_at > now() - interval '1 hour'),
+           count(*) FILTER (WHERE created_at > now() - interval '24 hour')
+    FROM scraper.gmaps_search_results" 2>/dev/null || echo "0|0|0")
+  IFS='|' read -r EMAIL_TOTAL EMAIL_1H EMAIL_24H < <($PSQL -c "
+    SELECT count(*), count(*) FILTER (WHERE discovered_at > now() - interval '1 hour'),
+           count(*) FILTER (WHERE discovered_at > now() - interval '24 hour')
+    FROM scraper.emails" 2>/dev/null || echo "0|0|0")
+  IFS='|' read -r BBB_TOTAL BBB_1H BBB_24H < <($PSQL -c "
+    SELECT count(*), count(*) FILTER (WHERE created_at > now() - interval '1 hour'),
+           count(*) FILTER (WHERE created_at > now() - interval '24 hour')
+    FROM scraper.bbb_listings" 2>/dev/null || echo "0|0|0")
+  IFS='|' read -r LJ_TOTAL LJ_1H LJ_24H < <($PSQL -c "
+    SELECT count(*), count(*) FILTER (WHERE created_at > now() - interval '1 hour'),
+           count(*) FILTER (WHERE created_at > now() - interval '24 hour')
+    FROM scraper.linkedin_jobs" 2>/dev/null || echo "0|0|0")
+  IFS='|' read -r LJC_TOTAL < <($PSQL -c "SELECT count(*) FROM scraper.linkedin_companies" 2>/dev/null || echo "0")
 
-spark() {  # sparkline from space-separated ints
-  awk 'BEGIN{
-    split("▁ ▂ ▃ ▄ ▅ ▆ ▇ █",b," "); n=split(ARGV[1],a," ");
-    mx=1; for(i=1;i<=n;i++) if(a[i]>mx) mx=a[i];
-    for(i=1;i<=n;i++){ l=int(a[i]/mx*7+0.999); if(l<1)l=1; printf "%s",b[l]; } print ""
-  }' "$1"
+  # ── REDIS QUEUES ──
+  SRCH_PEND=$($REDIS LLEN gmaps:pending 2>/dev/null || echo 0)
+  SRCH_PROC=$($REDIS LLEN gmaps:processing 2>/dev/null || echo 0)
+  SRCH_PHAN=$($REDIS LLEN gmaps:phantom 2>/dev/null || echo 0)
+  SRCH_FAIL=$($REDIS HLEN gmaps:failed 2>/dev/null || echo 0)
+  LIST_PEND=$($REDIS LLEN listing:pending 2>/dev/null || echo 0)
+  LIST_PROC=$($REDIS LLEN listing:processing 2>/dev/null || echo 0)
+  LIST_PHAN=$($REDIS LLEN listing:phantom 2>/dev/null || echo 0)
+  LIST_POOL=$($REDIS SCARD listing:browser_pool 2>/dev/null || echo 0)
+  NEARBY_PEND=$($REDIS LLEN nearby:pending 2>/dev/null || echo 0)
+  NEARBY_QUOTA=$($REDIS GET nearby:quota_reset_ts 2>/dev/null || echo 0)
+  PLACES_QUOTA=$($REDIS GET places:quota_reset_ts 2>/dev/null || echo 0)
+  BBB_PEND=$($REDIS LLEN bbb:pending 2>/dev/null || echo 0)
+  BBB_PROC=$($REDIS SCARD bbb:processing 2>/dev/null || echo 0)
+  EMAIL_PEND=$($REDIS LLEN email:pending 2>/dev/null || echo 0)
+  EMAIL_BROW=$($REDIS SCARD email:browser_pool 2>/dev/null || echo 0)
+  LJ_PEND=$($REDIS SCARD linkedin:jobs:pending 2>/dev/null || echo 0)
+  LJ_PROC=$($REDIS SCARD linkedin:jobs:processing 2>/dev/null || echo 0)
+  LJ_COMP=$($REDIS SCARD linkedin:companies:pending 2>/dev/null || echo 0)
+
+  # ── FILL RATES (1h window) ──
+  IFS='|' read -r PHONE WEB RATE ADDR CAT PHAN < <($PSQL -c "
+    SELECT round(100.0*count(phone) FILTER (WHERE phone IS NOT NULL)/NULLIF(count(*),0),1),
+           round(100.0*count(website) FILTER (WHERE website IS NOT NULL)/NULLIF(count(*),0),1),
+           round(100.0*count(rating) FILTER (WHERE rating IS NOT NULL)/NULLIF(count(*),0),1),
+           round(100.0*count(address) FILTER (WHERE address IS NOT NULL)/NULLIF(count(*),0),1),
+           round(100.0*count(category) FILTER (WHERE category IS NOT NULL)/NULLIF(count(*),0),1),
+           count(*) FILTER (WHERE source_url LIKE '%?cid=%')
+    FROM scraper.gmaps_listings
+    WHERE created_at > now() - interval '1 hour'" 2>/dev/null || echo "0|0|0|0|0|0")
+
+  # ── NEARBY / PLACES DAILY ──
+  NEARBY_DAY=$($PSQL -c "SELECT count(*) FROM scraper.gmaps_listings WHERE source_type='nearby_search' AND created_at > now() - interval '24 hour'" 2>/dev/null || echo 0)
+  PLACES_DAY=0  # no distinct source_type
+
+  # ── BLOG / CLASSIFY ──
+  BLOG_PEND=$($REDIS LLEN blog:pending 2>/dev/null || echo 0)
+  CLASS_PEND=$($REDIS LLEN classify:pending 2>/dev/null || echo 0)
+
+  # ── SERVICE PINGS ──
+  API=$(curl -sf -m 2 http://localhost:8015/health 2>/dev/null | grep -q '"status":"ok"' && echo ✓ || echo ✗)
+  PRM=$(curl -sf -m 2 http://localhost:8016/health 2>/dev/null | grep -q '"status":"ok"' && echo ✓ || echo ✗)
+  WEB=$(curl -sf -m 2 http://localhost:5173 2>/dev/null | grep -q '<html' && echo ✓ || echo ✗)
+  ADM=$(curl -sf -m 2 http://localhost:5174 2>/dev/null | grep -q '<html' && echo ✓ || echo ✗)
+  PINCH=$(curl -sf -m 2 http://localhost:9222/json/version 2>/dev/null | grep -q '"Browser"' && echo ✓ || echo ✗)
+
+  # ── LAST FLUSH ──
+  FLUSH=$($REDIS GET ic:last_flush 2>/dev/null | xargs -I{} date -d @{} '+%H:%M:%S' 2>/dev/null || echo "never")
 }
 
 render() {
-  clear 2>/dev/null || true
-  NOW=$(date '+%F %T %Z')
-  printf '%s%s  INFINITECRAWLER %s %s\n' "$B" "$CY" "$NOW" "$X"
-  printf '%s%s\n' "$DIM" "  ────────────────────────────────────────────────────────────────────────$X"
-
-  # ============================ 1. LIVE NOW ============================
-  sec "LIVE NOW"
-  ACT=$(systemctl --user list-units 'infinitecrawler-*.service' --no-legend 2>/dev/null | grep -c ' active ' || true)
-  TOT=$(systemctl --user list-units 'infinitecrawler-*.service' --no-legend 2>/dev/null | wc -l)
-  PEND=$(redis-cli LLEN gmaps:pending 2>/dev/null || echo 0)
-  PROC=$(redis-cli LLEN gmaps:processing 2>/dev/null || echo 0)
-  PHAN=$(redis-cli LLEN gmaps:phantom 2>/dev/null || echo 0)
-  COMP=$(redis-cli SCARD gmaps:completed 2>/dev/null || echo 0)
-
-  [ "$ACT" = "$TOT" ] && DS=$(echo "$OK") || DS=$(echo "$BAD")
-  row "$DS" "daemons running" "$ACT/$TOT"
-  [ "$PEND" -ge 50 ] && QS="$OK" || QS="$WARN"
-  row "$QS" "queue  pending / processing" "$(num "$PEND" 50) / $PROC"
-  [ "$PHAN" -le 50 ] && PS="$OK" || PS="$WARN"
-  row "$PS" "phantom queue (bare shells)" "$PHAN"
-  row "$NA" "completed lifetime" "$COMP"
-
-  echo "  ${DIM}extracting right now:${X}"
-  mapfile -t CUR < <(redis-cli LRANGE gmaps:processing 0 -1 2>/dev/null | head -4)
-  if [ ${#CUR[@]} -eq 0 ]; then
-    echo "    ${DIM}(workers between items)${X}"
-  else
-    for u in "${CUR[@]}"; do
-      short=$(echo "$u" | sed -E 's|.*maps/place/||; s|/data.*||; s|^.{0,34}$|&|; s|^(.{34}).*|\1…|')
-      [ -z "$short" ] && short="?cid=…"
-      printf '    %s↳%s %s\n' "$CY" "$X" "$short"
-    done
-  fi
-  FLUSH=$(strings "$LOGDIR/infinitecrawler-listing.log" 2>/dev/null | grep 'listing.flush' | tail -1 | awk '{print $1, $2}')
-  [ -n "$FLUSH" ] && echo "    ${DIM}last flush: $FLUSH${X}"
-
-  # ===================== 2. ACTIVITY (1h vs 24h) =======================
-  sec "ACTIVITY"
-  # If the DB was recently restored/bootstrapped, 1h and 24h coincide — annotate it.
-  DB_AGE_H=$(q "SELECT GREATEST(0, EXTRACT(EPOCH FROM now()-min(created_at))/3600)::int FROM scraper.gmaps_listings" )
-  AGE_NOTE=""
-  if [ "${DB_AGE_H:-99}" -lt 24 ]; then AGE_NOTE="  ${DIM}(DB ${DB_AGE_H}h old — 1h and 24h overlap until it ages past 24h)${X}"; fi
-  printf '  %s %-32s %14s %10s%s%b\n' " " "pipeline" "1h" "24h" "$X" "$AGE_NOTE"
-  printf '  %s\n' "${DIM}    ────────────────────────────────────────────────────────${X}"
-  mapfile -t A < <(q "
-    SELECT 'search seeds',  (SELECT count(*) FROM scraper.gmaps_search_results WHERE created_at>=now()-interval '1 hour'),
-                            (SELECT count(*) FROM scraper.gmaps_search_results WHERE created_at>=now()-interval '24 hours')
-    UNION ALL SELECT 'listings created (browser)',
-                            (SELECT count(*) FROM scraper.gmaps_listings WHERE source_type='gmaps_listing' AND created_at>=now()-interval '1 hour'),
-                            (SELECT count(*) FROM scraper.gmaps_listings WHERE source_type='gmaps_listing' AND created_at>=now()-interval '24 hours')
-    UNION ALL SELECT 'listings updated (browser)',
-                            (SELECT count(*) FROM scraper.gmaps_listings WHERE source_type='gmaps_listing' AND updated_at>=now()-interval '1 hour'),
-                            (SELECT count(*) FROM scraper.gmaps_listings WHERE source_type='gmaps_listing' AND updated_at>=now()-interval '24 hours')
-    UNION ALL SELECT 'emails found (http)',
-                            (SELECT count(*) FROM scraper.emails WHERE extraction_method='http' AND discovered_at>=now()-interval '1 hour'),
-                            (SELECT count(*) FROM scraper.emails WHERE extraction_method='http' AND discovered_at>=now()-interval '24 hours')
-    UNION ALL SELECT 'emails found (browser)',
-                            (SELECT count(*) FROM scraper.emails WHERE extraction_method='browser' AND discovered_at>=now()-interval '1 hour'),
-                            (SELECT count(*) FROM scraper.emails WHERE extraction_method='browser' AND discovered_at>=now()-interval '24 hours')
-    UNION ALL SELECT 'linkedin profiles checked',
-                            (SELECT count(*) FROM scraper.linkedin_profiles WHERE checked_at>=now()-interval '1 hour'),
-                            (SELECT count(*) FROM scraper.linkedin_profiles WHERE checked_at>=now()-interval '24 hours')
-    UNION ALL SELECT 'linkedin jobs (BD+global)',
-                            (SELECT count(*) FROM scraper.linkedin_jobs WHERE created_at>=now()-interval '1 hour'),
-                            (SELECT count(*) FROM scraper.linkedin_jobs WHERE created_at>=now()-interval '24 hours')
-    UNION ALL SELECT 'linkedin jobs global (excl. BD)',
-                            (SELECT count(*) FROM scraper.linkedin_jobs WHERE created_at>=now()-interval '1 hour'
-                             AND location NOT ILIKE '%bangladesh%' AND location NOT ILIKE '%dhaka%' AND location NOT ILIKE '%chattogram%'),
-                            (SELECT count(*) FROM scraper.linkedin_jobs WHERE created_at>=now()-interval '24 hours'
-                             AND location NOT ILIKE '%bangladesh%' AND location NOT ILIKE '%dhaka%' AND location NOT ILIKE '%chattogram%')
-    UNION ALL SELECT 'nearby grid cells',
-                            (SELECT count(*) FROM scraper.nearby_scan_grid WHERE scanned_at>=now()-interval '1 hour'),
-                            (SELECT count(*) FROM scraper.nearby_scan_grid WHERE scanned_at>=now()-interval '24 hours')
-  ")
-  declare -A H1 H24
-  for l in "${A[@]}"; do IFS='|' read -r k v1 v24 <<< "$l"; H1[$k]=$v1; H24[$k]=$v24; done
-  for k in "search seeds" "listings created (browser)" "listings updated (browser)" \
-           "emails found (http)" "emails found (browser)" "linkedin profiles checked" \
-           "linkedin jobs (BD+global)" "linkedin jobs global (excl. BD)" "nearby grid cells"; do
-    v1=${H1[$k]:-0}; v24=${H24[$k]:-0}
-    st="$OK"; [ "$v1" -eq 0 ] && [ "$v24" -eq 0 ] && st="$DIM$NA (quota)${X}"
-    row2 "$st" "$k" "$(num "$v1")" "${GR}$v24${X}"
-  done
-
-  # ===================== BBB ACTIVITY ================================
-  sec "BBB ACTIVITY — Nebraska handyman / REO"
-  mapfile -t B < <(q "
-    SELECT 'bbb listings total',     (SELECT count(*) FROM scraper.bbb_listings),
-                                        (SELECT count(*) FROM scraper.bbb_listings WHERE created_at>=now()-interval '24 hours')
-    UNION ALL SELECT 'bbb listings last 1h',    (SELECT count(*) FROM scraper.bbb_listings WHERE updated_at>=now()-interval '1 hour'),
-                                        (SELECT count(*) FROM scraper.bbb_listings WHERE updated_at>=now()-interval '24 hours')
-    UNION ALL SELECT 'scrape jobs done 1h',    (SELECT count(*) FROM scraper.scrape_jobs WHERE status='done' AND completed_at>=now()-interval '1 hour'),
-                                        (SELECT count(*) FROM scraper.scrape_jobs WHERE status='done' AND completed_at>=now()-interval '24 hours')
-    UNION ALL SELECT 'scrape jobs running',    (SELECT count(*) FROM scraper.scrape_jobs WHERE status='running'),
-                                        (SELECT count(*) FROM scraper.scrape_jobs WHERE status='failed')
-  ")
-  declare -A B1 B24
-  for l in "${B[@]}"; do IFS='|' read -r k v1 v24 <<< "$l"; B1[$k]=$v1; B24[$k]=$v24; done
-  for k in "bbb listings total" "bbb listings last 1h" "scrape jobs done 1h" "scrape jobs running"; do
-    v1=${B1[$k]:-0}; v24=${B24[$k]:-0}
-    st="$OK"; [ "$v1" -eq 0 ] && [ "$v24" -eq 0 ] && st="$DIM$NA (idle)${X}"
-    row2 "$st" "$k" "$(num "$v1")" "${GR}$v24${X}"
-  done
-
-  # BBB queue status
-  BBBP=$(redis-cli LLEN bbb:pending 2>/dev/null || echo 0)
-  BBBR=$(redis-cli SCARD bbb:processing 2>/dev/null || echo 0)
-  BBBD=$(redis-cli SCARD bbb:completed 2>/dev/null || echo 0)
-  row "$NA" "bbb queue pending/processing/completed" "$BBBP / $BBBR / $BBBD"
-
-  # ===================== 3. DATA QUALITY (24h browser rows) ============
-  sec "DATA QUALITY — gmaps_listing last 24h"
-  printf '  %s %-32s %7s %9s   %s%s\n' " " "field" "fill" "baseline" "status" "$X"
-  printf '  %s\n' "${DIM}    ───────────────────────────────────────────${X}"
-  mapfile -t DQ < <(q "
-    SELECT 'phone',   round(100.0*count(phone)  /nullif(count(*),0)) FROM scraper.gmaps_listings WHERE source_type='gmaps_listing' AND created_at>=now()-interval '24 hours'
-    UNION ALL SELECT 'website', round(100.0*count(website)/nullif(count(*),0)) FROM scraper.gmaps_listings WHERE source_type='gmaps_listing' AND created_at>=now()-interval '24 hours'
-    UNION ALL SELECT 'rating',  round(100.0*count(rating) /nullif(count(*),0)) FROM scraper.gmaps_listings WHERE source_type='gmaps_listing' AND created_at>=now()-interval '24 hours'
-    UNION ALL SELECT 'address', round(100.0*count(address)/nullif(count(*),0)) FROM scraper.gmaps_listings WHERE source_type='gmaps_listing' AND created_at>=now()-interval '24 hours'
-    UNION ALL SELECT 'category',round(100.0*count(category)/nullif(count(*),0)) FROM scraper.gmaps_listings WHERE source_type='gmaps_listing' AND created_at>=now()-interval '24 hours'
-  ")
-  for l in "${DQ[@]}"; do
-    IFS='|' read -r f pct <<< "$l"
-    case $f in phone) base=75; th=70;; website) base=31; th=25;; rating) base=88; th=70;;
-               address) base=98; th=90;; category) base=93; th=85;; *) base='-'; th=0;; esac
-    [ "$pct" -ge "$th" ] && st="$OK" || st="$BAD"
-    printf '  %s %-32s %7s%% %9s%%   %s\n' "$st" "$f" "$pct" "$base" "$X"
-  done
-  PH1H=$(q "SELECT count(*) FROM scraper.gmaps_listings WHERE source_type='gmaps_listing'
-             AND created_at>=now()-interval '1 hour' AND phone IS NULL AND website IS NULL
-             AND rating IS NULL AND address IS NULL")
-  [ "${PH1H:-1}" = "0" ] && pst="$OK" || pst="$BAD"
-  row "$pst" "phantom rows (bare shells) last 1h" "$PH1H"
-
-  # ===================== 4. BACKLOGS / REMAINING =======================
-  sec "BACKLOGS — remaining work"
-  UNC=$(q "SELECT count(*) FROM scraper.gmaps_search_results s
-            WHERE NOT EXISTS (SELECT 1 FROM scraper.gmaps_listings l WHERE l.source_url = s.key_value)")
-  EB=$(q "SELECT count(*) FROM scraper.gmaps_listings WHERE website IS NOT NULL AND email_scanned_at IS NULL")
-  UC=$(q "SELECT count(*) FROM scraper.gmaps_listings WHERE classified_at IS NULL AND source_type='gmaps_listing'")
-  NPEND=$(q "SELECT count(*) FROM scraper.nearby_scan_grid WHERE status='pending'")
-  NTOT=$(q "SELECT count(*) FROM scraper.nearby_scan_grid")
-  SEEDS1=${H1["search seeds"]:-0}; LC1=${H1["listings created (browser)"]:-0}
-  NET=$(( SEEDS1 - LC1 ))
-  if   [ "$NET" -le 0 ]; then dir="${GR}▼ shrinking ${X}"
-  elif [ "$NET" -lt 100 ]; then dir="${YL}▲ +${NET}/h${X}"
-  else dir="${YL}▲ growing +${NET}/h (seeds outpace browser)${X}"; fi
-  npct=$(awk -v a=${NPEND:-1} -v t=${NTOT:-1} 'BEGIN{printf "%.1f", 100*(t-a)/t}')
-  printf '  %-40s %12s  %s\n' "seeds never deep-extracted" "$UNC" "$dir"
-  printf '  %-40s %12s  %s\n' "websites awaiting email scan" "$EB" "${DIM}drains via email loop${X}"
-  printf '  %-40s %12s  %s\n' "unclassified (gmaps_listing)" "$UC" "${DIM}nightly classify${X}"
-  printf '  %-40s %12s  %s\n' "nearby grid pending" "$NPEND" "${DIM}${npct}% scanned, quota-paced${X}"
-
-  # ===================== 5. EMAIL TREND ================================
-  sec "EMAILS PER HOUR — last 8h"
-  mapfile -t EH < <(q "SELECT to_char(h,'HH24')||':'||count(*)
-    FROM (SELECT date_trunc('hour',discovered_at) h FROM scraper.emails
-          WHERE discovered_at>=now()-interval '8 hours') t
-    GROUP BY h ORDER BY h")
-  vals=""; labels=""
-  for e in "${EH[@]:-}"; do [ -z "$e" ] && continue; labels+="${e%%:*}   "; vals+="${e##*:} "; done
-  if [ -n "$vals" ]; then
-    echo "    $(spark "$vals")  ${DIM}(height ∝ emails/h)${X}"
-    echo "    ${DIM}${labels}${X}"
-  fi
-  BR24=${H24["emails found (browser)"]:-0}
-  echo "    browser-method 24h: ${GR}$BR24${X} ${DIM}(contact-page walk fix — was 0 before 2026-09-03)${X}"
-
-  # ===================== 6. ALL-TIME TOTALS ============================
-  sec "TOTALS — all time"
-  mapfile -t T < <(q "
-    SELECT 'listings', count(*) FROM scraper.gmaps_listings
-    UNION ALL SELECT 'search results', count(*) FROM scraper.gmaps_search_results
-    UNION ALL SELECT 'emails', count(*) FROM scraper.emails
-    UNION ALL SELECT 'emails distinct', count(DISTINCT email) FROM scraper.emails
-    UNION ALL SELECT 'listings with >=1 email', count(DISTINCT listing_id) FROM scraper.emails
-    UNION ALL SELECT 'linkedin profiles', count(*) FROM scraper.linkedin_profiles
-    UNION ALL SELECT 'linkedin companies', count(*) FROM scraper.linkedin_companies
-  ")
-  for l in "${T[@]}"; do
-    IFS='|' read -r k v <<< "$l"
-    printf '  %-34s %'"'"'s\n' "$k" "$(printf '%s' "$v" | sed ':a;s/\B[0-9]\{3\}\>/,&/;ta')"
-  done
-
-  # ===================== 7. DASHBOARDS =================================
-  sec "DASHBOARDS & SERVICES"
-  chk() { curl -s -m3 "$1" >/dev/null 2>&1 && echo "$OK" || echo "$BAD"; }
-  printf '  %s  %-26s %s  %s\n' "$(chk http://127.0.0.1:8015/api/health)" "api        :8015" "${GR}ok${X}" "${DIM}internal${X}" 2>/dev/null
-  printf '  %s  %-26s %s  %s\n' "$(chk http://127.0.0.1:8016/health)"  "premium-api :8016" "${GR}ok${X}" "${DIM}JWT paywall${X}"
-  printf '  %s  %-26s %s  %s\n' "$(chk http://[::1]:5173/)"             "web        :5173" "${GR}ok${X}" "${DIM}premium SPA${X}"
-  PC=$(curl -s -m3 -o /dev/null -w '%{http_code}' http://127.0.0.1:9868/health 2>/dev/null)
-  if [ "$PC" = "401" ]; then pe="$OK"; ps="401 ${DIM}(token-gated = up)${X}"
-  elif [ "$PC" = "200" ]; then pe="$OK"; ps="200"
-  else pe="$BAD"; ps="$PC"; fi
-  printf '  %s  %-26s %s\n' "$pe" "pinchtab   :9868" "$ps"
-  DISK=$(df -h / | awk 'NR==2{print $4}')
-  MEM=$(free -h | awk '/^Mem:/{print $3" / "$2}')
-  printf '  %s  disk free %-10s mem %s\n' "$DIM" "$DISK" "$MEM${X}"
-  echo
+  clear
+  printf '  IC %d/%d  Δ %s            LAST FLUSH %s              PG ✓  REDIS ✓\n' "$UP" "$TOT" "$(date '+%H:%M')" "$FLUSH"
+  hr
+  grid3 "SEARCH" "LISTING" "PLACES          NEARBY"
+  grid3 "seed $SRCH_PEND  1h↑$SRCH_1H" "cre $LIST_PROC/h  ph $LIST_PHAN" "day $PLACES_DAY  quota $(age "$PLACES_QUOTA")" "day $NEARBY_DAY  quota $(age "$NEARBY_QUOTA")"
+  grid3 "15d $SRCH_TOTAL  24h $SRCH_24H" "upd $LIST_PEND/h   pool $LIST_POOL" "proc $SRCH_PROC  fail $SRCH_FAIL" "pend $NEARBY_PEND"
+  grid4 "BBB" "EMAIL" "JOBS" "PROF"
+  grid4 "cre $BBB_PROC/h  pnd $BBB_PEND" "http $EMAIL_PEND/h  brow $EMAIL_BROW" "det $LJ_PROC/h   pnd $LJ_PEND" "comp $LJ_COMP  tot $LJC_TOTAL"
+  grid4 "24h $BBB_24H  tot $BBB_TOTAL" "24h $EMAIL_24H  tot $EMAIL_TOTAL" "24h $LJ_24H  tot $LJ_TOTAL" "24h $LJ_1H"
+  hr
+  printf '  FILL 1h  phone %s%%  web %s%%  rate %s%%  addr %s%%  cat %s%%  phantom %s\n' "$PHONE" "$WEB" "$RATE" "$ADDR" "$CAT" "$PHAN"
+  hr
+  printf '  BLOG  seed-out +%s/h  ·  web-pnd %s  ·  class %s  ·  grid %s\n' "$SRCH_1H" "$BLOG_PEND" "$CLASS_PEND" "$NEARBY_PEND"
+  hr
+  awk -v ltotal="$LIST_TOTAL" -v stotal="$SRCH_TOTAL" -v etotal="$EMAIL_TOTAL" -v ljtotal="$LJ_TOTAL" -v ljc="$LJC_TOTAL" \
+    'BEGIN{printf "  TOT  lst %.1fM  srch %.1fM  eml %.1fM  lnk %sk  co %s\n", ltotal/1000000, stotal/1000000, etotal/1000000, ljtotal/1000, ljc}'
+  hr
+  printf '  WATCH  pinchtab %s  8015 %s  8016 %s  5173 %s  5174 %s\n' "$PINCH" "$API" "$PRM" "$WEB" "$ADM"
 }
 
-if [ "${1:-}" = "--watch" ] || [ "${1:-}" = "-w" ]; then
-  SECS="${2:-30}"
-  trap 'tput cnorm 2>/dev/null; exit 0' INT TERM
-  tput civis 2>/dev/null || true
-  while true; do render; sleep "$SECS"; done
-else
-  render
-fi
+main() {
+  while :; do
+    collect
+    render
+    [[ $WATCH -eq 0 ]] && break
+    sleep "$INTERVAL"
+  done
+}
+main
